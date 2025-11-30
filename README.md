@@ -2619,7 +2619,6 @@ IAMClient4D is made possible thanks to these excellent open-source libraries and
 ### Frameworks and Platforms
 - **[Keycloak](https://www.keycloak.org/)**: Excellent open-source IAM solution by Red Hat
 - **[DMVCFramework](https://github.com/danieleteti/delphimvcframework)**: Powerful REST framework for Delphi by Daniele Teti
-- **[Indy Project](https://www.indyproject.org/)**: Internet components suite for Delphi
 
 ### Community
 - **Delphi Community**: For continuous support, feedback, and contributions
