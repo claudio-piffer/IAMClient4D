@@ -48,11 +48,6 @@ procedure DeriveFromRawKey32(const Key32: TBytes; out Kenc, Kmac: TBytes);
 function HMAC_SHA256(const Key, Data: TBytes): TBytes;
 
 /// <summary>
-/// Compares byte arrays in constant time to prevent timing attacks
-/// </summary>
-function ConstTimeEquals(const A, B: TBytes): Boolean;
-
-/// <summary>
 /// Converts UInt64 to 8-byte big-endian representation
 /// </summary>
 function UInt64ToBigEndian8(const V: UInt64): TBytes;
@@ -113,19 +108,6 @@ type
 function HMAC_SHA256(const Key, Data: TBytes): TBytes;
 begin
   Result := THashSHA2.GetHMACAsBytes(Data, Key, THashSHA2.TSHA2Version.SHA256);
-end;
-
-function ConstTimeEquals(const A, B: TBytes): Boolean;
-var
-  LIndex: Integer;
-  LDiff: Byte;
-begin
-  if Length(A) <> Length(B) then
-    Exit(False);
-  LDiff := 0;
-  for LIndex := 0 to High(A) do
-    LDiff := LDiff or (A[LIndex] xor B[LIndex]);
-  Result := (LDiff = 0);
 end;
 
 function UInt64ToBigEndian8(const V: UInt64): TBytes;

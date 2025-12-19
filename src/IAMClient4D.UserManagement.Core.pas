@@ -703,14 +703,232 @@ type
   end;
 
   /// <summary>
-  /// User management interface for Keycloak Admin API operations.
+  /// Synchronous user management interface for Keycloak Admin API operations.
   /// </summary>
   /// <remarks>
-  /// Operations: CRUD, password management, roles, groups, federated identities, required actions, sessions.
-  /// Async: All methods return promises for non-blocking execution.
-  /// Authentication: Requires valid admin access token with appropriate permissions.
+  /// <para><b>Operations:</b> CRUD, password management, roles, groups, federated identities,
+  /// required actions, sessions.</para>
+  ///
+  /// <para><b>Execution:</b> All methods execute synchronously and block until completion.</para>
+  ///
+  /// <para><b>Authentication:</b> Requires valid admin access token with appropriate permissions.</para>
+  ///
+  /// <para><b>When to use this interface:</b></para>
+  /// <list type="bullet">
+  ///   <item><b>REST Services (DMVCFramework, RAD Server, Horse, etc.):</b> The HTTP request
+  ///   handler already runs on a worker thread. Using async here would add unnecessary overhead
+  ///   since callbacks are designed to return to the main thread.</item>
+  ///   <item><b>Console Applications:</b> Simpler code flow without promise chains.</item>
+  ///   <item><b>Background Services/Jobs:</b> No main thread to return to.</item>
+  ///   <item><b>Thread Pool Tasks:</b> When already running on a background thread.</item>
+  /// </list>
+  ///
+  /// <para><b>Example (DMVC Controller):</b></para>
+  /// <code>
+  /// procedure TUserController.GetUser(const AUserID: string);
+  /// var
+  ///   LManager: IIAM4DUserManager;
+  /// begin
+  ///   LManager := TIAM4DKeycloakUserManager.Create(GetAccessToken, FBaseURL, FRealm);
+  ///   Render(LManager.GetUser(AUserID));
+  /// end;
+  /// </code>
+  ///
+  /// <para>For UI applications (VCL/FMX), use <see cref="IIAM4DUserManagerAsync"/> instead
+  /// to keep the interface responsive.</para>
   /// </remarks>
+  /// <seealso cref="IIAM4DUserManagerAsync"/>
+  /// <seealso cref="TIAM4DKeycloakUserManager"/>
   IIAM4DUserManager = interface
+    ['{A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D}']
+
+    // ========================================================================
+    // User CRUD Operations
+    // ========================================================================
+
+    function CreateUser(const AUser: TIAM4DUser): string;
+    function CreateUsers(const AUsers: TArray<TIAM4DUser>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DUsersCreateResult>;
+    function GetUser(const AUserID: string): TIAM4DUser;
+    function GetUserByUsername(const AUsername: string): TIAM4DUser;
+    function TryGetUserByUsername(const AUsername: string): TIAM4DUserTryResult;
+    function GetUserByEmail(const AEmail: string): TIAM4DUser;
+    function TryGetUserByEmail(const AEmail: string): TIAM4DUserTryResult;
+    function GetUsersByIDs(const AUserIDs: TArray<string>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DUserGetResult>;
+    procedure UpdateUser(const AUser: TIAM4DUser);
+    function UpdateUsers(const AUsers: TArray<TIAM4DUser>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure DeleteUser(const AUserID: string);
+    function DeleteUsers(const AUserIDs: TArray<string>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    function SearchUsers(const ACriteria: TIAM4DUserSearchCriteria): TArray<TIAM4DUser>;
+    function GetUsersCount: Integer;
+
+    // ========================================================================
+    // Password Management
+    // ========================================================================
+
+    procedure SetPassword(const AUserID: string; const APassword: string; const ATemporary: Boolean = False);
+    function SetPasswords(const APasswordResets: TArray<TIAM4DPasswordReset>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure SendPasswordResetEmail(const AUserID: string);
+    procedure SendVerifyEmail(const AUserID: string);
+
+    // ========================================================================
+    // Role Management
+    // ========================================================================
+
+    function GetRealmRoles: TArray<TIAM4DRole>;
+    function GetUserRoles(const AUserID: string): TArray<TIAM4DRole>;
+    procedure AssignRolesToUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
+    function AssignRolesToUsers(const ARoleAssignments: TArray<TIAM4DRoleAssignment>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure RemoveRolesFromUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
+    procedure AssignRoleByName(const AUserID: string; const ARoleName: string);
+    procedure RemoveRoleByName(const AUserID: string; const ARoleName: string);
+    procedure AssignClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
+    procedure RemoveClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
+
+    // ========================================================================
+    // Group Management
+    // ========================================================================
+
+    function GetGroups: TArray<TIAM4DGroup>;
+    function GetUserGroups(const AUserID: string): TArray<TIAM4DGroup>;
+    procedure AddUserToGroupByPath(const AUserID: string; const AGroupPath: string);
+    procedure RemoveUserFromGroupByPath(const AUserID: string; const AGroupPath: string);
+
+    // ========================================================================
+    // Session Management
+    // ========================================================================
+
+    procedure LogoutUser(const AUserID: string);
+    function GetUserSessions(const AUserID: string): TArray<TIAM4DUserSession>;
+    function GetUserSessionCount(const AUserID: string): Integer;
+    procedure RevokeUserSession(const AUserID: string; const ASessionID: string);
+
+    // ========================================================================
+    // Federated Identity Management
+    // ========================================================================
+
+    function GetUserFederatedIdentities(const AUserID: string): TArray<TIAM4DFederatedIdentity>;
+    function IsUserFederated(const AUserID: string): Boolean;
+
+    // ========================================================================
+    // Required Actions Management
+    // ========================================================================
+
+    function GetUserRequiredActions(const AUserID: string): TArray<TIAM4DRequiredAction>;
+    procedure SetUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
+    procedure RemoveUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
+
+    // ========================================================================
+    // Account Security
+    // ========================================================================
+
+    function IsUserLocked(const AUserID: string): Boolean;
+    procedure UnlockUser(const AUserID: string);
+
+    // ========================================================================
+    // User State Management
+    // ========================================================================
+
+    procedure DisableUser(const AUserID: string);
+    procedure EnableUser(const AUserID: string);
+
+    // ========================================================================
+    // Advanced Role Queries
+    // ========================================================================
+
+    function GetRoleByName(const ARoleName: string): TIAM4DRole;
+    function TryGetRoleByName(const ARoleName: string): TIAM4DRoleTryResult;
+    function HasRole(const AUserID: string; const ARoleName: string): Boolean;
+    function GetUsersWithRole(const ARoleName: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): TArray<TIAM4DUser>;
+
+    // ========================================================================
+    // Advanced Group Queries
+    // ========================================================================
+
+    function GetGroupByPath(const APath: string): TIAM4DGroup;
+    function TryGetGroupByPath(const APath: string): TIAM4DGroupTryResult;
+    function IsMemberOfGroup(const AUserID: string; const AGroupPath: string): Boolean;
+    function GetUsersInGroupByPath(const AGroupPath: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): TArray<TIAM4DUser>;
+
+    // ========================================================================
+    // Client Role Management
+    // ========================================================================
+
+    function GetClientRolesByName(const AClientName: string): TArray<TIAM4DRole>;
+    function GetUserClientRolesByName(const AUserID: string; const AClientName: string): TArray<TIAM4DRole>;
+    procedure AssignClientRolesToUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
+    function AssignClientRolesToUsers(const ARoleAssignments: TArray<TIAM4DRoleAssignment>;
+      const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure RemoveClientRolesFromUserByName(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>);
+    function HasClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string): Boolean;
+
+    // ========================================================================
+    // Realm Client Management
+    // ========================================================================
+
+    function GetClients: TIAM4DRealmClientArray; overload;
+    function GetClients(const AClientName: string): TIAM4DRealmClient; overload;
+  end;
+
+  /// <summary>
+  /// Asynchronous user management interface for Keycloak Admin API operations.
+  /// </summary>
+  /// <remarks>
+  /// <para><b>Operations:</b> CRUD, password management, roles, groups, federated identities,
+  /// required actions, sessions.</para>
+  ///
+  /// <para><b>Execution:</b> All methods return promises (IAsyncPromise&lt;T&gt;) for non-blocking
+  /// execution. Callbacks (OnSuccess, OnError, OnFinally) execute on the main thread by default,
+  /// making them safe for direct UI access.</para>
+  ///
+  /// <para><b>Authentication:</b> Requires valid admin access token with appropriate permissions.</para>
+  ///
+  /// <para><b>When to use this interface:</b></para>
+  /// <list type="bullet">
+  ///   <item><b>VCL Desktop Applications:</b> Keeps the UI responsive during API calls.</item>
+  ///   <item><b>FireMonkey (FMX) Applications:</b> Cross-platform UI responsiveness.</item>
+  ///   <item><b>Interactive Tools:</b> When user feedback during operations is required.</item>
+  /// </list>
+  ///
+  /// <para><b>When NOT to use this interface:</b></para>
+  /// <list type="bullet">
+  ///   <item><b>REST Services:</b> Use <see cref="IIAM4DUserManager"/> instead - async adds
+  ///   unnecessary overhead since the request handler already runs on a worker thread.</item>
+  ///   <item><b>Console Applications:</b> Sync interface provides simpler code flow.</item>
+  /// </list>
+  ///
+  /// <para><b>Example (VCL Form):</b></para>
+  /// <code>
+  /// procedure TMainForm.btnLoadUserClick(Sender: TObject);
+  /// begin
+  ///   btnLoadUser.Enabled := False;
+  ///   FUserManager.GetUserAsync(edtUserID.Text)
+  ///     .OnSuccess(procedure(const AUser: TIAM4DUser)
+  ///       begin
+  ///         // Safe to access UI - runs on main thread
+  ///         edtUsername.Text := AUser.Username;
+  ///         edtEmail.Text := AUser.Email;
+  ///       end)
+  ///     .OnError(procedure(const E: Exception)
+  ///       begin
+  ///         ShowMessage('Error: ' + E.Message);
+  ///       end)
+  ///     .OnFinally(procedure
+  ///       begin
+  ///         btnLoadUser.Enabled := True;
+  ///       end)
+  ///     .Run;
+  /// end;
+  /// </code>
+  /// </remarks>
+  /// <seealso cref="IIAM4DUserManager"/>
+  /// <seealso cref="TIAM4DKeycloakUserManagerAsync"/>
+  IIAM4DUserManagerAsync = interface
     ['{102507A7-6A4C-4D3E-B41D-3E8F93A5BF2F}']
 
     // ========================================================================
@@ -729,6 +947,22 @@ type
     /// </summary>
     /// <param name="AUsers">Array of user data to create</param>
     /// <returns>Promise resolving to array of creation results with IDs or errors</returns>
+    /// <remarks>
+    /// <para><b>Batch behavior:</b> All users are processed sequentially in a single background
+    /// task. Each user operation is independent - failures don't stop subsequent operations.</para>
+    ///
+    /// <para><b>Cancellation:</b> Batch operations complete atomically. For fine-grained
+    /// cancellation control, iterate with CreateUserAsync and check cancellation between calls:</para>
+    /// <code>
+    /// for LUser in AUsers do
+    /// begin
+    ///   if LCancelled then Break;
+    ///   FManager.CreateUserAsync(LUser)
+    ///     .OnSuccess(procedure(const AID: string) begin ... end)
+    ///     .Run;
+    /// end;
+    /// </code>
+    /// </remarks>
     function CreateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DUsersCreateResult>>;
 
     /// <summary>
@@ -779,6 +1013,10 @@ type
     /// </summary>
     /// <param name="AUserIDs">Array of user IDs to retrieve</param>
     /// <returns>Promise resolving to array of retrieval results (success/failure per user with data)</returns>
+    /// <remarks>
+    /// <para><b>Batch behavior:</b> All users are retrieved sequentially. Each retrieval is
+    /// independent - failures don't stop subsequent operations.</para>
+    /// </remarks>
     function GetUsersByIDsAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DUserGetResult>>;
 
     /// <summary>
@@ -793,6 +1031,13 @@ type
     /// </summary>
     /// <param name="AUsers">Array of user data with IDs and updated fields</param>
     /// <returns>Promise resolving to array of operation results (success/failure per user)</returns>
+    /// <remarks>
+    /// <para><b>Batch behavior:</b> All users are processed sequentially in a single background
+    /// task. Each user operation is independent - failures don't stop subsequent operations.</para>
+    ///
+    /// <para><b>Cancellation:</b> For fine-grained cancellation control, iterate with
+    /// UpdateUserAsync and check cancellation between calls.</para>
+    /// </remarks>
     function UpdateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 
     /// <summary>
@@ -807,6 +1052,13 @@ type
     /// </summary>
     /// <param name="AUserIDs">Array of user IDs to delete</param>
     /// <returns>Promise resolving to array of operation results (success/failure per user)</returns>
+    /// <remarks>
+    /// <para><b>Batch behavior:</b> All users are deleted sequentially in a single background
+    /// task. Each deletion is independent - failures don't stop subsequent operations.</para>
+    ///
+    /// <para><b>Cancellation:</b> For fine-grained cancellation control, iterate with
+    /// DeleteUserAsync and check cancellation between calls.</para>
+    /// </remarks>
     function DeleteUsersAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 
     /// <summary>
@@ -840,6 +1092,13 @@ type
     /// </summary>
     /// <param name="APasswordResets">Array of password reset operations</param>
     /// <returns>Promise resolving to array of operation results (success/failure per user)</returns>
+    /// <remarks>
+    /// <para><b>Batch behavior:</b> All password resets are processed sequentially in a single
+    /// background task. Each operation is independent - failures don't stop subsequent operations.</para>
+    ///
+    /// <para><b>Cancellation:</b> For fine-grained cancellation control, iterate with
+    /// SetPasswordAsync and check cancellation between calls.</para>
+    /// </remarks>
     function SetPasswordsAsync(const APasswordResets: TArray<TIAM4DPasswordReset>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 
     /// <summary>
@@ -886,6 +1145,13 @@ type
     /// </summary>
     /// <param name="ARoleAssignments">Array of role assignment operations</param>
     /// <returns>Promise resolving to array of operation results (success/failure per user)</returns>
+    /// <remarks>
+    /// <para><b>Batch behavior:</b> All role assignments are processed sequentially in a single
+    /// background task. Each assignment is independent - failures don't stop subsequent operations.</para>
+    ///
+    /// <para><b>Cancellation:</b> For fine-grained cancellation control, iterate with
+    /// AssignRolesToUserAsync and check cancellation between calls.</para>
+    /// </remarks>
     function AssignRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 
     /// <summary>
@@ -1234,9 +1500,15 @@ type
     /// <param name="ARoleAssignments">Array of role assignment operations (UserID + Roles with ClientID/ClientName populated)</param>
     /// <returns>Promise resolving to array of operation results (success/failure per user)</returns>
     /// <remarks>
-    /// Eliminates client name duplication - roles already contain ClientID and ClientName.
+    /// <para>Eliminates client name duplication - roles already contain ClientID and ClientName.
     /// Automatically groups assignments by client if roles from different clients are provided.
-    /// Raises exception if any role is missing ClientID or ClientName.
+    /// Raises exception if any role is missing ClientID or ClientName.</para>
+    ///
+    /// <para><b>Batch behavior:</b> All role assignments are processed sequentially in a single
+    /// background task. Each assignment is independent - failures don't stop subsequent operations.</para>
+    ///
+    /// <para><b>Cancellation:</b> For fine-grained cancellation control, iterate with
+    /// AssignClientRolesToUserAsync and check cancellation between calls.</para>
     /// </remarks>
     function AssignClientRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 

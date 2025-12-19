@@ -117,14 +117,15 @@ type
   end;
 
   /// <summary>
-  /// Keycloak Admin API implementation for user management.
+  /// Keycloak Admin API implementation for user management (synchronous).
   /// </summary>
   /// <remarks>
   /// API: Keycloak Admin REST API (/admin/realms/{realm}).
   /// Authentication: Uses access token with admin permissions via auth provider.
   /// HTTP: Creates new HTTP client for each operation (no connection pooling).
   /// JSON: Automatic serialization/deserialization of Keycloak entities.
-  /// Async: All operations return promises for non-blocking execution.
+  /// Sync: All operations execute synchronously and block until completion.
+  /// Use case: Server-side (REST API) where the request is already on a worker thread.
   /// </remarks>
   TIAM4DKeycloakUserManager = class(TInterfacedObject, IIAM4DUserManager)
   private
@@ -235,7 +236,7 @@ type
     /// <summary>
     /// Internal: Assigns client roles to user via POST to role-mappings endpoint.
     /// </summary>
-    procedure AssignClientRolesToUser(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>);
+    procedure AssignClientRolesToUser(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>); overload;
 
     /// <summary>
     /// Internal: Removes client roles from user via DELETE to role-mappings endpoint.
@@ -263,301 +264,69 @@ type
     function GetUsersInGroup(const AHTTPClient: THTTPClient; const AGroupID: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): TArray<TIAM4DUser>;
 
   protected
-    /// <summary>
-    /// Creates user via Admin API and returns user ID.
-    /// </summary>
-    function CreateUserAsync(const AUser: TIAM4DUser): IAsyncPromise<string>;
-
-    /// <summary>
-    /// Retrieves user by ID via GET /admin/realms/{realm}/users/{id}.
-    /// </summary>
-    function GetUserAsync(const AUserID: string): IAsyncPromise<TIAM4DUser>;
-
-    /// <summary>
-    /// Retrieves user by username via GET /admin/realms/{realm}/users?username={username}&exact=true.
-    /// </summary>
-    function GetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUser>;
-    function TryGetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUserTryResult>;
-
-    /// <summary>
-    /// Updates user via PUT /admin/realms/{realm}/users/{id}.
-    /// User.ID must be set.
-    /// </summary>
-    function UpdateUserAsync(const AUser: TIAM4DUser): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Updates multiple users in batch using single HTTP connection.
-    /// Each user's ID must be set.
-    /// Returns an array of operation results with details for each user.
-    /// </summary>
-    function UpdateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
-
-    /// <summary>
-    /// Deletes user via DELETE /admin/realms/{realm}/users/{id}.
-    /// </summary>
-    function DeleteUserAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Creates multiple users in batch using single HTTP connection.
-    /// </summary>
-    function CreateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DUsersCreateResult>>;
-
-    /// <summary>
-    /// Deletes multiple users in batch using single HTTP connection.
-    /// Returns an array of operation results with details for each user.
-    /// </summary>
-    function DeleteUsersAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
-
-    /// <summary>
-    /// Searches users with criteria and pagination.
-    /// </summary>
-    function SearchUsersAsync(const ACriteria: TIAM4DUserSearchCriteria): IAsyncPromise<TArray<TIAM4DUser>>;
-
-    /// <summary>
-    /// Returns total user count via GET /admin/realms/{realm}/users/count.
-    /// </summary>
-    function GetUsersCountAsync: IAsyncPromise<Integer>;
-
-    /// <summary>
-    /// Sets user password via PUT /admin/realms/{realm}/users/{id}/reset-password.
-    /// </summary>
-    function SetPasswordAsync(const AUserID: string; const APassword: string; const ATemporary: Boolean = False): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Sets passwords for multiple users in batch using single HTTP connection.
-    /// Returns an array of operation results with details for each password reset.
-    /// </summary>
-    function SetPasswordsAsync(const APasswordResets: TArray<TIAM4DPasswordReset>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
-
-    /// <summary>
-    /// Sends password reset email via execute-actions-email endpoint.
-    /// </summary>
-    function SendPasswordResetEmailAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Sends email verification link via send-verify-email endpoint.
-    /// </summary>
-    function SendVerifyEmailAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Returns all realm-level roles.
-    /// </summary>
-    function GetRealmRolesAsync: IAsyncPromise<TArray<TIAM4DRole>>;
-
-    /// <summary>
-    /// Returns realm roles assigned to user.
-    /// </summary>
-    function GetUserRolesAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DRole>>;
-
-    /// <summary>
-    /// Assigns realm roles to user via POST to role-mappings endpoint.
-    /// </summary>
-    function AssignRolesToUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Assigns roles to multiple users in batch using single HTTP connection.
-    /// Each assignment can have different roles for different users.
-    /// Returns an array of operation results with details for each role assignment.
-    /// </summary>
-    function AssignRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
-
-    /// <summary>
-    /// Removes realm roles from user via DELETE to role-mappings endpoint.
-    /// </summary>
-    function RemoveRolesFromUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Assigns a single realm role to a user by role name (convenience method).
-    /// </summary>
-    function AssignRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Removes a single realm role from a user by role name (convenience method).
-    /// </summary>
-    function RemoveRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Assigns a single client role to a user by client and role names (convenience method).
-    /// </summary>
-    function AssignClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Removes a single client role from a user by client and role names (convenience method).
-    /// </summary>
-    function RemoveClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Returns all groups in realm.
-    /// </summary>
-    function GetGroupsAsync: IAsyncPromise<TArray<TIAM4DGroup>>;
-
-    /// <summary>
-    /// Returns groups user is member of.
-    /// </summary>
-    function GetUserGroupsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DGroup>>;
-    /// <summary>
-    /// Adds user to group using group path (public API).
-    /// </summary>
-    function AddUserToGroupByPathAsync(const AUserID: string; const AGroupPath: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Removes user from group using group path (public API).
-    /// </summary>
-    function RemoveUserFromGroupByPathAsync(const AUserID: string; const AGroupPath: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Logs out user by revoking all sessions via POST to logout endpoint.
-    /// </summary>
-    function LogoutUserAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Returns federated identity links for user.
-    /// </summary>
-    function GetUserFederatedIdentitiesAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DFederatedIdentity>>;
-
-    /// <summary>
-    /// Checks if user has any federated identity links.
-    /// </summary>
-    function IsUserFederatedAsync(const AUserID: string): IAsyncPromise<Boolean>;
-
-    /// <summary>
-    /// Returns required actions from user profile.
-    /// </summary>
-    function GetUserRequiredActionsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DRequiredAction>>;
-
-    /// <summary>
-    /// Sets required actions by updating user profile (replaces existing).
-    /// </summary>
-    function SetUserRequiredActionsAsync(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Removes specified actions from user's required actions list.
-    /// </summary>
-    function RemoveUserRequiredActionsAsync(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Retrieves user by email via GET /admin/realms/{realm}/users?email={email}&exact=true.
-    /// </summary>
-    function GetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUser>;
-    function TryGetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUserTryResult>;
-
-    /// <summary>
-    /// Retrieves multiple users by their IDs in batch.
-    /// Returns detailed results showing success/failure for each user ID.
-    /// </summary>
-    function GetUsersByIDsAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DUserGetResult>>;
-
-    /// <summary>
-    /// Checks if user is locked via GET /admin/realms/{realm}/attack-detection/brute-force/users/{id}.
-    /// </summary>
-    function IsUserLockedAsync(const AUserID: string): IAsyncPromise<Boolean>;
-
-    /// <summary>
-    /// Unlocks user via DELETE /admin/realms/{realm}/attack-detection/brute-force/users/{id}.
-    /// </summary>
-    function UnlockUserAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Retrieves active sessions for user via GET /admin/realms/{realm}/users/{id}/sessions.
-    /// </summary>
-    function GetUserSessionsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DUserSession>>;
-
-    /// <summary>
-    /// Returns count of active user sessions.
-    /// </summary>
-    function GetUserSessionCountAsync(const AUserID: string): IAsyncPromise<Integer>;
-
-    /// <summary>
-    /// Revokes a specific user session via DELETE /admin/realms/{realm}/sessions/{sessionId}.
-    /// </summary>
-    function RevokeUserSessionAsync(const AUserID: string; const ASessionID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Disables a user account via PUT /admin/realms/{realm}/users/{id} with enabled=false.
-    /// </summary>
-    function DisableUserAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Enables a user account via PUT /admin/realms/{realm}/users/{id} with enabled=true.
-    /// </summary>
-    function EnableUserAsync(const AUserID: string): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Retrieves role by name via GET /admin/realms/{realm}/roles/{role-name}.
-    /// </summary>
-    function GetRoleByNameAsync(const ARoleName: string): IAsyncPromise<TIAM4DRole>;
-    function TryGetRoleByNameAsync(const ARoleName: string): IAsyncPromise<TIAM4DRoleTryResult>;
-
-    /// <summary>
-    /// Checks if user has a specific role.
-    /// </summary>
-    function HasRoleAsync(const AUserID: string; const ARoleName: string): IAsyncPromise<Boolean>;
-
-    /// <summary>
-    /// Retrieves users with a specific role via GET /admin/realms/{realm}/roles/{role-name}/users.
-    /// </summary>
-    function GetUsersWithRoleAsync(const ARoleName: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): IAsyncPromise<TArray<TIAM4DUser>>;
-
-    /// <summary>
-    /// Retrieves group by path via GET /admin/realms/{realm}/groups (filtered by path).
-    /// </summary>
-    function GetGroupByPathAsync(const APath: string): IAsyncPromise<TIAM4DGroup>;
-    function TryGetGroupByPathAsync(const APath: string): IAsyncPromise<TIAM4DGroupTryResult>;
-
-    /// <summary>
-    /// Checks if user is member of a specific group.
-    /// </summary>
-    function IsMemberOfGroupAsync(const AUserID: string; const AGroupPath: string): IAsyncPromise<Boolean>;
-
-    /// <summary>
-    /// Retrieves users in group using group path (public API).
-    /// </summary>
-    function GetUsersInGroupByPathAsync(const AGroupPath: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): IAsyncPromise<TArray<TIAM4DUser>>;
-
-    /// <summary>
-    /// Sets user enabled state (shared implementation for Enable/Disable).
-    /// </summary>
-    function SetUserEnabledStateAsync(const AUserID: string; const AEnabled: Boolean): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Retrieves all client roles using client name (public API).
-    /// </summary>
-    function GetClientRolesByNameAsync(const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
-
-    /// <summary>
-    /// Retrieves client roles assigned to user using client name (public API).
-    /// </summary>
-    function GetUserClientRolesByNameAsync(const AUserID: string; const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
-
-    /// <summary>
-    /// Assigns client roles to user (automatically extracts client from roles).
-    /// </summary>
-    function AssignClientRolesToUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Assigns client roles to multiple users in batch (automatically extracts client from roles).
-    /// </summary>
-    function AssignClientRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
-
-    /// <summary>
-    /// Removes client roles from user using client name (public API).
-    /// </summary>
-    function RemoveClientRolesFromUserByNameAsync(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
-
-    /// <summary>
-    /// Checks if user has a specific client role using client name (public API).
-    /// </summary>
-    function HasClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncPromise<Boolean>;
-
-    /// <summary>
-    /// Retrieves all client applications registered in the realm with their roles.
-    /// </summary>
-    function GetClientsAsync: IAsyncPromise<TArray<TIAM4DRealmClient>>; overload;
-
-    /// <summary>
-    /// Retrieves a specific client application by name with all its roles.
-    /// </summary>
-    function GetClientsAsync(const AClientName: string): IAsyncPromise<TIAM4DRealmClient>; overload;
+    // IIAM4DUserManager sync interface implementation
+    function CreateUser(const AUser: TIAM4DUser): string;
+    function CreateUsers(const AUsers: TArray<TIAM4DUser>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DUsersCreateResult>;
+    function GetUser(const AUserID: string): TIAM4DUser;
+    function GetUserByUsername(const AUsername: string): TIAM4DUser;
+    function TryGetUserByUsername(const AUsername: string): TIAM4DUserTryResult;
+    function GetUserByEmail(const AEmail: string): TIAM4DUser;
+    function TryGetUserByEmail(const AEmail: string): TIAM4DUserTryResult;
+    function GetUsersByIDs(const AUserIDs: TArray<string>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DUserGetResult>;
+    procedure UpdateUser(const AUser: TIAM4DUser);
+    function UpdateUsers(const AUsers: TArray<TIAM4DUser>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure DeleteUser(const AUserID: string);
+    function DeleteUsers(const AUserIDs: TArray<string>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    function SearchUsers(const ACriteria: TIAM4DUserSearchCriteria): TArray<TIAM4DUser>;
+    function GetUsersCount: Integer;
+    procedure SetPassword(const AUserID: string; const APassword: string; const ATemporary: Boolean = False);
+    function SetPasswords(const APasswordResets: TArray<TIAM4DPasswordReset>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure SendPasswordResetEmail(const AUserID: string);
+    procedure SendVerifyEmail(const AUserID: string);
+    function GetRealmRoles: TArray<TIAM4DRole>;
+    function GetUserRoles(const AUserID: string): TArray<TIAM4DRole>;
+    procedure AssignRolesToUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
+    function AssignRolesToUsers(const ARoleAssignments: TArray<TIAM4DRoleAssignment>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure RemoveRolesFromUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
+    procedure AssignRoleByName(const AUserID: string; const ARoleName: string);
+    procedure RemoveRoleByName(const AUserID: string; const ARoleName: string);
+    procedure AssignClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
+    procedure RemoveClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
+    function GetGroups: TArray<TIAM4DGroup>;
+    function GetUserGroups(const AUserID: string): TArray<TIAM4DGroup>;
+    procedure AddUserToGroupByPath(const AUserID: string; const AGroupPath: string);
+    procedure RemoveUserFromGroupByPath(const AUserID: string; const AGroupPath: string);
+    procedure LogoutUser(const AUserID: string);
+    function GetUserSessions(const AUserID: string): TArray<TIAM4DUserSession>;
+    function GetUserSessionCount(const AUserID: string): Integer;
+    procedure RevokeUserSession(const AUserID: string; const ASessionID: string);
+    function GetUserFederatedIdentities(const AUserID: string): TArray<TIAM4DFederatedIdentity>;
+    function IsUserFederated(const AUserID: string): Boolean;
+    function GetUserRequiredActions(const AUserID: string): TArray<TIAM4DRequiredAction>;
+    procedure SetUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
+    procedure RemoveUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
+    function IsUserLocked(const AUserID: string): Boolean;
+    procedure UnlockUser(const AUserID: string);
+    procedure DisableUser(const AUserID: string);
+    procedure EnableUser(const AUserID: string);
+    function GetRoleByName(const ARoleName: string): TIAM4DRole;
+    function TryGetRoleByName(const ARoleName: string): TIAM4DRoleTryResult;
+    function HasRole(const AUserID: string; const ARoleName: string): Boolean;
+    function GetUsersWithRole(const ARoleName: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): TArray<TIAM4DUser>;
+    function GetGroupByPath(const APath: string): TIAM4DGroup;
+    function TryGetGroupByPath(const APath: string): TIAM4DGroupTryResult;
+    function IsMemberOfGroup(const AUserID: string; const AGroupPath: string): Boolean;
+    function GetUsersInGroupByPath(const AGroupPath: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): TArray<TIAM4DUser>;
+    function GetClientRolesByName(const AClientName: string): TArray<TIAM4DRole>;
+    function GetUserClientRolesByName(const AUserID: string; const AClientName: string): TArray<TIAM4DRole>;
+    procedure AssignClientRolesToUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>); overload;
+    function AssignClientRolesToUsers(const ARoleAssignments: TArray<TIAM4DRoleAssignment>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
+    procedure RemoveClientRolesFromUserByName(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>);
+    function HasClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string): Boolean;
+    function GetClients: TIAM4DRealmClientArray; overload;
+    function GetClients(const AClientName: string): TIAM4DRealmClient; overload;
+    // Internal helper
+    procedure SetUserEnabledState(const AUserID: string; const AEnabled: Boolean);
 
   public
     /// <summary>
@@ -873,7 +642,6 @@ function TIAM4DKeycloakUserManager.JSONToUser(const AJSON: TJSONObject): TIAM4DU
 var
   LActionsArray: TJSONArray;
   LActionsList: TList<TIAM4DRequiredAction>;
-  I: Integer;
   LActionStr: string;
 begin
   Result.ID := AJSON.GetValue<string>('id', '');
@@ -892,9 +660,9 @@ begin
   begin
     LActionsList := TList<TIAM4DRequiredAction>.Create;
     try
-      for I := 0 to LActionsArray.Count - 1 do
+      for var LIndex := 0 to LActionsArray.Count - 1 do
       begin
-        LActionStr := LActionsArray.Items[I].Value;
+        LActionStr := LActionsArray.Items[LIndex].Value;
         try
           LActionsList.Add(TIAM4DRequiredAction.FromString(LActionStr));
         except
@@ -1158,984 +926,846 @@ begin
       [AOperationName, IAM4D_MAX_BATCH_SIZE, ACount]);
 end;
 
-function TIAM4DKeycloakUserManager.CreateUserAsync(const AUser: TIAM4DUser): IAsyncPromise<string>;
+function TIAM4DKeycloakUserManager.CreateUser(const AUser: TIAM4DUser): string;
+var
+  LUserJSON: TJSONObject;
 begin
-  Result := TAsyncCore.New<string>(
-    function(const AOperation: IAsyncOperation): string
-    var
-      LToken: string;
-      LUserJSON: TJSONObject;
+  Result := ExecuteWithAuth<string>(
+    function(AHTTPClient: THTTPClient): string
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LUserJSON := UserToJSON(AUser, True);
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LUserJSON := UserToJSON(AUser, True);
-        try
-          Result := ExecuteJSONRequestWithLocation(LHTTPClient, GetUsersURL, LUserJSON, 'Create user');
-        finally
-          LUserJSON.Free;
-        end;
+        Result := ExecuteJSONRequestWithLocation(AHTTPClient, GetUsersURL, LUserJSON, 'Create user');
       finally
-        LHTTPClient.Free;
+        LUserJSON.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserAsync(const AUserID: string): IAsyncPromise<TIAM4DUser>;
+function TIAM4DKeycloakUserManager.GetUser(const AUserID: string): TIAM4DUser;
 begin
-  Result := TAsyncCore.New<TIAM4DUser>(
-    function(const AOperation: IAsyncOperation): TIAM4DUser
+  Result := ExecuteWithAuth<TIAM4DUser>(
+    function(AHTTPClient: THTTPClient): TIAM4DUser
     var
-      LToken: string;
       LResponse: IHTTPResponse;
       LJSONValue: TJSONValue;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID));
+      EnsureResponseSuccess(LResponse, 'Get user');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID));
-        EnsureResponseSuccess(LResponse, 'Get user');
-
-        LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
-        try
-          Result := JSONToUser(LJSONValue as TJSONObject);
-        finally
-          LJSONValue.Free;
-        end;
+        Result := JSONToUser(LJSONValue as TJSONObject);
       finally
-        LHTTPClient.Free;
+        LJSONValue.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUser>;
+function TIAM4DKeycloakUserManager.GetUserByUsername(const AUsername: string): TIAM4DUser;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New<TIAM4DUser>(
-    function(const AOperation: IAsyncOperation): TIAM4DUser
+  TIAM4DUserManagementValidator.ValidateUsername(AUsername);
+
+  LURL := GetUsersURL + '?username=' + TNetEncoding.URL.Encode(AUsername) + '&exact=true';
+
+  Result := ExecuteWithAuth<TIAM4DUser>(
+    function(AHTTPClient: THTTPClient): TIAM4DUser
     var
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
     begin
-      TIAM4DUserManagementValidator.ValidateUsername(AUsername);
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get user by username', LURL, IAM4D_HTTP_METHOD_GET);
 
-      LURL := GetUsersURL + '?username=' + TNetEncoding.URL.Encode(AUsername) + '&exact=true';
-
-      Result := ExecuteWithAuth<TIAM4DUser>(
-        function(AHTTPClient: THTTPClient): TIAM4DUser
-        begin
-          LResponse := AHTTPClient.Get(LURL);
-          EnsureResponseSuccess(LResponse, 'Get user by username', LURL, IAM4D_HTTP_METHOD_GET);
-
-          LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
-          try
-            if LJSONArray.Count = 0 then
-              raise EIAM4DUserNotFoundException.Create(AUsername)
-            else
-              Result := JSONToUser(LJSONArray.Items[0] as TJSONObject);
-          finally
-            LJSONArray.Free;
-          end;
-        end);
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
+      try
+        if LJSONArray.Count = 0 then
+          raise EIAM4DUserNotFoundException.Create(AUsername)
+        else
+          Result := JSONToUser(LJSONArray.Items[0] as TJSONObject);
+      finally
+        LJSONArray.Free;
+      end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.TryGetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUserTryResult>;
+function TIAM4DKeycloakUserManager.TryGetUserByUsername(const AUsername: string): TIAM4DUserTryResult;
+var
+  LURL: string;
+  LFound: Boolean;
+  LUser: TIAM4DUser;
 begin
-  Result := TAsyncCore.New<TIAM4DUserTryResult>(
-    function(const AOperation: IAsyncOperation): TIAM4DUserTryResult
+  TIAM4DUserManagementValidator.ValidateUsername(AUsername);
+
+  LURL := GetUsersURL + '?username=' + TNetEncoding.URL.Encode(AUsername) + '&exact=true';
+
+  LFound := False;
+  LUser := Default(TIAM4DUser);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
-      LTryResult: TIAM4DUserTryResult;
     begin
-      TIAM4DUserManagementValidator.ValidateUsername(AUsername);
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Try get user by username', LURL, IAM4D_HTTP_METHOD_GET);
 
-      LURL := GetUsersURL + '?username=' + TNetEncoding.URL.Encode(AUsername) + '&exact=true';
-
-      LTryResult.Found := False;
-      LTryResult.User := Default(TIAM4DUser);
-
-      ExecuteWithAuthVoid(
-        procedure(AHTTPClient: THTTPClient)
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
+      try
+        if LJSONArray.Count > 0 then
         begin
-          LResponse := AHTTPClient.Get(LURL);
-          EnsureResponseSuccess(LResponse, 'Try get user by username', LURL, IAM4D_HTTP_METHOD_GET);
-
-          LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
-          try
-            if LJSONArray.Count > 0 then
-            begin
-              LTryResult.Found := True;
-              LTryResult.User := JSONToUser(LJSONArray.Items[0] as TJSONObject);
-            end;
-          finally
-            LJSONArray.Free;
-          end;
-        end);
-
-      Result := LTryResult;
+          LFound := True;
+          LUser := JSONToUser(LJSONArray.Items[0] as TJSONObject);
+        end;
+      finally
+        LJSONArray.Free;
+      end;
     end);
+
+  Result.Found := LFound;
+  Result.User := LUser;
 end;
 
-function TIAM4DKeycloakUserManager.UpdateUserAsync(const AUser: TIAM4DUser): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.UpdateUser(const AUser: TIAM4DUser);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  TIAM4DUserManagementValidator.ValidateUserID(AUser.ID);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
       LUserJSON: TJSONObject;
     begin
-      TIAM4DUserManagementValidator.ValidateUserID(AUser.ID);
-
-      ExecuteWithAuthVoid(
-        procedure(AHTTPClient: THTTPClient)
-        begin
-          LUserJSON := UserToJSON(AUser, False);
-          try
-            ExecuteJSONRequest(AHTTPClient, GetUserURL(AUser.ID), IAM4D_HTTP_METHOD_PUT, LUserJSON, 'Update user');
-          finally
-            LUserJSON.Free;
-          end;
-        end);
+      LUserJSON := UserToJSON(AUser, False);
+      try
+        ExecuteJSONRequest(AHTTPClient, GetUserURL(AUser.ID), IAM4D_HTTP_METHOD_PUT, LUserJSON, 'Update user');
+      finally
+        LUserJSON.Free;
+      end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.UpdateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
+function TIAM4DKeycloakUserManager.UpdateUsers(const AUsers: TArray<TIAM4DUser>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DOperationResult>;
+var
+  LResults: TArray<TIAM4DOperationResult>;
 begin
-  ValidateBatchSize(Length(AUsers), 'UpdateUsersAsync');
+  ValidateBatchSize(Length(AUsers), 'UpdateUsers');
 
-  Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
+  SetLength(LResults, Length(AUsers));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
+      LIdx: Integer;
       LUserJSON: TJSONObject;
       LUser: TIAM4DUser;
-      LIndex: Integer;
-      LResults: TArray<TIAM4DOperationResult>;
     begin
-      SetLength(LResults, Length(AUsers));
-
-      LToken := GetAccessToken;
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        for LIndex := 0 to High(AUsers) do
+      for LIdx := 0 to High(AUsers) do
+      begin
+        if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
         begin
-          LUser := AUsers[LIndex];
-          LResults[LIndex].Identifier := LUser.Username;
-          LResults[LIndex].Success := False;
-          LResults[LIndex].ErrorMessage := '';
-
-          try
-            if LUser.ID.IsEmpty then
-              raise EIAM4DInvalidConfigurationException.CreateFmt('User %d: ID is required for update', [LIndex + 1]);
-
-            LUserJSON := UserToJSON(LUser, False);
-            try
-              ExecuteJSONRequest(
-                LHTTPClient,
-                GetUserURL(LUser.ID),
-                'PUT',
-                LUserJSON,
-                Format('Update user %d/%d', [LIndex + 1, Length(AUsers)]));
-
-              LResults[LIndex].Success := True;
-            finally
-              LUserJSON.Free;
-            end;
-          except
-            on E: Exception do
-            begin
-              LResults[LIndex].Success := False;
-              LResults[LIndex].ErrorMessage := Format('User %d/%d (%s): %s',
-                [LIndex + 1, Length(AUsers), LUser.Username, E.Message]);
-            end;
+          for var J := LIdx to High(AUsers) do
+          begin
+            LResults[J].Identifier := AUsers[J].Username;
+            LResults[J].Success := False;
+            LResults[J].ErrorMessage := IAM4D_OPERATION_CANCELLED;
           end;
+          Break;
         end;
 
-        Result := LResults;
-      finally
-        LHTTPClient.Free;
-      end;
-    end);
-end;
+        LUser := AUsers[LIdx];
+        LResults[LIdx].Identifier := LUser.Username;
+        LResults[LIdx].Success := False;
+        LResults[LIdx].ErrorMessage := '';
 
-function TIAM4DKeycloakUserManager.DeleteUserAsync(const AUserID: string): IAsyncVoidPromise;
-begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
-    var
-      LToken: string;
-      LResponse: IHTTPResponse;
-    begin
-      LToken := GetAccessToken;
+        try
+          if LUser.ID.IsEmpty then
+            raise EIAM4DInvalidConfigurationException.CreateFmt('User %d: ID is required for update', [LIdx + 1]);
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Delete(GetUserURL(AUserID));
-        EnsureResponseSuccess(LResponse, 'Delete user');
-      finally
-        LHTTPClient.Free;
-      end;
-    end);
-end;
-
-function TIAM4DKeycloakUserManager.CreateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DUsersCreateResult>>;
-begin
-  ValidateBatchSize(Length(AUsers), 'CreateUsersAsync');
-
-  Result := TAsyncCore.New < TArray<TIAM4DUsersCreateResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DUsersCreateResult>
-    var
-      LToken: string;
-      LResults: TArray<TIAM4DUsersCreateResult>;
-      LUserJSON: TJSONObject;
-      LUserID: string;
-      I: Integer;
-    begin
-      SetLength(LResults, Length(AUsers));
-
-      LToken := GetAccessToken;
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        for I := 0 to High(AUsers) do
-        begin
-          LResults[I].Username := AUsers[I].Username;
-          LResults[I].ID := '';
-          LResults[I].ErrorMessage := '';
-
-          LUserJSON := UserToJSON(AUsers[I], True);
+          LUserJSON := UserToJSON(LUser, False);
           try
-            try
-              LUserID := ExecuteJSONRequestWithLocation(
-                LHTTPClient,
-                GetUsersURL,
-                LUserJSON,
-                Format('Create user %d/%d', [I + 1, Length(AUsers)]));
+            ExecuteJSONRequest(
+              AHTTPClient,
+              GetUserURL(LUser.ID),
+              'PUT',
+              LUserJSON,
+              Format('Update user %d/%d', [LIdx + 1, Length(AUsers)]));
 
-              LResults[I].ID := LUserID;
-            except
-              on E: Exception do
-              begin
-                LResults[I].ErrorMessage := Format('User %d/%d (%s): %s',
-                  [I + 1, Length(AUsers), AUsers[I].Username, E.Message]);
-              end;
-            end;
+            LResults[LIdx].Success := True;
           finally
             LUserJSON.Free;
           end;
+        except
+          on E: Exception do
+          begin
+            LResults[LIdx].Success := False;
+            LResults[LIdx].ErrorMessage := Format('User %d/%d (%s): %s',
+              [LIdx + 1, Length(AUsers), LUser.Username, E.Message]);
+          end;
         end;
-
-        Result := LResults;
-      finally
-        LHTTPClient.Free;
       end;
+    end);
+
+  Result := LResults;
+end;
+
+procedure TIAM4DKeycloakUserManager.DeleteUser(const AUserID: string);
+begin
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LResponse: IHTTPResponse;
+    begin
+      LResponse := AHTTPClient.Delete(GetUserURL(AUserID));
+      EnsureResponseSuccess(LResponse, 'Delete user');
     end);
 end;
 
-function TIAM4DKeycloakUserManager.DeleteUsersAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
+function TIAM4DKeycloakUserManager.CreateUsers(const AUsers: TArray<TIAM4DUser>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DUsersCreateResult>;
+var
+  LResults: TArray<TIAM4DUsersCreateResult>;
 begin
-  ValidateBatchSize(Length(AUserIDs), 'DeleteUsersAsync');
+  ValidateBatchSize(Length(AUsers), 'CreateUsers');
 
-  Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
+  SetLength(LResults, Length(AUsers));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
+      LIdx: Integer;
+      LUserJSON: TJSONObject;
+      LUserID: string;
+    begin
+      for LIdx := 0 to High(AUsers) do
+      begin
+        if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
+        begin
+          for var J := LIdx to High(AUsers) do
+          begin
+            LResults[J].Username := AUsers[J].Username;
+            LResults[J].ID := '';
+            LResults[J].ErrorMessage := IAM4D_OPERATION_CANCELLED;
+          end;
+          Break;
+        end;
+
+        LResults[LIdx].Username := AUsers[LIdx].Username;
+        LResults[LIdx].ID := '';
+        LResults[LIdx].ErrorMessage := '';
+
+        LUserJSON := UserToJSON(AUsers[LIdx], True);
+        try
+          try
+            LUserID := ExecuteJSONRequestWithLocation(
+              AHTTPClient,
+              GetUsersURL,
+              LUserJSON,
+              Format('Create user %d/%d', [LIdx + 1, Length(AUsers)]));
+
+            LResults[LIdx].ID := LUserID;
+          except
+            on E: Exception do
+            begin
+              LResults[LIdx].ErrorMessage := Format('User %d/%d (%s): %s',
+                [LIdx + 1, Length(AUsers), AUsers[LIdx].Username, E.Message]);
+            end;
+          end;
+        finally
+          LUserJSON.Free;
+        end;
+      end;
+    end);
+
+  Result := LResults;
+end;
+
+function TIAM4DKeycloakUserManager.DeleteUsers(const AUserIDs: TArray<string>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DOperationResult>;
+var
+  LResults: TArray<TIAM4DOperationResult>;
+begin
+  ValidateBatchSize(Length(AUserIDs), 'DeleteUsers');
+
+  SetLength(LResults, Length(AUserIDs));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LIdx: Integer;
       LResponse: IHTTPResponse;
       LUserID: string;
-      LIndex: Integer;
-      LResults: TArray<TIAM4DOperationResult>;
     begin
-      SetLength(LResults, Length(AUserIDs));
-
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        for LIndex := 0 to High(AUserIDs) do
+      for LIdx := 0 to High(AUserIDs) do
+      begin
+        if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
         begin
-          LUserID := AUserIDs[LIndex];
-          LResults[LIndex].Identifier := LUserID;
-          LResults[LIndex].Success := False;
-          LResults[LIndex].ErrorMessage := '';
-
-          try
-            LResponse := LHTTPClient.Delete(GetUserURL(LUserID));
-            EnsureResponseSuccess(LResponse, Format('Delete user %d/%d', [LIndex + 1, Length(AUserIDs)]));
-            LResults[LIndex].Success := True;
-          except
-            on E: Exception do
-            begin
-              LResults[LIndex].Success := False;
-              LResults[LIndex].ErrorMessage := Format('User %d/%d (ID: %s): %s',
-                [LIndex + 1, Length(AUserIDs), LUserID, E.Message]);
-            end;
+          for var J := LIdx to High(AUserIDs) do
+          begin
+            LResults[J].Identifier := AUserIDs[J];
+            LResults[J].Success := False;
+            LResults[J].ErrorMessage := IAM4D_OPERATION_CANCELLED;
           end;
+          Break;
         end;
 
-        Result := LResults;
-      finally
-        LHTTPClient.Free;
+        LUserID := AUserIDs[LIdx];
+        LResults[LIdx].Identifier := LUserID;
+        LResults[LIdx].Success := False;
+        LResults[LIdx].ErrorMessage := '';
+
+        try
+          LResponse := AHTTPClient.Delete(GetUserURL(LUserID));
+          EnsureResponseSuccess(LResponse, Format('Delete user %d/%d', [LIdx + 1, Length(AUserIDs)]));
+          LResults[LIdx].Success := True;
+        except
+          on E: Exception do
+          begin
+            LResults[LIdx].Success := False;
+            LResults[LIdx].ErrorMessage := Format('User %d/%d (ID: %s): %s',
+              [LIdx + 1, Length(AUserIDs), LUserID, E.Message]);
+          end;
+        end;
       end;
     end);
+
+  Result := LResults;
 end;
 
-function TIAM4DKeycloakUserManager.SearchUsersAsync(
-  const ACriteria: TIAM4DUserSearchCriteria): IAsyncPromise<TArray<TIAM4DUser>>;
+function TIAM4DKeycloakUserManager.SearchUsers(
+  const ACriteria: TIAM4DUserSearchCriteria): TArray<TIAM4DUser>;
+var
+  LURL: string;
+  LParams: TStringList;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DUser> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
-    var
-      LToken: string;
-      LResponse: IHTTPResponse;
-      LURL: string;
-      LParams: TStringList;
-    begin
-      LToken := GetAccessToken;
+  LParams := TStringList.Create;
+  try
+    if not ACriteria.Username.IsEmpty then
+      LParams.Add('username=' + TNetEncoding.URL.Encode(ACriteria.Username));
+    if not ACriteria.Email.IsEmpty then
+      LParams.Add('email=' + TNetEncoding.URL.Encode(ACriteria.Email));
+    if not ACriteria.FirstName.IsEmpty then
+      LParams.Add('firstName=' + TNetEncoding.URL.Encode(ACriteria.FirstName));
+    if not ACriteria.LastName.IsEmpty then
+      LParams.Add('lastName=' + TNetEncoding.URL.Encode(ACriteria.LastName));
+    if not ACriteria.Search.IsEmpty then
+      LParams.Add('search=' + TNetEncoding.URL.Encode(ACriteria.Search));
 
-      LParams := TStringList.Create;
-      try
-        if not ACriteria.Username.IsEmpty then
-          LParams.Add('username=' + TNetEncoding.URL.Encode(ACriteria.Username));
-        if not ACriteria.Email.IsEmpty then
-          LParams.Add('email=' + TNetEncoding.URL.Encode(ACriteria.Email));
-        if not ACriteria.FirstName.IsEmpty then
-          LParams.Add('firstName=' + TNetEncoding.URL.Encode(ACriteria.FirstName));
-        if not ACriteria.LastName.IsEmpty then
-          LParams.Add('lastName=' + TNetEncoding.URL.Encode(ACriteria.LastName));
-        if not ACriteria.Search.IsEmpty then
-          LParams.Add('search=' + TNetEncoding.URL.Encode(ACriteria.Search));
+    LParams.Add('first=' + ACriteria.FirstResult.ToString);
+    LParams.Add('max=' + ACriteria.MaxResults.ToString);
 
-        LParams.Add('first=' + ACriteria.FirstResult.ToString);
-        LParams.Add('max=' + ACriteria.MaxResults.ToString);
+    LURL := GetUsersURL;
+    if LParams.Count > 0 then
+      LURL := LURL + '?' + string.Join('&', LParams.ToStringArray);
 
-        LURL := GetUsersURL;
-        if LParams.Count > 0 then
-          LURL := LURL + '?' + string.Join('&', LParams.ToStringArray);
+    Result := ExecuteWithAuth < TArray<TIAM4DUser> > (
+      function(AHTTPClient: THTTPClient): TArray<TIAM4DUser>
+      var
+        LIdx: Integer;
+        LResponse: IHTTPResponse;
+        LJSONArray: TJSONArray;
+        LUsersList: TList<TIAM4DUser>;
+      begin
+        LResponse := AHTTPClient.Get(LURL);
+        EnsureResponseSuccess(LResponse, 'Search users');
 
-        var LHTTPClient := FAuthProvider.CreateHTTPClient;
+        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
         try
-          LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-          LResponse := LHTTPClient.Get(LURL);
-          EnsureResponseSuccess(LResponse, 'Search users');
-
-          var LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
+          LUsersList := TList<TIAM4DUser>.Create;
           try
-            var LUsersList := TList<TIAM4DUser>.Create;
-            try
-              for var I := 0 to LJSONArray.Count - 1 do
-                if LJSONArray.Items[I] is TJSONObject then
-                  LUsersList.Add(JSONToUser(LJSONArray.Items[I] as TJSONObject));
-              Result := LUsersList.ToArray;
-            finally
-              LUsersList.Free;
-            end;
+            for LIdx := 0 to LJSONArray.Count - 1 do
+              if LJSONArray.Items[LIdx] is TJSONObject then
+                LUsersList.Add(JSONToUser(LJSONArray.Items[LIdx] as TJSONObject));
+            Result := LUsersList.ToArray;
           finally
-            LJSONArray.Free;
+            LUsersList.Free;
           end;
         finally
-          LHTTPClient.Free;
+          LJSONArray.Free;
         end;
-      finally
-        LParams.Free;
-      end;
-    end);
+      end);
+  finally
+    LParams.Free;
+  end;
 end;
 
-function TIAM4DKeycloakUserManager.GetUsersCountAsync: IAsyncPromise<Integer>;
+function TIAM4DKeycloakUserManager.GetUsersCount: Integer;
 begin
-  Result := TAsyncCore.New<Integer>(
-    function(const AOperation: IAsyncOperation): Integer
+  Result := ExecuteWithAuth<Integer>(
+    function(AHTTPClient: THTTPClient): Integer
     var
-      LToken: string;
       LResponse: IHTTPResponse;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUsersURL + '/count');
-        EnsureResponseSuccess(LResponse, 'Get users count');
-        Result := StrToIntDef(LResponse.ContentAsString, 0);
-      finally
-        LHTTPClient.Free;
-      end;
+      LResponse := AHTTPClient.Get(GetUsersURL + '/count');
+      EnsureResponseSuccess(LResponse, 'Get users count');
+      Result := StrToIntDef(LResponse.ContentAsString, 0);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.SetPasswordAsync(
+procedure TIAM4DKeycloakUserManager.SetPassword(
   const AUserID: string;
   const APassword: string;
-  const ATemporary: Boolean): IAsyncVoidPromise;
+  const ATemporary: Boolean);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+  TIAM4DUserManagementValidator.ValidatePassword(APassword);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LPasswordJSON: TJSONObject;
     begin
-      TIAM4DUserManagementValidator.ValidateUserID(AUserID);
-      TIAM4DUserManagementValidator.ValidatePassword(APassword);
-
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LPasswordJSON := TJSONObject.Create;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        LPasswordJSON.AddPair('type', 'password');
+        LPasswordJSON.AddPair('value', APassword);
+        LPasswordJSON.AddPair('temporary', TJSONBool.Create(ATemporary));
 
-        LPasswordJSON := TJSONObject.Create;
-        try
-          LPasswordJSON.AddPair('type', 'password');
-          LPasswordJSON.AddPair('value', APassword);
-          LPasswordJSON.AddPair('temporary', TJSONBool.Create(ATemporary));
-
-          ExecuteJSONRequest(LHTTPClient, GetUserURL(AUserID) + '/reset-password', 'PUT', LPasswordJSON, 'Set password');
-        finally
-          LPasswordJSON.Free;
-        end;
+        ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID) + '/reset-password', 'PUT', LPasswordJSON, 'Set password');
       finally
-        LHTTPClient.Free;
+        LPasswordJSON.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.SetPasswordsAsync(
-  const APasswordResets: TArray<TIAM4DPasswordReset>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
+function TIAM4DKeycloakUserManager.SetPasswords(
+  const APasswordResets: TArray<TIAM4DPasswordReset>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DOperationResult>;
+var
+  LResult: TArray<TIAM4DOperationResult>;
 begin
-  ValidateBatchSize(Length(APasswordResets), 'SetPasswordsAsync');
+  ValidateBatchSize(Length(APasswordResets), 'SetPasswords');
 
-  Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
+  SetLength(LResult, Length(APasswordResets));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LPasswordJSON: TJSONObject;
       LReset: TIAM4DPasswordReset;
-      I: Integer;
-      LResults: TArray<TIAM4DOperationResult>;
     begin
-      SetLength(LResults, Length(APasswordResets));
-
-      LToken := GetAccessToken;
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        for I := 0 to High(APasswordResets) do
+      for var LIndex := 0 to High(APasswordResets) do
+      begin
+        if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
         begin
-          LReset := APasswordResets[I];
-          LResults[I].Identifier := LReset.UserID;
-          LResults[I].Success := False;
-          LResults[I].ErrorMessage := '';
+          for var J := LIndex to High(APasswordResets) do
+          begin
+            LResult[J].Identifier := APasswordResets[J].UserID;
+            LResult[J].Success := False;
+            LResult[J].ErrorMessage := IAM4D_OPERATION_CANCELLED;
+          end;
+          Break;
+        end;
 
+        LReset := APasswordResets[LIndex];
+        LResult[LIndex].Identifier := LReset.UserID;
+        LResult[LIndex].Success := False;
+        LResult[LIndex].ErrorMessage := '';
+
+        try
+          TIAM4DUserManagementValidator.ValidateUserID(LReset.UserID);
+          TIAM4DUserManagementValidator.ValidatePassword(LReset.Password);
+
+          LPasswordJSON := TJSONObject.Create;
           try
-            TIAM4DUserManagementValidator.ValidateUserID(LReset.UserID);
-            TIAM4DUserManagementValidator.ValidatePassword(LReset.Password);
+            LPasswordJSON.AddPair('type', 'password');
+            LPasswordJSON.AddPair('value', LReset.Password);
+            LPasswordJSON.AddPair('temporary', TJSONBool.Create(LReset.Temporary));
 
-            LPasswordJSON := TJSONObject.Create;
-            try
-              LPasswordJSON.AddPair('type', 'password');
-              LPasswordJSON.AddPair('value', LReset.Password);
-              LPasswordJSON.AddPair('temporary', TJSONBool.Create(LReset.Temporary));
+            ExecuteJSONRequest(
+              AHTTPClient,
+              GetUserURL(LReset.UserID) + '/reset-password',
+              IAM4D_HTTP_METHOD_PUT,
+              LPasswordJSON,
+              Format('Set password %d/%d', [LIndex + 1, Length(APasswordResets)]));
 
-              ExecuteJSONRequest(
-                LHTTPClient,
-                GetUserURL(LReset.UserID) + '/reset-password',
-                IAM4D_HTTP_METHOD_PUT,
-                LPasswordJSON,
-                Format('Set password %d/%d', [I + 1, Length(APasswordResets)]));
-
-              LResults[I].Success := True;
-            finally
-              LPasswordJSON.Free;
-            end;
-          except
-            on E: Exception do
-            begin
-              LResults[I].Success := False;
-              LResults[I].ErrorMessage := Format('Password %d/%d (UserID: %s): %s',
-                [I + 1, Length(APasswordResets), LReset.UserID, E.Message]);
-            end;
+            LResult[LIndex].Success := True;
+          finally
+            LPasswordJSON.Free;
+          end;
+        except
+          on E: Exception do
+          begin
+            LResult[LIndex].Success := False;
+            LResult[LIndex].ErrorMessage := Format('Password %d/%d (UserID: %s): %s',
+              [LIndex + 1, Length(APasswordResets), LReset.UserID, E.Message]);
           end;
         end;
-
-        Result := LResults;
-      finally
-        LHTTPClient.Free;
       end;
     end);
+
+  Result := LResult;
 end;
 
-function TIAM4DKeycloakUserManager.SendPasswordResetEmailAsync(const AUserID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.SendPasswordResetEmail(const AUserID: string);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LActions: TJSONArray;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LActions := TJSONArray.Create;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LActions := TJSONArray.Create;
-        try
-          LActions.Add('UPDATE_PASSWORD');
-          ExecuteJSONArrayRequest(LHTTPClient, GetUserURL(AUserID) + '/execute-actions-email', 'PUT', LActions, 'Send password reset email');
-        finally
-          LActions.Free;
-        end;
+        LActions.Add('UPDATE_PASSWORD');
+        ExecuteJSONArrayRequest(AHTTPClient, GetUserURL(AUserID) + '/execute-actions-email', 'PUT', LActions, 'Send password reset email');
       finally
-        LHTTPClient.Free;
+        LActions.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.SendVerifyEmailAsync(const AUserID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.SendVerifyEmail(const AUserID: string);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LContent: TStringStream;
       LResponse: IHTTPResponse;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LContent := TStringStream.Create('', TEncoding.UTF8);
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LContent := TStringStream.Create('', TEncoding.UTF8);
-        try
-          LResponse := LHTTPClient.Put(GetUserURL(AUserID) + '/send-verify-email', LContent);
-          EnsureResponseSuccess(LResponse, 'Send verify email');
-        finally
-          LContent.Free;
-        end;
+        LResponse := AHTTPClient.Put(GetUserURL(AUserID) + '/send-verify-email', LContent);
+        EnsureResponseSuccess(LResponse, 'Send verify email');
       finally
-        LHTTPClient.Free;
+        LContent.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetRealmRolesAsync: IAsyncPromise<TArray<TIAM4DRole>>;
+function TIAM4DKeycloakUserManager.GetRealmRoles: TArray<TIAM4DRole>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DRole> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
+  Result := ExecuteWithAuth < TArray<TIAM4DRole> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DRole>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
+      LJSONArray: TJSONArray;
+      LRolesList: TList<TIAM4DRole>;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetRealmRolesURL);
+      EnsureResponseSuccess(LResponse, 'Get realm roles');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetRealmRolesURL);
-        EnsureResponseSuccess(LResponse, 'Get realm roles');
-
-        var LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
+        LRolesList := TList<TIAM4DRole>.Create;
         try
-          var LRolesList := TList<TIAM4DRole>.Create;
-          try
-            for var I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LRolesList.Add(JSONToRole(LJSONArray.Items[I] as TJSONObject));
-            Result := LRolesList.ToArray;
-          finally
-            LRolesList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LRolesList.ToArray;
         finally
-          LJSONArray.Free;
+          LRolesList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserRolesAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DRole>>;
+function TIAM4DKeycloakUserManager.GetUserRoles(const AUserID: string): TArray<TIAM4DRole>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DRole> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
+  Result := ExecuteWithAuth < TArray<TIAM4DRole> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DRole>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
+      LJSONArray: TJSONArray;
+      LRolesList: TList<TIAM4DRole>;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/role-mappings/realm');
+      EnsureResponseSuccess(LResponse, 'Get user roles');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID) + '/role-mappings/realm');
-        EnsureResponseSuccess(LResponse, 'Get user roles');
-
-        var LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
+        LRolesList := TList<TIAM4DRole>.Create;
         try
-          var LRolesList := TList<TIAM4DRole>.Create;
-          try
-            for var I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LRolesList.Add(JSONToRole(LJSONArray.Items[I] as TJSONObject));
-            Result := LRolesList.ToArray;
-          finally
-            LRolesList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LRolesList.ToArray;
         finally
-          LJSONArray.Free;
+          LRolesList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.AssignRolesToUserAsync(
+procedure TIAM4DKeycloakUserManager.AssignRolesToUser(
   const AUserID: string;
-  const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+  const ARoles: TArray<TIAM4DRole>);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LRolesArray: TJSONArray;
-      LRole: TIAM4DRole;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LRolesArray := TJSONArray.Create;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        for var LRole in ARoles do
+          LRolesArray.Add(RoleToJSON(LRole));
 
-        LRolesArray := TJSONArray.Create;
-        try
-          for LRole in ARoles do
-            LRolesArray.Add(RoleToJSON(LRole));
-
-          ExecuteJSONArrayRequest(LHTTPClient, GetUserURL(AUserID) + '/role-mappings/realm', 'POST', LRolesArray, 'Assign roles to user');
-        finally
-          LRolesArray.Free;
-        end;
+        ExecuteJSONArrayRequest(AHTTPClient, GetUserURL(AUserID) + '/role-mappings/realm', 'POST', LRolesArray, 'Assign roles to user');
       finally
-        LHTTPClient.Free;
+        LRolesArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.AssignRolesToUsersAsync(
-  const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
+function TIAM4DKeycloakUserManager.AssignRolesToUsers(
+  const ARoleAssignments: TArray<TIAM4DRoleAssignment>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DOperationResult>;
+var
+  LResult: TArray<TIAM4DOperationResult>;
 begin
-  ValidateBatchSize(Length(ARoleAssignments), 'AssignRolesToUsersAsync');
+  ValidateBatchSize(Length(ARoleAssignments), 'AssignRolesToUsers');
 
-  Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
+  SetLength(LResult, Length(ARoleAssignments));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LRolesArray: TJSONArray;
-      LRole: TIAM4DRole;
       LAssignment: TIAM4DRoleAssignment;
-      I: Integer;
-      LResults: TArray<TIAM4DOperationResult>;
     begin
-      SetLength(LResults, Length(ARoleAssignments));
-
-      LToken := GetAccessToken;
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        for I := 0 to High(ARoleAssignments) do
+      for var LIndex := 0 to High(ARoleAssignments) do
+      begin
+        if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
         begin
-          LAssignment := ARoleAssignments[I];
-          LResults[I].Identifier := LAssignment.UserID;
-          LResults[I].Success := False;
-          LResults[I].ErrorMessage := '';
-
-          if Length(LAssignment.Roles) = 0 then
+          for var J := LIndex to High(ARoleAssignments) do
           begin
-            LResults[I].Success := True;
-            Continue;
+            LResult[J].Identifier := ARoleAssignments[J].UserID;
+            LResult[J].Success := False;
+            LResult[J].ErrorMessage := IAM4D_OPERATION_CANCELLED;
           end;
-
-          try
-            LRolesArray := TJSONArray.Create;
-            try
-              for LRole in LAssignment.Roles do
-                LRolesArray.Add(RoleToJSON(LRole));
-
-              ExecuteJSONArrayRequest(
-                LHTTPClient,
-                GetUserURL(LAssignment.UserID) + '/role-mappings/realm',
-                'POST',
-                LRolesArray,
-                Format('Assign roles to user %d/%d', [I + 1, Length(ARoleAssignments)]));
-
-              LResults[I].Success := True;
-            finally
-              LRolesArray.Free;
-            end;
-          except
-            on E: Exception do
-            begin
-              LResults[I].Success := False;
-              LResults[I].ErrorMessage := Format('Assignment %d/%d (UserID: %s, %d roles): %s',
-                [I + 1, Length(ARoleAssignments), LAssignment.UserID, Length(LAssignment.Roles), E.Message]);
-            end;
-          end;
+          Break;
         end;
 
-        Result := LResults;
-      finally
-        LHTTPClient.Free;
+        LAssignment := ARoleAssignments[LIndex];
+        LResult[LIndex].Identifier := LAssignment.UserID;
+        LResult[LIndex].Success := False;
+        LResult[LIndex].ErrorMessage := '';
+
+        if Length(LAssignment.Roles) = 0 then
+        begin
+          LResult[LIndex].Success := True;
+          Continue;
+        end;
+
+        try
+          LRolesArray := TJSONArray.Create;
+          try
+            for var LRole in LAssignment.Roles do
+              LRolesArray.Add(RoleToJSON(LRole));
+
+            ExecuteJSONArrayRequest(
+              AHTTPClient,
+              GetUserURL(LAssignment.UserID) + '/role-mappings/realm',
+              'POST',
+              LRolesArray,
+              Format('Assign roles to user %d/%d', [LIndex + 1, Length(ARoleAssignments)]));
+
+            LResult[LIndex].Success := True;
+          finally
+            LRolesArray.Free;
+          end;
+        except
+          on E: Exception do
+          begin
+            LResult[LIndex].Success := False;
+            LResult[LIndex].ErrorMessage := Format('Assignment %d/%d (UserID: %s, %d roles): %s',
+              [LIndex + 1, Length(ARoleAssignments), LAssignment.UserID, Length(LAssignment.Roles), E.Message]);
+          end;
+        end;
       end;
     end);
+
+  Result := LResult;
 end;
 
-function TIAM4DKeycloakUserManager.RemoveRolesFromUserAsync(
+procedure TIAM4DKeycloakUserManager.RemoveRolesFromUser(
   const AUserID: string;
-  const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+  const ARoles: TArray<TIAM4DRole>);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LRolesArray: TJSONArray;
-      LRole: TIAM4DRole;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LRolesArray := TJSONArray.Create;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        for var LRole in ARoles do
+          LRolesArray.Add(RoleToJSON(LRole));
 
-        LRolesArray := TJSONArray.Create;
-        try
-          for LRole in ARoles do
-            LRolesArray.Add(RoleToJSON(LRole));
-
-          ExecuteJSONArrayRequest(LHTTPClient, GetUserURL(AUserID) + '/role-mappings/realm', 'DELETE', LRolesArray, 'Remove roles from user');
-        finally
-          LRolesArray.Free;
-        end;
+        ExecuteJSONArrayRequest(AHTTPClient, GetUserURL(AUserID) + '/role-mappings/realm', 'DELETE', LRolesArray, 'Remove roles from user');
       finally
-        LHTTPClient.Free;
+        LRolesArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.AssignRoleByNameAsync(
+procedure TIAM4DKeycloakUserManager.AssignRoleByName(
   const AUserID: string;
-  const ARoleName: string): IAsyncVoidPromise;
+  const ARoleName: string);
+var
+  LRealmRoles: TArray<TIAM4DRole>;
+  LRole: TIAM4DRole;
+  LFound: Boolean;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
-    var
-      LRealmRoles: TArray<TIAM4DRole>;
-      LRole: TIAM4DRole;
-      LFound: Boolean;
+  LRealmRoles := GetRealmRoles;
+
+  LFound := False;
+  for LRole in LRealmRoles do
+  begin
+    if SameText(LRole.Name, ARoleName) then
     begin
-      LRealmRoles := GetRealmRolesAsync.Run.WaitForResult();
+      LFound := True;
+      Break;
+    end;
+  end;
 
-      LFound := False;
-      for LRole in LRealmRoles do
-      begin
-        if SameText(LRole.Name, ARoleName) then
-        begin
-          LFound := True;
-          Break;
-        end;
-      end;
+  if not LFound then
+    raise EIAM4DException.CreateFmt('Realm role "%s" not found', [ARoleName]);
 
-      if not LFound then
-        raise EIAM4DException.CreateFmt('Realm role "%s" not found', [ARoleName]);
-
-      AssignRolesToUserAsync(AUserID, [LRole]).Run.WaitForCompletion();
-    end);
+  AssignRolesToUser(AUserID, [LRole]);
 end;
 
-function TIAM4DKeycloakUserManager.RemoveRoleByNameAsync(
+procedure TIAM4DKeycloakUserManager.RemoveRoleByName(
   const AUserID: string;
-  const ARoleName: string): IAsyncVoidPromise;
+  const ARoleName: string);
+var
+  LRealmRoles: TArray<TIAM4DRole>;
+  LRole: TIAM4DRole;
+  LFound: Boolean;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
-    var
-      LRealmRoles: TArray<TIAM4DRole>;
-      LRole: TIAM4DRole;
-      LFound: Boolean;
+  LRealmRoles := GetRealmRoles;
+
+  LFound := False;
+  for LRole in LRealmRoles do
+  begin
+    if SameText(LRole.Name, ARoleName) then
     begin
-      LRealmRoles := GetRealmRolesAsync.Run.WaitForResult();
+      LFound := True;
+      Break;
+    end;
+  end;
 
-      LFound := False;
-      for LRole in LRealmRoles do
-      begin
-        if SameText(LRole.Name, ARoleName) then
-        begin
-          LFound := True;
-          Break;
-        end;
-      end;
+  if not LFound then
+    raise EIAM4DException.CreateFmt('Realm role "%s" not found', [ARoleName]);
 
-      if not LFound then
-        raise EIAM4DException.CreateFmt('Realm role "%s" not found', [ARoleName]);
-
-      RemoveRolesFromUserAsync(AUserID, [LRole]).Run.WaitForCompletion();
-    end);
+  RemoveRolesFromUser(AUserID, [LRole]);
 end;
 
-function TIAM4DKeycloakUserManager.AssignClientRoleByNameAsync(
+procedure TIAM4DKeycloakUserManager.AssignClientRoleByName(
   const AUserID: string;
   const AClientName: string;
-  const ARoleName: string): IAsyncVoidPromise;
+  const ARoleName: string);
+var
+  LClientRoles: TArray<TIAM4DRole>;
+  LRole: TIAM4DRole;
+  LFound: Boolean;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
-    var
-      LClientRoles: TArray<TIAM4DRole>;
-      LRole: TIAM4DRole;
-      LFound: Boolean;
+  LClientRoles := GetClientRolesByName(AClientName);
+
+  LFound := False;
+  for LRole in LClientRoles do
+  begin
+    if SameText(LRole.Name, ARoleName) then
     begin
-      LClientRoles := GetClientRolesByNameAsync(AClientName).Run.WaitForResult();
+      LFound := True;
+      Break;
+    end;
+  end;
 
-      LFound := False;
-      for LRole in LClientRoles do
-      begin
-        if SameText(LRole.Name, ARoleName) then
-        begin
-          LFound := True;
-          Break;
-        end;
-      end;
+  if not LFound then
+    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientName]);
 
-      if not LFound then
-        raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientName]);
-
-      AssignClientRolesToUserAsync(AUserID, [LRole]).Run.WaitForCompletion();
-    end);
+  AssignClientRolesToUser(AUserID, [LRole]);
 end;
 
-function TIAM4DKeycloakUserManager.RemoveClientRoleByNameAsync(
+procedure TIAM4DKeycloakUserManager.RemoveClientRoleByName(
   const AUserID: string;
   const AClientName: string;
-  const ARoleName: string): IAsyncVoidPromise;
+  const ARoleName: string);
+var
+  LClientRoles: TArray<TIAM4DRole>;
+  LRole: TIAM4DRole;
+  LFound: Boolean;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
-    var
-      LClientRoles: TArray<TIAM4DRole>;
-      LRole: TIAM4DRole;
-      LFound: Boolean;
+  LClientRoles := GetClientRolesByName(AClientName);
+
+  LFound := False;
+  for LRole in LClientRoles do
+  begin
+    if SameText(LRole.Name, ARoleName) then
     begin
-      LClientRoles := GetClientRolesByNameAsync(AClientName).Run.WaitForResult();
+      LFound := True;
+      Break;
+    end;
+  end;
 
-      LFound := False;
-      for LRole in LClientRoles do
-      begin
-        if SameText(LRole.Name, ARoleName) then
-        begin
-          LFound := True;
-          Break;
-        end;
-      end;
+  if not LFound then
+    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientName]);
 
-      if not LFound then
-        raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientName]);
-
-      RemoveClientRolesFromUserByNameAsync(AUserID, AClientName, [LRole]).Run.WaitForCompletion();
-    end);
+  RemoveClientRolesFromUserByName(AUserID, AClientName, [LRole]);
 end;
 
-function TIAM4DKeycloakUserManager.GetGroupsAsync: IAsyncPromise<TArray<TIAM4DGroup>>;
+function TIAM4DKeycloakUserManager.GetGroups: TArray<TIAM4DGroup>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DGroup> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DGroup>
+  Result := ExecuteWithAuth < TArray<TIAM4DGroup> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DGroup>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
+      LJSONArray: TJSONArray;
+      LGroupsList: TList<TIAM4DGroup>;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetGroupsURL);
+      EnsureResponseSuccess(LResponse, 'Get groups');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetGroupsURL);
-        EnsureResponseSuccess(LResponse, 'Get groups');
-
-        var LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
+        LGroupsList := TList<TIAM4DGroup>.Create;
         try
-          var LGroupsList := TList<TIAM4DGroup>.Create;
-          try
-            for var I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LGroupsList.Add(JSONToGroup(LJSONArray.Items[I] as TJSONObject));
-            Result := LGroupsList.ToArray;
-          finally
-            LGroupsList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LGroupsList.Add(JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LGroupsList.ToArray;
         finally
-          LJSONArray.Free;
+          LGroupsList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserGroupsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DGroup>>;
+function TIAM4DKeycloakUserManager.GetUserGroups(const AUserID: string): TArray<TIAM4DGroup>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DGroup> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DGroup>
+  Result := ExecuteWithAuth < TArray<TIAM4DGroup> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DGroup>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
+      LJSONArray: TJSONArray;
+      LGroupsList: TList<TIAM4DGroup>;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/groups');
+      EnsureResponseSuccess(LResponse, 'Get user groups');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID) + '/groups');
-        EnsureResponseSuccess(LResponse, 'Get user groups');
-
-        var LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
+        LGroupsList := TList<TIAM4DGroup>.Create;
         try
-          var LGroupsList := TList<TIAM4DGroup>.Create;
-          try
-            for var I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LGroupsList.Add(JSONToGroup(LJSONArray.Items[I] as TJSONObject));
-            Result := LGroupsList.ToArray;
-          finally
-            LGroupsList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LGroupsList.Add(JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LGroupsList.ToArray;
         finally
-          LJSONArray.Free;
+          LGroupsList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
@@ -2168,164 +1798,181 @@ begin
   EnsureResponseSuccess(LResponse, 'Remove user from group');
 end;
 
-function TIAM4DKeycloakUserManager.LogoutUserAsync(const AUserID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.LogoutUser(const AUserID: string);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LContent: TStringStream;
       LResponse: IHTTPResponse;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LContent := TStringStream.Create('', TEncoding.UTF8);
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LContent := TStringStream.Create('', TEncoding.UTF8);
-        try
-          LResponse := LHTTPClient.Post(GetUserURL(AUserID) + '/logout', LContent);
-          EnsureResponseSuccess(LResponse, 'Logout user');
-        finally
-          LContent.Free;
-        end;
+        LResponse := AHTTPClient.Post(GetUserURL(AUserID) + '/logout', LContent);
+        EnsureResponseSuccess(LResponse, 'Logout user');
       finally
-        LHTTPClient.Free;
+        LContent.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserFederatedIdentitiesAsync(
-  const AUserID: string): IAsyncPromise<TArray<TIAM4DFederatedIdentity>>;
+function TIAM4DKeycloakUserManager.GetUserFederatedIdentities(
+  const AUserID: string): TArray<TIAM4DFederatedIdentity>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DFederatedIdentity> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DFederatedIdentity>
+  Result := ExecuteWithAuth < TArray<TIAM4DFederatedIdentity> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DFederatedIdentity>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
+      LJSONArray: TJSONArray;
+      LIdentitiesList: TList<TIAM4DFederatedIdentity>;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/federated-identity');
+      EnsureResponseSuccess(LResponse, 'Get user federated identities');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'federated identities array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID) + '/federated-identity');
-        EnsureResponseSuccess(LResponse, 'Get user federated identities');
-
-        var LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'federated identities array response');
+        LIdentitiesList := TList<TIAM4DFederatedIdentity>.Create;
         try
-          var LIdentitiesList := TList<TIAM4DFederatedIdentity>.Create;
-          try
-            for var I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LIdentitiesList.Add(JSONToFederatedIdentity(LJSONArray.Items[I] as TJSONObject));
-            Result := LIdentitiesList.ToArray;
-          finally
-            LIdentitiesList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LIdentitiesList.Add(JSONToFederatedIdentity(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LIdentitiesList.ToArray;
         finally
-          LJSONArray.Free;
+          LIdentitiesList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.IsUserFederatedAsync(const AUserID: string): IAsyncPromise<Boolean>;
+function TIAM4DKeycloakUserManager.IsUserFederated(const AUserID: string): Boolean;
 begin
-  Result := TAsyncCore.New<Boolean>(
-    function(const AOperation: IAsyncOperation): Boolean
+  Result := ExecuteWithAuth<Boolean>(
+    function(AHTTPClient: THTTPClient): Boolean
     var
-      LToken: string;
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/federated-identity');
+      EnsureResponseSuccess(LResponse, 'Check if user is federated');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID) + '/federated-identity');
-        EnsureResponseSuccess(LResponse, 'Check if user is federated');
-
-        if TIAM4DJSONUtils.TryParseJSONArray(LResponse.ContentAsString, LJSONArray) then
-          try
-            Result := LJSONArray.Count > 0;
-          finally
-            LJSONArray.Free;
-          end
-        else
-          Result := False;
-      finally
-        LHTTPClient.Free;
-      end;
+      if TIAM4DJSONUtils.TryParseJSONArray(LResponse.ContentAsString, LJSONArray) then
+        try
+          Result := LJSONArray.Count > 0;
+        finally
+          LJSONArray.Free;
+        end
+      else
+        Result := False;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserRequiredActionsAsync(
-  const AUserID: string): IAsyncPromise<TArray<TIAM4DRequiredAction>>;
+function TIAM4DKeycloakUserManager.GetUserRequiredActions(
+  const AUserID: string): TArray<TIAM4DRequiredAction>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DRequiredAction> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DRequiredAction>
+  Result := ExecuteWithAuth < TArray<TIAM4DRequiredAction> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DRequiredAction>
     var
       LUser: TIAM4DUser;
-      LToken: string;
       LResponse: IHTTPResponse;
       LJSONValue: TJSONValue;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID));
+      EnsureResponseSuccess(LResponse, 'Get user required actions');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID));
-        EnsureResponseSuccess(LResponse, 'Get user required actions');
-
-        LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
-        try
-          LUser := JSONToUser(LJSONValue as TJSONObject);
-          Result := LUser.RequiredActions;
-        finally
-          LJSONValue.Free;
-        end;
+        LUser := JSONToUser(LJSONValue as TJSONObject);
+        Result := LUser.RequiredActions;
       finally
-        LHTTPClient.Free;
+        LJSONValue.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.SetUserRequiredActionsAsync(
+procedure TIAM4DKeycloakUserManager.SetUserRequiredActions(
   const AUserID: string;
-  const AActions: TArray<TIAM4DRequiredAction>): IAsyncVoidPromise;
+  const AActions: TArray<TIAM4DRequiredAction>);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LActionsArray: TJSONArray;
-      LAction: TIAM4DRequiredAction;
       LUpdateJSON: TJSONObject;
     begin
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LActionsArray := TJSONArray.Create;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        for var LAction in AActions do
+          LActionsArray.Add(LAction.ToString);
+
+        LUpdateJSON := TJSONObject.Create;
+        try
+          LUpdateJSON.AddPair('requiredActions', LActionsArray);
+          ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Set user required actions');
+        finally
+          LUpdateJSON.Free;
+        end;
+      finally
+        LActionsArray.Free;
+      end;
+    end);
+end;
+
+procedure TIAM4DKeycloakUserManager.RemoveUserRequiredActions(
+  const AUserID: string;
+  const AActions: TArray<TIAM4DRequiredAction>);
+begin
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LResponse: IHTTPResponse;
+      LJSONValue: TJSONValue;
+      LUser: TIAM4DUser;
+      LCurrentActions: TArray<TIAM4DRequiredAction>;
+      LNewActions: TList<TIAM4DRequiredAction>;
+      LShouldRemove: Boolean;
+      LActionsArray: TJSONArray;
+      LUpdateJSON: TJSONObject;
+    begin
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID));
+      EnsureResponseSuccess(LResponse, 'Get user for removing required actions');
+
+      LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
+      try
+        LUser := JSONToUser(LJSONValue as TJSONObject);
+        LCurrentActions := LUser.RequiredActions;
+      finally
+        LJSONValue.Free;
+      end;
+
+      LNewActions := TList<TIAM4DRequiredAction>.Create;
+      try
+        for var LCurrentAction in LCurrentActions do
+        begin
+          LShouldRemove := False;
+          for var LActionToRemove in AActions do
+          begin
+            if LCurrentAction = LActionToRemove then
+            begin
+              LShouldRemove := True;
+              Break;
+            end;
+          end;
+
+          if not LShouldRemove then
+            LNewActions.Add(LCurrentAction);
+        end;
 
         LActionsArray := TJSONArray.Create;
         try
-          for LAction in AActions do
-            LActionsArray.Add(LAction.ToString);
+          for var LCurrentAction in LNewActions.ToArray do
+            LActionsArray.Add(LCurrentAction.ToString);
 
           LUpdateJSON := TJSONObject.Create;
           try
             LUpdateJSON.AddPair('requiredActions', LActionsArray);
-            ExecuteJSONRequest(LHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Set user required actions');
+            ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Remove user required actions');
           finally
             LUpdateJSON.Free;
           end;
@@ -2333,305 +1980,203 @@ begin
           LActionsArray.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LNewActions.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.RemoveUserRequiredActionsAsync(
-  const AUserID: string;
-  const AActions: TArray<TIAM4DRequiredAction>): IAsyncVoidPromise;
+function TIAM4DKeycloakUserManager.GetUserByEmail(const AEmail: string): TIAM4DUser;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  TIAM4DUserManagementValidator.ValidateEmail(AEmail);
+
+  LURL := GetUsersURL + '?email=' + TNetEncoding.URL.Encode(AEmail) + '&exact=true';
+
+  Result := ExecuteWithAuth<TIAM4DUser>(
+    function(AHTTPClient: THTTPClient): TIAM4DUser
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LJSONValue: TJSONValue;
-      LUser: TIAM4DUser;
-      LCurrentActions: TArray<TIAM4DRequiredAction>;
-      LNewActions: TList<TIAM4DRequiredAction>;
-      LCurrentAction: TIAM4DRequiredAction;
-      LActionToRemove: TIAM4DRequiredAction;
-      LShouldRemove: Boolean;
-      LActionsArray: TJSONArray;
-      LUpdateJSON: TJSONObject;
-      LHTTPClient: THTTPClient;
+      LURL: string;
+      LJSONArray: TJSONArray;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get user by email');
 
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        if LJSONArray.Count = 0 then
+          raise EIAM4DUserNotFoundException.Create(AEmail)
+        else
+          Result := JSONToUser(LJSONArray.Items[0] as TJSONObject);
+      finally
+        LJSONArray.Free;
+      end;
+    end);
+end;
 
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID));
-        EnsureResponseSuccess(LResponse, 'Get user for removing required actions');
+function TIAM4DKeycloakUserManager.TryGetUserByEmail(const AEmail: string): TIAM4DUserTryResult;
+var
+  LURL: string;
+  LResult: TIAM4DUserTryResult;
+begin
+  TIAM4DUserManagementValidator.ValidateEmail(AEmail);
 
-        LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
-        try
-          LUser := JSONToUser(LJSONValue as TJSONObject);
-          LCurrentActions := LUser.RequiredActions;
-        finally
-          LJSONValue.Free;
+  LURL := GetUsersURL + '?email=' + TNetEncoding.URL.Encode(AEmail) + '&exact=true';
+
+  LResult.Found := False;
+  LResult.User := Default(TIAM4DUser);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LResponse: IHTTPResponse;
+      LURL: string;
+      LJSONArray: TJSONArray;
+      LResult: TIAM4DUserTryResult;
+    begin
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Try get user by email');
+
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
+      try
+        if LJSONArray.Count > 0 then
+        begin
+          LResult.Found := True;
+          LResult.User := JSONToUser(LJSONArray.Items[0] as TJSONObject);
         end;
+      finally
+        LJSONArray.Free;
+      end;
+    end);
 
-        LNewActions := TList<TIAM4DRequiredAction>.Create;
-        try
-          for LCurrentAction in LCurrentActions do
+  Result := LResult;
+end;
+
+function TIAM4DKeycloakUserManager.GetUsersByIDs(const AUserIDs: TArray<string>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DUserGetResult>;
+var
+  LResults: TList<TIAM4DUserGetResult>;
+begin
+  ValidateBatchSize(Length(AUserIDs), 'GetUsersByIDs');
+
+  LResults := TList<TIAM4DUserGetResult>.Create;
+  try
+    ExecuteWithAuthVoid(
+      procedure(AHTTPClient: THTTPClient)
+      var
+        LResponse: IHTTPResponse;
+        LJSONValue: TJSONValue;
+        LUserID: string;
+        LResult: TIAM4DUserGetResult;
+      begin
+        for var LIndex := 0 to High(AUserIDs) do
+        begin
+          if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
           begin
-            LShouldRemove := False;
-            for LActionToRemove in AActions do
+            for var J := LIndex to High(AUserIDs) do
             begin
-              if LCurrentAction = LActionToRemove then
-              begin
-                LShouldRemove := True;
-                Break;
-              end;
+              var LCancelledResult: TIAM4DUserGetResult;
+              LCancelledResult.UserID := AUserIDs[J];
+              LCancelledResult.ErrorMessage := IAM4D_OPERATION_CANCELLED;
+              LCancelledResult.User := TIAM4DUser.Create(IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, False);
+              LCancelledResult.User.ID := IAM4D_EMPTY_USER_ID;
+              LResults.Add(LCancelledResult);
             end;
-
-            if not LShouldRemove then
-              LNewActions.Add(LCurrentAction);
+            Break;
           end;
 
-          LActionsArray := TJSONArray.Create;
+          LUserID := AUserIDs[LIndex];
+          LResult.UserID := LUserID;
+          LResult.ErrorMessage := '';
+          LResult.User := TIAM4DUser.Create(IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, False);
+          LResult.User.ID := IAM4D_EMPTY_USER_ID;
+
           try
-            for LCurrentAction in LNewActions.ToArray do
-              LActionsArray.Add(LCurrentAction.ToString);
+            LResponse := AHTTPClient.Get(GetUserURL(LUserID));
 
-            LUpdateJSON := TJSONObject.Create;
-            try
-              LUpdateJSON.AddPair('requiredActions', LActionsArray);
-              ExecuteJSONRequest(LHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Remove user required actions');
-            finally
-              LUpdateJSON.Free;
-            end;
-          finally
-            LActionsArray.Free;
-          end;
-        finally
-          LNewActions.Free;
-        end;
-      finally
-        LHTTPClient.Free;
-      end;
-    end);
-end;
-
-function TIAM4DKeycloakUserManager.GetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUser>;
-begin
-  Result := TAsyncCore.New<TIAM4DUser>(
-    function(const AOperation: IAsyncOperation): TIAM4DUser
-    var
-      LToken: string;
-      LResponse: IHTTPResponse;
-      LURL: string;
-      LJSONArray: TJSONArray;
-    begin
-      TIAM4DUserManagementValidator.ValidateEmail(AEmail);
-
-      LToken := GetAccessToken;
-
-      LURL := GetUsersURL + '?email=' + TNetEncoding.URL.Encode(AEmail) + '&exact=true';
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get user by email');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
-        try
-          if LJSONArray.Count = 0 then
-            raise EIAM4DUserNotFoundException.Create(AEmail)
-          else
-            Result := JSONToUser(LJSONArray.Items[0] as TJSONObject);
-        finally
-          LJSONArray.Free;
-        end;
-      finally
-        LHTTPClient.Free;
-      end;
-    end);
-end;
-
-function TIAM4DKeycloakUserManager.TryGetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUserTryResult>;
-begin
-  Result := TAsyncCore.New<TIAM4DUserTryResult>(
-    function(const AOperation: IAsyncOperation): TIAM4DUserTryResult
-    var
-      LToken: string;
-      LResponse: IHTTPResponse;
-      LURL: string;
-      LJSONArray: TJSONArray;
-    begin
-      TIAM4DUserManagementValidator.ValidateEmail(AEmail);
-
-      LToken := GetAccessToken;
-      LURL := GetUsersURL + '?email=' + TNetEncoding.URL.Encode(AEmail) + '&exact=true';
-
-      Result.Found := False;
-      Result.User := Default(TIAM4DUser);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Try get user by email');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
-        try
-          if LJSONArray.Count > 0 then
-          begin
-            Result.Found := True;
-            Result.User := JSONToUser(LJSONArray.Items[0] as TJSONObject);
-          end;
-        finally
-          LJSONArray.Free;
-        end;
-      finally
-        LHTTPClient.Free;
-      end;
-    end);
-end;
-
-function TIAM4DKeycloakUserManager.GetUsersByIDsAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DUserGetResult>>;
-begin
-  ValidateBatchSize(Length(AUserIDs), 'GetUsersByIDsAsync');
-
-  Result := TAsyncCore.New < TArray<TIAM4DUserGetResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DUserGetResult>
-    var
-      LToken: string;
-      LResponse: IHTTPResponse;
-      LJSONValue: TJSONValue;
-      LUserID: string;
-      LResults: TList<TIAM4DUserGetResult>;
-      LResult: TIAM4DUserGetResult;
-      I: Integer;
-    begin
-
-      LToken := GetAccessToken;
-      LResults := TList<TIAM4DUserGetResult>.Create;
-      try
-        var LHTTPClient := FAuthProvider.CreateHTTPClient;
-        try
-          LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-          for I := 0 to High(AUserIDs) do
-          begin
-            LUserID := AUserIDs[I];
-            LResult.UserID := LUserID;
-            LResult.ErrorMessage := '';
-            LResult.User := TIAM4DUser.Create(IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, IAM4D_EMPTY_USER_ID, False);
-            LResult.User.ID := IAM4D_EMPTY_USER_ID;
-
-            try
-              LResponse := LHTTPClient.Get(GetUserURL(LUserID));
-
-              if LResponse.StatusCode = IAM4D_HTTP_STATUS_OK then
-              begin
-                LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
-                try
-                  LResult.User := JSONToUser(LJSONValue as TJSONObject);
-                finally
-                  LJSONValue.Free;
-                end;
-              end
-              else if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
-              begin
-                LResult.ErrorMessage := Format('User not found: %s', [LUserID]);
-              end
-              else
-              begin
-                LResult.ErrorMessage := Format('HTTP %d: %s', [LResponse.StatusCode, LResponse.StatusText]);
+            if LResponse.StatusCode = IAM4D_HTTP_STATUS_OK then
+            begin
+              LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
+              try
+                LResult.User := JSONToUser(LJSONValue as TJSONObject);
+              finally
+                LJSONValue.Free;
               end;
-            except
-              on E: Exception do
-              begin
-                LResult.ErrorMessage := Format('%s: %s', [E.ClassName, E.Message]);
-              end;
+            end
+            else if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
+            begin
+              LResult.ErrorMessage := Format('User not found: %s', [LUserID]);
+            end
+            else
+            begin
+              LResult.ErrorMessage := Format('HTTP %d: %s', [LResponse.StatusCode, LResponse.StatusText]);
             end;
-
-            LResults.Add(LResult);
+          except
+            on E: Exception do
+            begin
+              LResult.ErrorMessage := Format('%s: %s', [E.ClassName, E.Message]);
+            end;
           end;
 
-          Result := LResults.ToArray;
-        finally
-          LHTTPClient.Free;
+          LResults.Add(LResult);
         end;
-      finally
-        LResults.Free;
-      end;
-    end);
+      end);
+
+    Result := LResults.ToArray;
+  finally
+    LResults.Free;
+  end;
 end;
 
-function TIAM4DKeycloakUserManager.IsUserLockedAsync(const AUserID: string): IAsyncPromise<Boolean>;
+function TIAM4DKeycloakUserManager.IsUserLocked(const AUserID: string): Boolean;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New<Boolean>(
-    function(const AOperation: IAsyncOperation): Boolean
+  LURL := GetAdminURL + '/attack-detection/brute-force/users/' + TNetEncoding.URL.Encode(AUserID);
+
+  Result := ExecuteWithAuth<Boolean>(
+    function(AHTTPClient: THTTPClient): Boolean
     var
-      LToken: string;
       LResponse: IHTTPResponse;
       LURL: string;
       LJSONValue: TJSONValue;
       LJSONObj: TJSONObject;
     begin
-      LToken := GetAccessToken;
-
-      LURL := GetAdminURL + '/attack-detection/brute-force/users/' + TNetEncoding.URL.Encode(AUserID);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        LResponse := AHTTPClient.Get(LURL);
 
-        try
-          LResponse := LHTTPClient.Get(LURL);
-
-          if LResponse.StatusCode = IAM4D_HTTP_STATUS_OK then
-          begin
-            LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'brute force status response');
-            try
-              LJSONObj := LJSONValue as TJSONObject;
-              Result := LJSONObj.GetValue<Boolean>('disabled', False);
-            finally
-              LJSONValue.Free;
-            end;
-          end
-          else
-            Result := False;
-        except
+        if LResponse.StatusCode = IAM4D_HTTP_STATUS_OK then
+        begin
+          LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'brute force status response');
+          try
+            LJSONObj := LJSONValue as TJSONObject;
+            Result := LJSONObj.GetValue<Boolean>('disabled', False);
+          finally
+            LJSONValue.Free;
+          end;
+        end
+        else
           Result := False;
-        end;
-      finally
-        LHTTPClient.Free;
+      except
+        Result := False;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.UnlockUserAsync(const AUserID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.UnlockUser(const AUserID: string);
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  LURL := GetAdminURL + '/attack-detection/brute-force/users/' + TNetEncoding.URL.Encode(AUserID);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
     begin
-      LToken := GetAccessToken;
-
-      LURL := GetAdminURL + '/attack-detection/brute-force/users/' + TNetEncoding.URL.Encode(AUserID);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Delete(LURL);
-        EnsureResponseSuccess(LResponse, 'Unlock user');
-      finally
-        LHTTPClient.Free;
-      end;
+      LResponse := AHTTPClient.Delete(LURL);
+      EnsureResponseSuccess(LResponse, 'Unlock user');
     end);
 end;
 
@@ -2662,476 +2207,378 @@ begin
     Result.Clients := nil;
 end;
 
-function TIAM4DKeycloakUserManager.GetUserSessionsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DUserSession>>;
+function TIAM4DKeycloakUserManager.GetUserSessions(const AUserID: string): TArray<TIAM4DUserSession>;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DUserSession> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DUserSession>
+  LURL := GetUserURL(AUserID) + '/sessions';
+
+  Result := ExecuteWithAuth < TArray<TIAM4DUserSession> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DUserSession>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
       LSessionsList: TList<TIAM4DUserSession>;
-      I: Integer;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get user sessions');
 
-      LURL := GetUserURL(AUserID) + '/sessions';
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'sessions array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get user sessions');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'sessions array response');
+        LSessionsList := TList<TIAM4DUserSession>.Create;
         try
-          LSessionsList := TList<TIAM4DUserSession>.Create;
-          try
-            for I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LSessionsList.Add(JSONToUserSession(LJSONArray.Items[I] as TJSONObject));
-            Result := LSessionsList.ToArray;
-          finally
-            LSessionsList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LSessionsList.Add(JSONToUserSession(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LSessionsList.ToArray;
         finally
-          LJSONArray.Free;
+          LSessionsList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserSessionCountAsync(const AUserID: string): IAsyncPromise<Integer>;
+function TIAM4DKeycloakUserManager.GetUserSessionCount(const AUserID: string): Integer;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New<Integer>(
-    function(const AOperation: IAsyncOperation): Integer
+  LURL := GetUserURL(AUserID) + '/sessions';
+
+  Result := ExecuteWithAuth<Integer>(
+    function(AHTTPClient: THTTPClient): Integer
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
     begin
-      LToken := GetAccessToken;
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get user session count');
 
-      LURL := GetUserURL(AUserID) + '/sessions';
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'sessions array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get user session count');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'sessions array response');
-        try
-          Result := LJSONArray.Count;
-        finally
-          LJSONArray.Free;
-        end;
+        Result := LJSONArray.Count;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.RevokeUserSessionAsync(const AUserID: string; const ASessionID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.RevokeUserSession(const AUserID: string; const ASessionID: string);
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+  TIAM4DUserManagementValidator.ValidateSessionID(ASessionID);
+
+  LURL := GetAdminURL + '/sessions/' + TNetEncoding.URL.Encode(ASessionID);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
     begin
-      TIAM4DUserManagementValidator.ValidateUserID(AUserID);
-      TIAM4DUserManagementValidator.ValidateSessionID(ASessionID);
-
-      LToken := GetAccessToken;
-
-      LURL := GetAdminURL + '/sessions/' + TNetEncoding.URL.Encode(ASessionID);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Delete(LURL);
-        EnsureResponseSuccess(LResponse, 'Revoke user session');
-      finally
-        LHTTPClient.Free;
-      end;
+      LResponse := AHTTPClient.Delete(LURL);
+      EnsureResponseSuccess(LResponse, 'Revoke user session');
     end);
 end;
 
-function TIAM4DKeycloakUserManager.SetUserEnabledStateAsync(const AUserID: string; const AEnabled: Boolean): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.SetUserEnabledState(const AUserID: string; const AEnabled: Boolean);
+var
+  LContext: string;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+
+  LContext := IfThen(AEnabled, 'Enable user', 'Disable user');
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LUpdateJSON: TJSONObject;
-      LContext: string;
     begin
-      TIAM4DUserManagementValidator.ValidateUserID(AUserID);
-
-      LToken := GetAccessToken;
-      LContext := IfThen(AEnabled, 'Enable user', 'Disable user');
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LUpdateJSON := TJSONObject.Create;
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LUpdateJSON := TJSONObject.Create;
-        try
-          LUpdateJSON.AddPair('enabled', TJSONBool.Create(AEnabled));
-          ExecuteJSONRequest(LHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, LContext);
-        finally
-          LUpdateJSON.Free;
-        end;
+        LUpdateJSON.AddPair('enabled', TJSONBool.Create(AEnabled));
+        ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, LContext);
       finally
-        LHTTPClient.Free;
+        LUpdateJSON.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.DisableUserAsync(const AUserID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.DisableUser(const AUserID: string);
 begin
-  Result := SetUserEnabledStateAsync(AUserID, False);
+  SetUserEnabledState(AUserID, False);
 end;
 
-function TIAM4DKeycloakUserManager.EnableUserAsync(const AUserID: string): IAsyncVoidPromise;
+procedure TIAM4DKeycloakUserManager.EnableUser(const AUserID: string);
 begin
-  Result := SetUserEnabledStateAsync(AUserID, True);
+  SetUserEnabledState(AUserID, True);
 end;
 
-function TIAM4DKeycloakUserManager.GetRoleByNameAsync(const ARoleName: string): IAsyncPromise<TIAM4DRole>;
+function TIAM4DKeycloakUserManager.GetRoleByName(const ARoleName: string): TIAM4DRole;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New<TIAM4DRole>(
-    function(const AOperation: IAsyncOperation): TIAM4DRole
+  TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+
+  LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName);
+
+  Result := ExecuteWithAuth<TIAM4DRole>(
+    function(AHTTPClient: THTTPClient): TIAM4DRole
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONValue: TJSONValue;
     begin
-      TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+      LResponse := AHTTPClient.Get(LURL);
 
-      LToken := GetAccessToken;
+      if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
+        raise EIAM4DRoleNotFoundException.Create(ARoleName);
 
-      LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      EnsureResponseSuccess(LResponse, 'Get role by name');
+      LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'role response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        Result := JSONToRole(LJSONValue as TJSONObject);
+      finally
+        LJSONValue.Free;
+      end;
+    end);
+end;
 
-        LResponse := LHTTPClient.Get(LURL);
+function TIAM4DKeycloakUserManager.TryGetRoleByName(const ARoleName: string): TIAM4DRoleTryResult;
+var
+  LURL: string;
+  LResult: TIAM4DRoleTryResult;
+begin
+  TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
 
-        if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
-          raise EIAM4DRoleNotFoundException.Create(ARoleName);
+  LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName);
 
-        EnsureResponseSuccess(LResponse, 'Get role by name');
+  LResult.Found := False;
+  LResult.Role := Default(TIAM4DRole);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LResponse: IHTTPResponse;
+      LJSONValue: TJSONValue;
+    begin
+      LResponse := AHTTPClient.Get(LURL);
+
+      if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
+      begin
+        LResult.Found := False;
+      end
+      else
+      begin
+        EnsureResponseSuccess(LResponse, 'Try get role by name');
         LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'role response');
         try
-          Result := JSONToRole(LJSONValue as TJSONObject);
+          LResult.Found := True;
+          LResult.Role := JSONToRole(LJSONValue as TJSONObject);
         finally
           LJSONValue.Free;
         end;
-      finally
-        LHTTPClient.Free;
       end;
     end);
+
+  Result := LResult;
 end;
 
-function TIAM4DKeycloakUserManager.TryGetRoleByNameAsync(const ARoleName: string): IAsyncPromise<TIAM4DRoleTryResult>;
+function TIAM4DKeycloakUserManager.HasRole(const AUserID: string; const ARoleName: string): Boolean;
 begin
-  Result := TAsyncCore.New<TIAM4DRoleTryResult>(
-    function(const AOperation: IAsyncOperation): TIAM4DRoleTryResult
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+  TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+
+  Result := ExecuteWithAuth<Boolean>(
+    function(AHTTPClient: THTTPClient): Boolean
     var
-      LToken: string;
-      LResponse: IHTTPResponse;
-      LURL: string;
-      LJSONValue: TJSONValue;
-    begin
-      TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
-
-      LToken := GetAccessToken;
-      LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName);
-
-      Result.Found := False;
-      Result.Role := Default(TIAM4DRole);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-
-        if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
-        begin
-          Result.Found := False;
-        end
-        else
-        begin
-          EnsureResponseSuccess(LResponse, 'Try get role by name');
-          LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'role response');
-          try
-            Result.Found := True;
-            Result.Role := JSONToRole(LJSONValue as TJSONObject);
-          finally
-            LJSONValue.Free;
-          end;
-        end;
-      finally
-        LHTTPClient.Free;
-      end;
-    end);
-end;
-
-function TIAM4DKeycloakUserManager.HasRoleAsync(const AUserID: string; const ARoleName: string): IAsyncPromise<Boolean>;
-begin
-  Result := TAsyncCore.New<Boolean>(
-    function(const AOperation: IAsyncOperation): Boolean
-    var
-      LToken: string;
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
-      I: Integer;
       LRoleName: string;
     begin
-      TIAM4DUserManagementValidator.ValidateUserID(AUserID);
-      TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/role-mappings/realm');
+      EnsureResponseSuccess(LResponse, 'Get user roles for HasRole check');
 
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID) + '/role-mappings/realm');
-        EnsureResponseSuccess(LResponse, 'Get user roles for HasRole check');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
-        try
-          Result := False;
-          for I := 0 to LJSONArray.Count - 1 do
+        Result := False;
+        for var LIndex := 0 to LJSONArray.Count - 1 do
+        begin
+          if LJSONArray.Items[LIndex] is TJSONObject then
           begin
-            if LJSONArray.Items[I] is TJSONObject then
+            LRoleName := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('name', '');
+            if SameText(LRoleName, ARoleName) then
             begin
-              LRoleName := (LJSONArray.Items[I] as TJSONObject).GetValue<string>('name', '');
-              if SameText(LRoleName, ARoleName) then
-              begin
-                Result := True;
-                Break;
-              end;
+              Result := True;
+              Break;
             end;
           end;
-        finally
-          LJSONArray.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUsersWithRoleAsync(const ARoleName: string; const AFirstResult: Integer; const AMaxResults: Integer): IAsyncPromise<TArray<TIAM4DUser>>;
+function TIAM4DKeycloakUserManager.GetUsersWithRole(const ARoleName: string; const AFirstResult: Integer; const AMaxResults: Integer): TArray<TIAM4DUser>;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DUser> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
+  TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+
+  LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName) + '/users';
+  LURL := LURL + '?first=' + AFirstResult.ToString + '&max=' + AMaxResults.ToString;
+
+  Result := ExecuteWithAuth < TArray<TIAM4DUser> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DUser>
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
       LUsersList: TList<TIAM4DUser>;
-      I: Integer;
     begin
-      TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get users with role');
 
-      LToken := GetAccessToken;
-
-      LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName) + '/users';
-      LURL := LURL + '?first=' + AFirstResult.ToString + '&max=' + AMaxResults.ToString;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get users with role');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
+        LUsersList := TList<TIAM4DUser>.Create;
         try
-          LUsersList := TList<TIAM4DUser>.Create;
-          try
-            for I := 0 to LJSONArray.Count - 1 do
-              if LJSONArray.Items[I] is TJSONObject then
-                LUsersList.Add(JSONToUser(LJSONArray.Items[I] as TJSONObject));
-            Result := LUsersList.ToArray;
-          finally
-            LUsersList.Free;
-          end;
+          for var LIndex := 0 to LJSONArray.Count - 1 do
+            if LJSONArray.Items[LIndex] is TJSONObject then
+              LUsersList.Add(JSONToUser(LJSONArray.Items[LIndex] as TJSONObject));
+          Result := LUsersList.ToArray;
         finally
-          LJSONArray.Free;
+          LUsersList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetGroupByPathAsync(const APath: string): IAsyncPromise<TIAM4DGroup>;
+function TIAM4DKeycloakUserManager.GetGroupByPath(const APath: string): TIAM4DGroup;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New<TIAM4DGroup>(
-    function(const AOperation: IAsyncOperation): TIAM4DGroup
+  if APath.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('Group path cannot be empty');
+
+  LURL := GetGroupsURL;
+
+  Result := ExecuteWithAuth<TIAM4DGroup>(
+    function(AHTTPClient: THTTPClient): TIAM4DGroup
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
-      I: Integer;
       LGroupPath: string;
     begin
-      if APath.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('Group path cannot be empty');
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get groups for path search');
 
-      LToken := GetAccessToken;
-
-      LURL := GetGroupsURL;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        Result.ID := IAM4D_EMPTY_USER_ID;
 
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get groups for path search');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
-        try
-          Result.ID := IAM4D_EMPTY_USER_ID;
-
-          for I := 0 to LJSONArray.Count - 1 do
+        for var LIndex := 0 to LJSONArray.Count - 1 do
+        begin
+          if LJSONArray.Items[LIndex] is TJSONObject then
           begin
-            if LJSONArray.Items[I] is TJSONObject then
+            LGroupPath := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('path', IAM4D_EMPTY_USER_ID);
+            if SameText(LGroupPath, APath) then
             begin
-              LGroupPath := (LJSONArray.Items[I] as TJSONObject).GetValue<string>('path', IAM4D_EMPTY_USER_ID);
-              if SameText(LGroupPath, APath) then
-              begin
-                Result := JSONToGroup(LJSONArray.Items[I] as TJSONObject);
-                Break;
-              end;
+              Result := JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject);
+              Break;
             end;
           end;
-
-          if Result.ID = IAM4D_EMPTY_USER_ID then
-            raise EIAM4DGroupNotFoundException.Create(APath);
-        finally
-          LJSONArray.Free;
         end;
+
+        if Result.ID = IAM4D_EMPTY_USER_ID then
+          raise EIAM4DGroupNotFoundException.Create(APath);
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.TryGetGroupByPathAsync(const APath: string): IAsyncPromise<TIAM4DGroupTryResult>;
+function TIAM4DKeycloakUserManager.TryGetGroupByPath(const APath: string): TIAM4DGroupTryResult;
+var
+  LURL: string;
+  LResult: TIAM4DGroupTryResult;
 begin
-  Result := TAsyncCore.New<TIAM4DGroupTryResult>(
-    function(const AOperation: IAsyncOperation): TIAM4DGroupTryResult
+  if APath.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('Group path cannot be empty');
+
+  LURL := GetGroupsURL;
+
+  LResult.Found := False;
+  LResult.Group := Default(TIAM4DGroup);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
-      I: Integer;
       LGroupPath: string;
     begin
-      if APath.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('Group path cannot be empty');
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Try get group by path');
 
-      LToken := GetAccessToken;
-      LURL := GetGroupsURL;
-
-      Result.Found := False;
-      Result.Group := Default(TIAM4DGroup);
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Try get group by path');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
-        try
-          for I := 0 to LJSONArray.Count - 1 do
+        for var LIndex := 0 to LJSONArray.Count - 1 do
+        begin
+          if LJSONArray.Items[LIndex] is TJSONObject then
           begin
-            if LJSONArray.Items[I] is TJSONObject then
+            LGroupPath := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('path', IAM4D_EMPTY_USER_ID);
+            if SameText(LGroupPath, APath) then
             begin
-              LGroupPath := (LJSONArray.Items[I] as TJSONObject).GetValue<string>('path', IAM4D_EMPTY_USER_ID);
-              if SameText(LGroupPath, APath) then
-              begin
-                Result.Found := True;
-                Result.Group := JSONToGroup(LJSONArray.Items[I] as TJSONObject);
-                Break;
-              end;
+              LResult.Found := True;
+              LResult.Group := JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject);
+              Break;
             end;
           end;
-        finally
-          LJSONArray.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
+
+  Result := LResult;
 end;
 
-function TIAM4DKeycloakUserManager.IsMemberOfGroupAsync(const AUserID: string; const AGroupPath: string): IAsyncPromise<Boolean>;
+function TIAM4DKeycloakUserManager.IsMemberOfGroup(const AUserID: string; const AGroupPath: string): Boolean;
 begin
-  Result := TAsyncCore.New<Boolean>(
-    function(const AOperation: IAsyncOperation): Boolean
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+  TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+
+  Result := ExecuteWithAuth<Boolean>(
+    function(AHTTPClient: THTTPClient): Boolean
     var
-      LToken: string;
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
-      I: Integer;
       LPath: string;
     begin
-      TIAM4DUserManagementValidator.ValidateUserID(AUserID);
-      TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/groups');
+      EnsureResponseSuccess(LResponse, 'Get user groups for membership check');
 
-      LToken := GetAccessToken;
-
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(GetUserURL(AUserID) + '/groups');
-        EnsureResponseSuccess(LResponse, 'Get user groups for membership check');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
-        try
-          Result := False;
-          for I := 0 to LJSONArray.Count - 1 do
+        Result := False;
+        for var LIndex := 0 to LJSONArray.Count - 1 do
+        begin
+          if LJSONArray.Items[LIndex] is TJSONObject then
           begin
-            if LJSONArray.Items[I] is TJSONObject then
+            LPath := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('path', '');
+            if SameText(LPath, AGroupPath) then
             begin
-              LPath := (LJSONArray.Items[I] as TJSONObject).GetValue<string>('path', '');
-              if SameText(LPath, AGroupPath) then
-              begin
-                Result := True;
-                Break;
-              end;
+              Result := True;
+              Break;
             end;
           end;
-        finally
-          LJSONArray.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
@@ -3142,7 +2589,6 @@ var
   LURL: string;
   LJSONArray: TJSONArray;
   LUsersList: TList<TIAM4DUser>;
-  I: Integer;
 begin
   TIAM4DUserManagementValidator.ValidateGroupID(AGroupID);
 
@@ -3156,9 +2602,9 @@ begin
   try
     LUsersList := TList<TIAM4DUser>.Create;
     try
-      for I := 0 to LJSONArray.Count - 1 do
-        if LJSONArray.Items[I] is TJSONObject then
-          LUsersList.Add(JSONToUser(LJSONArray.Items[I] as TJSONObject));
+      for var LIndex := 0 to LJSONArray.Count - 1 do
+        if LJSONArray.Items[LIndex] is TJSONObject then
+          LUsersList.Add(JSONToUser(LJSONArray.Items[LIndex] as TJSONObject));
       Result := LUsersList.ToArray;
     finally
       LUsersList.Free;
@@ -3174,7 +2620,6 @@ var
   LURL: string;
   LJSONArray: TJSONArray;
   LRolesList: TList<TIAM4DRole>;
-  I: Integer;
 begin
   TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
@@ -3187,9 +2632,9 @@ begin
   try
     LRolesList := TList<TIAM4DRole>.Create;
     try
-      for I := 0 to LJSONArray.Count - 1 do
-        if LJSONArray.Items[I] is TJSONObject then
-          LRolesList.Add(JSONToRole(LJSONArray.Items[I] as TJSONObject, AClientID, AClientName));
+      for var LIndex := 0 to LJSONArray.Count - 1 do
+        if LJSONArray.Items[LIndex] is TJSONObject then
+          LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject, AClientID, AClientName));
       Result := LRolesList.ToArray;
     finally
       LRolesList.Free;
@@ -3205,7 +2650,6 @@ var
   LURL: string;
   LJSONArray: TJSONArray;
   LRolesList: TList<TIAM4DRole>;
-  I: Integer;
 begin
   TIAM4DUserManagementValidator.ValidateUserID(AUserID);
 
@@ -3220,9 +2664,9 @@ begin
   try
     LRolesList := TList<TIAM4DRole>.Create;
     try
-      for I := 0 to LJSONArray.Count - 1 do
-        if LJSONArray.Items[I] is TJSONObject then
-          LRolesList.Add(JSONToRole(LJSONArray.Items[I] as TJSONObject));
+      for var LIndex := 0 to LJSONArray.Count - 1 do
+        if LJSONArray.Items[LIndex] is TJSONObject then
+          LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject));
       Result := LRolesList.ToArray;
     finally
       LRolesList.Free;
@@ -3348,7 +2792,6 @@ var
   LURL: string;
   LJSONArray: TJSONArray;
   LGroupObj: TJSONObject;
-  I: Integer;
   LPath: string;
 begin
   TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
@@ -3362,11 +2805,11 @@ begin
   try
     Result := '';
 
-    for I := 0 to LJSONArray.Count - 1 do
+    for var LIndex := 0 to LJSONArray.Count - 1 do
     begin
-      if LJSONArray.Items[I] is TJSONObject then
+      if LJSONArray.Items[LIndex] is TJSONObject then
       begin
-        LGroupObj := LJSONArray.Items[I] as TJSONObject;
+        LGroupObj := LJSONArray.Items[LIndex] as TJSONObject;
         LPath := LGroupObj.GetValue<string>('path', '');
         if SameText(LPath, AGroupPath) then
         begin
@@ -3380,488 +2823,342 @@ begin
   end;
 end;
 
-function TIAM4DKeycloakUserManager.GetClientRolesByNameAsync(const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+function TIAM4DKeycloakUserManager.GetClientRolesByName(const AClientName: string): TArray<TIAM4DRole>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DRole> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
+  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+
+  Result := ExecuteWithAuth < TArray<TIAM4DRole> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DRole>
     var
-      LToken: string;
       LClientID: string;
-      LHTTPClient: THTTPClient;
     begin
-      TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+      LClientID := GetClientIDByName(AHTTPClient, AClientName);
 
-      LToken := GetAccessToken;
+      if LClientID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
 
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LClientID := GetClientIDByName(LHTTPClient, AClientName);
-
-        if LClientID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
-
-        Result := GetClientRoles(LHTTPClient, LClientID, AClientName);
-      finally
-        LHTTPClient.Free;
-      end;
+      Result := GetClientRoles(AHTTPClient, LClientID, AClientName);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserClientRolesByNameAsync(
+function TIAM4DKeycloakUserManager.GetUserClientRolesByName(
   const AUserID: string;
-  const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+  const AClientName: string): TArray<TIAM4DRole>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DRole> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
+  if AUserID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+
+  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+
+  Result := ExecuteWithAuth < TArray<TIAM4DRole> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DRole>
     var
-      LToken: string;
       LClientID: string;
-      LHTTPClient: THTTPClient;
     begin
-      if AUserID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+      LClientID := GetClientIDByName(AHTTPClient, AClientName);
 
-      TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+      if LClientID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
 
-      LToken := GetAccessToken;
-
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LClientID := GetClientIDByName(LHTTPClient, AClientName);
-
-        if LClientID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
-
-        Result := GetUserClientRoles(LHTTPClient, AUserID, LClientID);
-      finally
-        LHTTPClient.Free;
-      end;
+      Result := GetUserClientRoles(AHTTPClient, AUserID, LClientID);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.AssignClientRolesToUserAsync(
+procedure TIAM4DKeycloakUserManager.AssignClientRolesToUser(
   const AUserID: string;
-  const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+  const ARoles: TArray<TIAM4DRole>);
+var
+  LClientID: string;
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
-    var
-      LToken: string;
-      LClientID: string;
-      LHTTPClient: THTTPClient;
+  if AUserID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+
+  TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
+
+  if (Length(ARoles) > 0) and (ARoles[0].ClientID.IsEmpty or ARoles[0].ClientName.IsEmpty) then
+    raise EIAM4DInvalidConfigurationException.CreateFmt(
+      'Role "%s" is missing ClientID or ClientName. Use GetClientRolesByName to retrieve roles with complete client information.',
+      [ARoles[0].Name]);
+
+  LClientID := ARoles[0].ClientID;
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     begin
-      if AUserID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
-
-      TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
-
-      if (Length(ARoles) > 0) and (ARoles[0].ClientID.IsEmpty or ARoles[0].ClientName.IsEmpty) then
-        raise EIAM4DInvalidConfigurationException.CreateFmt(
-          'Role "%s" is missing ClientID or ClientName. Use GetClientRolesByNameAsync to retrieve roles with complete client information.',
-          [ARoles[0].Name]);
-
-      LToken := GetAccessToken;
-
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LClientID := ARoles[0].ClientID;
-
-        AssignClientRolesToUser(LHTTPClient, AUserID, LClientID, ARoles);
-      finally
-        LHTTPClient.Free;
-      end;
+      AssignClientRolesToUser(AHTTPClient, AUserID, LClientID, ARoles);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.AssignClientRolesToUsersAsync(
-  const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
+function TIAM4DKeycloakUserManager.AssignClientRolesToUsers(
+  const ARoleAssignments: TArray<TIAM4DRoleAssignment>;
+  const ACancellationToken: IAsyncOperation): TArray<TIAM4DOperationResult>;
+var
+  LResults: TArray<TIAM4DOperationResult>;
 begin
-  ValidateBatchSize(Length(ARoleAssignments), 'AssignClientRolesToUsersAsync');
+  ValidateBatchSize(Length(ARoleAssignments), 'AssignClientRolesToUsers');
 
-  Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
-    type
-      TClientAssignments = record
-        ClientID: string;
-        ClientName: string;
-        Users: TList<Integer>;
-      end;
-      var
-      LToken: string;
-      LHTTPClient: THTTPClient;
+  SetLength(LResults, Length(ARoleAssignments));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LIdx: Integer;
+      LClientID: string;
       LAssignment: TIAM4DRoleAssignment;
-      LClientGroups: TDictionary<string, TClientAssignments>;
-      LClientKey: string;
-      LClientGroup: TClientAssignments;
-      LUserIndex: Integer;
-      I: Integer;
-      LResults: TArray<TIAM4DOperationResult>;
     begin
-      SetLength(LResults, Length(ARoleAssignments));
-
-      LToken := GetAccessToken;
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LClientGroups := TDictionary<string, TClientAssignments>.Create;
-        try
-          for I := 0 to High(ARoleAssignments) do
+      for LIdx := 0 to High(ARoleAssignments) do
+      begin
+        if Assigned(ACancellationToken) and ACancellationToken.IsCancellationRequested then
+        begin
+          for var J := LIdx to High(ARoleAssignments) do
           begin
-            LAssignment := ARoleAssignments[I];
-            LResults[I].Identifier := LAssignment.UserID;
-            LResults[I].Success := False;
-            LResults[I].ErrorMessage := '';
-
-            if Length(LAssignment.Roles) = 0 then
-            begin
-              LResults[I].Success := True;
-              Continue;
-            end;
-
-            if LAssignment.Roles[0].ClientID.IsEmpty or LAssignment.Roles[0].ClientName.IsEmpty then
-              raise EIAM4DInvalidConfigurationException.CreateFmt(
-                'Role "%s" is missing ClientID or ClientName. Use GetClientRolesByNameAsync to retrieve roles with complete client information.',
-                [LAssignment.Roles[0].Name]);
-
-            LClientKey := LAssignment.Roles[0].ClientID;
-
-            if not LClientGroups.TryGetValue(LClientKey, LClientGroup) then
-            begin
-              LClientGroup.ClientID := LAssignment.Roles[0].ClientID;
-              LClientGroup.ClientName := LAssignment.Roles[0].ClientName;
-              LClientGroup.Users := TList<Integer>.Create;
-              LClientGroups.Add(LClientKey, LClientGroup);
-            end;
-
-            LClientGroup.Users.Add(I);
+            LResults[J].Identifier := ARoleAssignments[J].UserID;
+            LResults[J].Success := False;
+            LResults[J].ErrorMessage := IAM4D_OPERATION_CANCELLED;
           end;
-
-          for LClientKey in LClientGroups.Keys do
-          begin
-            LClientGroup := LClientGroups[LClientKey];
-
-            for LUserIndex in LClientGroup.Users do
-            begin
-              try
-                AssignClientRolesToUser(
-                  LHTTPClient,
-                  ARoleAssignments[LUserIndex].UserID,
-                  LClientGroup.ClientID,
-                  ARoleAssignments[LUserIndex].Roles);
-                LResults[LUserIndex].Success := True;
-              except
-                on E: Exception do
-                begin
-                  LResults[LUserIndex].Success := False;
-                  LResults[LUserIndex].ErrorMessage := Format('Client role assignment %d/%d (UserID: %s, Client: %s, %d roles): %s',
-                    [LUserIndex + 1, Length(ARoleAssignments), ARoleAssignments[LUserIndex].UserID,
-                      LClientGroup.ClientName, Length(ARoleAssignments[LUserIndex].Roles), E.Message]);
-                end;
-              end;
-            end;
-          end;
-
-        finally
-          for LClientKey in LClientGroups.Keys do
-          begin
-            LClientGroup := LClientGroups[LClientKey];
-            LClientGroup.Users.Free;
-          end;
-          LClientGroups.Free;
+          Break;
         end;
 
-        Result := LResults;
-      finally
-        LHTTPClient.Free;
+        LAssignment := ARoleAssignments[LIdx];
+        LResults[LIdx].Identifier := LAssignment.UserID;
+        LResults[LIdx].Success := False;
+        LResults[LIdx].ErrorMessage := '';
+
+        if Length(LAssignment.Roles) = 0 then
+        begin
+          LResults[LIdx].Success := True;
+          Continue;
+        end;
+
+        if LAssignment.Roles[0].ClientID.IsEmpty or LAssignment.Roles[0].ClientName.IsEmpty then
+        begin
+          LResults[LIdx].ErrorMessage := Format('Role "%s" is missing ClientID or ClientName', [LAssignment.Roles[0].Name]);
+          Continue;
+        end;
+
+        try
+          LClientID := LAssignment.Roles[0].ClientID;
+          AssignClientRolesToUser(AHTTPClient, LAssignment.UserID, LClientID, LAssignment.Roles);
+          LResults[LIdx].Success := True;
+        except
+          on E: Exception do
+          begin
+            LResults[LIdx].Success := False;
+            LResults[LIdx].ErrorMessage := Format('Client role assignment %d/%d (UserID: %s): %s',
+              [LIdx + 1, Length(ARoleAssignments), LAssignment.UserID, E.Message]);
+          end;
+        end;
       end;
     end);
+
+  Result := LResults;
 end;
 
-function TIAM4DKeycloakUserManager.RemoveClientRolesFromUserByNameAsync(
+procedure TIAM4DKeycloakUserManager.RemoveClientRolesFromUserByName(
   const AUserID: string;
   const AClientName: string;
-  const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+  const ARoles: TArray<TIAM4DRole>);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  if AUserID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+
+  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+
+  TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LClientID: string;
-      LHTTPClient: THTTPClient;
     begin
-      if AUserID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+      LClientID := GetClientIDByName(AHTTPClient, AClientName);
 
-      TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+      if LClientID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
 
-      TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
-
-      LToken := GetAccessToken;
-
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LClientID := GetClientIDByName(LHTTPClient, AClientName);
-
-        if LClientID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
-
-        RemoveClientRolesFromUser(LHTTPClient, AUserID, LClientID, ARoles);
-      finally
-        LHTTPClient.Free;
-      end;
+      RemoveClientRolesFromUser(AHTTPClient, AUserID, LClientID, ARoles);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.HasClientRoleByNameAsync(
+function TIAM4DKeycloakUserManager.HasClientRoleByName(
   const AUserID: string;
   const AClientName: string;
-  const ARoleName: string): IAsyncPromise<Boolean>;
+  const ARoleName: string): Boolean;
 begin
-  Result := TAsyncCore.New<Boolean>(
-    function(const AOperation: IAsyncOperation): Boolean
+  if AUserID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+
+  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+
+  if ARoleName.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('RoleName cannot be empty');
+
+  Result := ExecuteWithAuth<Boolean>(
+    function(AHTTPClient: THTTPClient): Boolean
     var
-      LToken: string;
       LClientID: string;
-      LHTTPClient: THTTPClient;
     begin
-      if AUserID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+      LClientID := GetClientIDByName(AHTTPClient, AClientName);
 
-      TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+      if LClientID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
 
-      if ARoleName.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('RoleName cannot be empty');
-
-      LToken := GetAccessToken;
-
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LClientID := GetClientIDByName(LHTTPClient, AClientName);
-
-        if LClientID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
-
-        Result := HasClientRole(LHTTPClient, AUserID, LClientID, ARoleName);
-      finally
-        LHTTPClient.Free;
-      end;
+      Result := HasClientRole(AHTTPClient, AUserID, LClientID, ARoleName);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetClientsAsync: IAsyncPromise<TArray<TIAM4DRealmClient>>;
+function TIAM4DKeycloakUserManager.GetClients: TIAM4DRealmClientArray;
+var
+  LURL: string;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DRealmClient> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DRealmClient>
+  LURL := GetAdminURL + '/clients';
+
+  Result := ExecuteWithAuth<TIAM4DRealmClientArray>(
+    function(AHTTPClient: THTTPClient): TIAM4DRealmClientArray
     var
-      LToken: string;
+      LIdx: Integer;
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
       LClientsList: TList<TIAM4DRealmClient>;
-      I: Integer;
       LClient: TIAM4DRealmClient;
       LRoles: TArray<TIAM4DRole>;
     begin
-      LToken := GetAccessToken;
-      LURL := GetAdminURL + '/clients';
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get clients');
 
-      var LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'clients array response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get clients');
-
-        LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'clients array response');
+        LClientsList := TList<TIAM4DRealmClient>.Create;
         try
-          LClientsList := TList<TIAM4DRealmClient>.Create;
-          try
-            for I := 0 to LJSONArray.Count - 1 do
+          for LIdx := 0 to LJSONArray.Count - 1 do
+          begin
+            if LJSONArray.Items[LIdx] is TJSONObject then
             begin
-              if LJSONArray.Items[I] is TJSONObject then
-              begin
-                LClient := JSONToRealmClient(LJSONArray.Items[I] as TJSONObject);
+              LClient := JSONToRealmClient(LJSONArray.Items[LIdx] as TJSONObject);
 
-                try
-                  LRoles := GetClientRoles(LHTTPClient, LClient.ID, LClient.ClientID);
-                  LClient.Roles := LRoles;
-                except
-                  LClient.Roles := nil;
-                end;
-
-                LClientsList.Add(LClient);
+              try
+                LRoles := GetClientRoles(AHTTPClient, LClient.ID, LClient.ClientID);
+                LClient.Roles := LRoles;
+              except
+                LClient.Roles := nil;
               end;
-            end;
 
-            Result := LClientsList.ToArray;
-          finally
-            LClientsList.Free;
+              LClientsList.Add(LClient);
+            end;
           end;
+
+          Result := LClientsList.ToArray;
         finally
-          LJSONArray.Free;
+          LClientsList.Free;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONArray.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetClientsAsync(const AClientName: string): IAsyncPromise<TIAM4DRealmClient>;
+function TIAM4DKeycloakUserManager.GetClients(const AClientName: string): TIAM4DRealmClient;
 begin
-  Result := TAsyncCore.New<TIAM4DRealmClient>(
-    function(const AOperation: IAsyncOperation): TIAM4DRealmClient
+  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+
+  Result := ExecuteWithAuth<TIAM4DRealmClient>(
+    function(AHTTPClient: THTTPClient): TIAM4DRealmClient
     var
-      LToken: string;
-      LHTTPClient: THTTPClient;
+      LJSONValue: TJSONValue;
       LClientID: string;
       LResponse: IHTTPResponse;
       LURL: string;
       LRoles: TArray<TIAM4DRole>;
     begin
-      TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+      LClientID := GetClientIDByName(AHTTPClient, AClientName);
 
-      LToken := GetAccessToken;
+      if LClientID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
 
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
+      LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(LClientID);
+      LResponse := AHTTPClient.Get(LURL);
+      EnsureResponseSuccess(LResponse, 'Get client details');
+
+      LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'client response');
       try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
+        Result := JSONToRealmClient(LJSONValue as TJSONObject);
 
-        LClientID := GetClientIDByName(LHTTPClient, AClientName);
-
-        if LClientID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
-
-        LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(LClientID);
-        LResponse := LHTTPClient.Get(LURL);
-        EnsureResponseSuccess(LResponse, 'Get client details');
-
-        var LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'client response');
         try
-          Result := JSONToRealmClient(LJSONValue as TJSONObject);
-
-          try
-            LRoles := GetClientRoles(LHTTPClient, LClientID, AClientName);
-            Result.Roles := LRoles;
-          except
-            Result.Roles := nil;
-          end;
-        finally
-          LJSONValue.Free;
+          LRoles := GetClientRoles(AHTTPClient, LClientID, AClientName);
+          Result.Roles := LRoles;
+        except
+          Result.Roles := nil;
         end;
       finally
-        LHTTPClient.Free;
+        LJSONValue.Free;
       end;
     end);
 end;
 
-function TIAM4DKeycloakUserManager.AddUserToGroupByPathAsync(
+procedure TIAM4DKeycloakUserManager.AddUserToGroupByPath(
   const AUserID: string;
-  const AGroupPath: string): IAsyncVoidPromise;
+  const AGroupPath: string);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  if AUserID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+
+  TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LGroupID: string;
-      LHTTPClient: THTTPClient;
     begin
-      if AUserID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+      LGroupID := GetGroupIDByPath(AHTTPClient, AGroupPath);
 
-      TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+      if LGroupID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
 
-      LToken := GetAccessToken;
-
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LGroupID := GetGroupIDByPath(LHTTPClient, AGroupPath);
-
-        if LGroupID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
-
-        AddUserToGroup(LHTTPClient, AUserID, LGroupID);
-      finally
-        LHTTPClient.Free;
-      end;
+      AddUserToGroup(AHTTPClient, AUserID, LGroupID);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.RemoveUserFromGroupByPathAsync(
+procedure TIAM4DKeycloakUserManager.RemoveUserFromGroupByPath(
   const AUserID: string;
-  const AGroupPath: string): IAsyncVoidPromise;
+  const AGroupPath: string);
 begin
-  Result := TAsyncCore.New(
-    procedure(const AOperation: IAsyncOperation)
+  if AUserID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+
+  TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
     var
-      LToken: string;
       LGroupID: string;
-      LHTTPClient: THTTPClient;
     begin
-      if AUserID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
+      LGroupID := GetGroupIDByPath(AHTTPClient, AGroupPath);
 
-      TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+      if LGroupID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
 
-      LToken := GetAccessToken;
-
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LGroupID := GetGroupIDByPath(LHTTPClient, AGroupPath);
-
-        if LGroupID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
-
-        RemoveUserFromGroup(LHTTPClient, AUserID, LGroupID);
-      finally
-        LHTTPClient.Free;
-      end;
+      RemoveUserFromGroup(AHTTPClient, AUserID, LGroupID);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUsersInGroupByPathAsync(
+function TIAM4DKeycloakUserManager.GetUsersInGroupByPath(
   const AGroupPath: string;
   const AFirstResult: Integer;
-  const AMaxResults: Integer): IAsyncPromise<TArray<TIAM4DUser>>;
+  const AMaxResults: Integer): TArray<TIAM4DUser>;
 begin
-  Result := TAsyncCore.New < TArray<TIAM4DUser> > (
-    function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
+  TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+
+  Result := ExecuteWithAuth < TArray<TIAM4DUser> > (
+    function(AHTTPClient: THTTPClient): TArray<TIAM4DUser>
     var
-      LToken: string;
       LGroupID: string;
-      LHTTPClient: THTTPClient;
     begin
-      TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+      LGroupID := GetGroupIDByPath(AHTTPClient, AGroupPath);
 
-      LToken := GetAccessToken;
+      if LGroupID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
 
-      LHTTPClient := FAuthProvider.CreateHTTPClient;
-      try
-        LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-
-        LGroupID := GetGroupIDByPath(LHTTPClient, AGroupPath);
-
-        if LGroupID.IsEmpty then
-          raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
-
-        Result := GetUsersInGroup(LHTTPClient, LGroupID, AFirstResult, AMaxResults);
-      finally
-        LHTTPClient.Free;
-      end;
+      Result := GetUsersInGroup(AHTTPClient, LGroupID, AFirstResult, AMaxResults);
     end);
 end;
 

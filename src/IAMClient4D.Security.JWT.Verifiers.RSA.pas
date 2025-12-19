@@ -33,8 +33,7 @@ uses
   System.Hash,
   IAMClient4D.Common.SecureMemory,
   IAMClient4D.Security.Core,
-  uTPLb_HugeCardinal,
-  uTPLb_MemoryStreamPool;
+  IAMClient4D.Security.Crypto.Interfaces;
 
 type
   /// <summary>
@@ -44,20 +43,19 @@ type
   /// Verifies JWT signatures using RSA public key cryptography.
   /// Algorithms: RS256 (SHA-256), RS384 (SHA-384), RS512 (SHA-512).
   /// Padding: EMSA-PKCS1-v1_5 encoding scheme (RFC 3447).
-  /// Library: TurboPower LockBox for RSA operations and huge cardinal arithmetic.
+  /// Crypto provider: Configurable (default: LockBox3).
   /// Key format: JWK with 'n' (modulus) and 'e' (exponent) parameters in Base64URL.
   /// Thread-safety: Create separate instance per thread (not thread-safe).
-  /// Memory: Uses memory pool for efficient stream management.
   /// Security: Production-ready implementation with proper PKCS#1 v1.5 verification.
   /// </remarks>
   TRSAJWTSignatureVerifier = class(TInterfacedObject, IIAM4DJWTSignatureVerifier)
   private
-    FMemoryPool: IMemoryStreamPool;
+    FCryptoProvider: IIAM4DCryptoProvider;
 
     function Base64URLDecode(const AInput: string): TBytes;
 
-    function ExtractRSAPublicKey(const APublicKeyJWK: TJSONObject;
-      out AModulus, AExponent: THugeCardinal): Boolean;
+    function ExtractRSAPublicKeyBytes(const APublicKeyJWK: TJSONObject;
+      out AModulus, AExponent: TBytes): Boolean;
 
     function EMSA_PKCS1_v1_5_Encode(const AMessage: TBytes; const AAlg: string;
       AEmLen: Integer): TBytes;
@@ -67,11 +65,15 @@ type
     function GetDigestInfoPrefix(const AAlg: string): TBytes;
   public
     /// <summary>
-    /// Creates RSA verifier with memory pool for stream management.
+    /// Creates RSA verifier with default LockBox3 crypto provider.
     /// </summary>
-    constructor Create;
+    constructor Create; overload;
     /// <summary>
-    /// Destroys verifier and releases memory pool.
+    /// Creates RSA verifier with specified crypto provider.
+    /// </summary>
+    constructor Create(const ACryptoProvider: IIAM4DCryptoProvider); overload;
+    /// <summary>
+    /// Destroys verifier.
     /// </summary>
     destructor Destroy; override;
 
@@ -90,20 +92,25 @@ type
 implementation
 
 uses
-  uTPLb_RSA_Primitives,
-  IAMClient4D.Exceptions;
+  IAMClient4D.Exceptions,
+  IAMClient4D.Security.Crypto.LockBox3;
 
 { TRSAJWTSignatureVerifier }
 
 constructor TRSAJWTSignatureVerifier.Create;
 begin
+  Create(TIAM4DLockBox3CryptoProvider.Create);
+end;
+
+constructor TRSAJWTSignatureVerifier.Create(const ACryptoProvider: IIAM4DCryptoProvider);
+begin
   inherited Create;
-  FMemoryPool := NewPool;
+  FCryptoProvider := ACryptoProvider;
 end;
 
 destructor TRSAJWTSignatureVerifier.Destroy;
 begin
-  FMemoryPool := nil;
+  FCryptoProvider := nil;
   inherited;
 end;
 
@@ -121,17 +128,15 @@ begin
   Result := TNetEncoding.Base64.DecodeStringToBytes(LBase64);
 end;
 
-function TRSAJWTSignatureVerifier.ExtractRSAPublicKey(
+function TRSAJWTSignatureVerifier.ExtractRSAPublicKeyBytes(
   const APublicKeyJWK: TJSONObject;
-  out AModulus, AExponent: THugeCardinal): Boolean;
+  out AModulus, AExponent: TBytes): Boolean;
 var
   LN, LE: TJSONValue;
-  LNBytes, LEBytes: TBytes;
-  LNStream, LEStream: TMemoryStream;
 begin
   Result := False;
-  AModulus := nil;
-  AExponent := nil;
+  SetLength(AModulus, 0);
+  SetLength(AExponent, 0);
 
   try
     LN := APublicKeyJWK.GetValue('n');
@@ -142,50 +147,16 @@ begin
     if not Assigned(LE) then
       Exit;
 
-    LNBytes := Base64URLDecode(LN.Value);
-    LEBytes := Base64URLDecode(LE.Value);
+    AModulus := Base64URLDecode(LN.Value);
+    AExponent := Base64URLDecode(LE.Value);
 
-    if (Length(LNBytes) = 0) or (Length(LEBytes) = 0) then
+    if (Length(AModulus) = 0) or (Length(AExponent) = 0) then
       Exit;
-
-    LNStream := TMemoryStream.Create;
-    try
-      LNStream.Write(LNBytes[0], Length(LNBytes));
-      LNStream.Position := 0;
-
-      if not OS2IP(LNStream, Length(LNBytes), AModulus, FMemoryPool, Length(LNBytes) * 8 + 32) then
-        Exit;
-    finally
-      LNStream.Free;
-    end;
-
-    LEStream := TMemoryStream.Create;
-    try
-      LEStream.Write(LEBytes[0], Length(LEBytes));
-      LEStream.Position := 0;
-
-      if not OS2IP(LEStream, Length(LEBytes), AExponent, FMemoryPool, Length(LEBytes) * 8 + 32) then
-      begin
-        AModulus.Free;
-        AModulus := nil;
-        Exit;
-      end;
-    finally
-      LEStream.Free;
-    end;
 
     Result := True;
   except
-    if Assigned(AModulus) then
-    begin
-      AModulus.Free;
-      AModulus := nil;
-    end;
-    if Assigned(AExponent) then
-    begin
-      AExponent.Free;
-      AExponent := nil;
-    end;
+    SetLength(AModulus, 0);
+    SetLength(AExponent, 0);
     Result := False;
   end;
 end;
@@ -333,85 +304,31 @@ function TRSAJWTSignatureVerifier.Verify(const ASigningInput: string;
   const ASignatureBytes: TBytes; const APublicKeyJWK: TJSONObject;
   const AAlg: string): Boolean;
 var
-  LModulus, LExponent: THugeCardinal;
-  LSignature: THugeCardinal;
-  LMessage: THugeCardinal;
-  LSignatureStream: TMemoryStream;
-  LMessageStream: TMemoryStream;
+  LModulus, LExponent: TBytes;
   LSigningInputBytes: TBytes;
   LExpectedEM: TBytes;
-  LActualEM: TBytes;
   LModulusLen: Integer;
 begin
   Result := False;
-  LModulus := nil;
-  LExponent := nil;
-  LSignature := nil;
-  LMessage := nil;
 
   try
     if not (SameText(AAlg, 'RS256') or SameText(AAlg, 'RS384') or SameText(AAlg, 'RS512')) then
       Exit;
 
-    if not ExtractRSAPublicKey(APublicKeyJWK, LModulus, LExponent) then
+    if not ExtractRSAPublicKeyBytes(APublicKeyJWK, LModulus, LExponent) then
       Exit;
 
-    LModulusLen := (LModulus.BitLength + 7) div 8;
+    LModulusLen := Length(LModulus);
     if Length(ASignatureBytes) <> LModulusLen then
       Exit;
-
-    LSignatureStream := TMemoryStream.Create;
-    try
-      LSignatureStream.Write(ASignatureBytes[0], Length(ASignatureBytes));
-      LSignatureStream.Position := 0;
-
-      if not OS2IP(LSignatureStream, Length(ASignatureBytes), LSignature, FMemoryPool,
-        LModulus.BitLength + 32) then
-        Exit;
-    finally
-      LSignatureStream.Free;
-    end;
-
-    if LSignature.Compare(LModulus) <> rLessThan then
-      Exit;
-
-    LMessage := LSignature.Clone;
-    if not Assigned(LMessage) then
-      Exit;
-
-    if LExponent.isSmall then
-      LMessage.SmallExponent_PowerMod(LExponent.ExtractSmall, LModulus)
-    else if not LMessage.PowerMod(LExponent, LModulus, nil) then
-      Exit;
-
-    LMessageStream := TMemoryStream.Create;
-    try
-      if not I2OSP(LMessage, LModulusLen, LMessageStream, FMemoryPool) then
-        Exit;
-
-      SetLength(LActualEM, LModulusLen);
-      LMessageStream.Position := 0;
-      LMessageStream.Read(LActualEM[0], LModulusLen);
-    finally
-      LMessageStream.Free;
-    end;
 
     LSigningInputBytes := TEncoding.UTF8.GetBytes(ASigningInput);
     LExpectedEM := EMSA_PKCS1_v1_5_Encode(LSigningInputBytes, AAlg, LModulusLen);
 
-    if Length(LExpectedEM) <> Length(LActualEM) then
-      Exit;
-
-    Result := SecureEquals(LExpectedEM, LActualEM);
+    Result := FCryptoProvider.RSAVerifyPKCS1(LExpectedEM, ASignatureBytes, LModulus, LExponent);
   finally
-    if Assigned(LModulus) then
-      LModulus.Free;
-    if Assigned(LExponent) then
-      LExponent.Free;
-    if Assigned(LSignature) then
-      LSignature.Free;
-    if Assigned(LMessage) then
-      LMessage.Free;
+    SecureZero(LModulus);
+    SecureZero(LExponent);
   end;
 end;
 

@@ -36,6 +36,10 @@ uses
   IAMClient4D.UserManagement.Constants,
   IAMClient4D.Exceptions;
 
+const
+  /// <summary>Default idle threshold for session activity check (30 minutes)</summary>
+  IAM4D_DEFAULT_IDLE_THRESHOLD_SECONDS = 1800;
+
 type
   /// <summary>
   /// Helper for TIAM4DUserAttribute record.
@@ -480,9 +484,9 @@ type
 
     /// <summary>
     /// Checks if the session is considered active based on idle time.
-    /// Default threshold: 30 minutes (1800 seconds).
+    /// Default threshold: 30 minutes (IAM4D_DEFAULT_IDLE_THRESHOLD_SECONDS).
     /// </summary>
-    function IsActive(const AIdleThresholdSeconds: Int64 = 1800): Boolean;
+    function IsActive(const AIdleThresholdSeconds: Int64 = IAM4D_DEFAULT_IDLE_THRESHOLD_SECONDS): Boolean;
 
     /// <summary>
     /// Creates a deep clone of the user session record.

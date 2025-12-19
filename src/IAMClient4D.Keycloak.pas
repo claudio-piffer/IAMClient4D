@@ -84,6 +84,10 @@ type
     FSSLValidator: IIAM4DSSLCertificateValidator;
     FSSLHelper: TIAM4DHTTPClientSSLHelper;
 
+    // HTTP client pooling for connection reuse
+    FHTTPClient: THTTPClient;
+    FHTTPClientLock: TCriticalSection;
+
     FWellKnownEndPoints: TIAM4DWellKnownEndpoints;
     FState: string;
     FNonce: string;
@@ -96,12 +100,15 @@ type
     function ExecuteCallHTTP<T>(const AOperation: TFunc<THTTPClient, T>): T;
     procedure GeneratePKCE;
     function RefreshTokensInternal(const ARefreshToken: string): TIAM4DTokens;
+    /// <exception cref="EIAM4DException">Raised when HTTP request fails or response is not 200/201</exception>
+    /// <exception cref="EIAM4DNetworkException">Raised on network errors</exception>
     function PostToTokenEndpoint(const AParams: TStrings): TJSONObject;
     function ExchangeCodeForTokens(const ACode: string): TIAM4DTokens;
     procedure ValidateIDTokenNonce(const AIDToken: string);
     function GenerateLogoutURL(const APostLogoutRedirectURI: string = ''): string;
     function EncodeFormParams(const AParams: TStrings): string;
     procedure AddScopesIfMissing(const AScopes: TArray<string>);
+    /// <exception cref="EIAM4DException">Raised when response status is not 200 or 201</exception>
     procedure EnsureResponseHTTP200OrFail(const AResponse: IHTTPResponse; const AContext: string);
     procedure ClearTokens;
     function RequestClientCredentialsToken: TIAM4DTokens;
@@ -139,10 +146,13 @@ type
     /// <summary>
     /// Configures the client and discovers OIDC endpoints via well-known URL.
     /// </summary>
+    /// <exception cref="EIAM4DNetworkException">Raised on network errors during endpoint discovery</exception>
+    /// <exception cref="EIAM4DConfigurationException">Raised when well-known response is invalid</exception>
     function ConfigureAsync(const AConfig: TIAM4DClientConfig): IAsyncVoidPromise;
     /// <summary>
     /// Starts Authorization Code flow for desktop apps (opens browser automatically).
     /// </summary>
+    /// <exception cref="EIAM4DAuthenticationException">Raised when authorization fails or is cancelled</exception>
     function StartAuthorizationFlowAsync: IAsyncPromise<string>;
     /// <summary>
     /// Initializes Authorization Code flow for web apps (call before GenerateAuthURL).
@@ -151,23 +161,52 @@ type
     /// <summary>
     /// Completes Authorization Code flow with received code and state (for web apps).
     /// </summary>
+    /// <exception cref="EIAM4DAuthenticationException">Raised on invalid state or token exchange failure</exception>
     function CompleteAuthorizationFlowAsync(const ACode, AState: string): IAsyncPromise<string>;
     /// <summary>
     /// Authenticates using Client Credentials flow.
     /// </summary>
+    /// <exception cref="EIAM4DAuthenticationException">Raised when client credentials are invalid</exception>
     function AuthenticateClientAsync: IAsyncPromise<string>;
     /// <summary>
     /// Returns valid access token (auto-refreshes if expired).
     /// </summary>
+    /// <exception cref="EIAM4DAuthenticationException">Raised when not authenticated or refresh fails</exception>
     function GetAccessTokenAsync: IAsyncPromise<string>;
     /// <summary>
     /// Retrieves OIDC user info from UserInfo endpoint.
     /// </summary>
+    /// <exception cref="EIAM4DAuthenticationException">Raised when not authenticated</exception>
+    /// <exception cref="EIAM4DNetworkException">Raised on network errors</exception>
     function GetUserInfoAsync: IAsyncPromise<TIAM4DUserInfo>;
     /// <summary>
     /// Logs out and clears stored tokens.
     /// </summary>
+    /// <exception cref="EIAM4DNetworkException">Raised on network errors during logout</exception>
     function LogoutAsync: IAsyncVoidPromise;
+
+    // Synchronous Operations
+    /// <summary>
+    /// Gets valid access token synchronously (auto-refreshes if expired).
+    /// </summary>
+    function GetAccessToken: string;
+    /// <summary>
+    /// Authenticates using Client Credentials flow synchronously.
+    /// </summary>
+    function AuthenticateClient: string;
+    /// <summary>
+    /// Completes Authorization Code flow synchronously.
+    /// </summary>
+    function CompleteAuthorizationFlow(const ACode, AState: string): string;
+    /// <summary>
+    /// Retrieves OIDC user info synchronously.
+    /// </summary>
+    function GetUserInfo: TIAM4DUserInfo;
+    /// <summary>
+    /// Logs out and clears tokens synchronously.
+    /// </summary>
+    procedure Logout;
+
     /// <summary>
     /// Creates configured HTTP client with SSL validation and timeouts.
     /// </summary>
@@ -213,6 +252,7 @@ uses
   System.NetConsts,
   IAMClient4D.Common.Constants,
   IAMClient4D.Common.CryptoUtils,
+  IAMClient4D.Common.SecureMemory,
   IAMClient4D.Callback.Handler.Local,
   IAMClient4D.Callback.Handler.External,
   IAMClient4D.Storage.AESMemoryTokenStorage,
@@ -236,18 +276,17 @@ begin
   Result := TAsyncCore.New<string>(
     function(const AOperation: IAsyncOperation): string
     begin
-      Self.AuthenticateClientInternal;
-      Result := FTokenStorage.LoadTokens.AccessToken;
+      Result := Self.AuthenticateClient;
     end);
 end;
 
 procedure TIAM4DKeycloakClient.ClearTokens;
 begin
   FTokenStorage.ClearTokens;
-  FState := EmptyStr;
-  FNonce := EmptyStr;
-  FPKCEVerifier := EmptyStr;
-  FPKCEChallenge := EmptyStr;
+  SecureZeroString(FState);
+  SecureZeroString(FNonce);
+  SecureZeroString(FPKCEVerifier);
+  SecureZeroString(FPKCEChallenge);
 end;
 
 procedure TIAM4DKeycloakClient.ConfigureInternal(const AConfig: TIAM4DClientConfig);
@@ -279,14 +318,15 @@ begin
 end;
 
 function TIAM4DKeycloakClient.ExecuteCallHTTP<T>(const AOperation: TFunc<THTTPClient, T>): T;
-var
-  LHTTPClient: THTTPClient;
 begin
-  LHTTPClient := Self.CreateHTTPClient;
+  FHTTPClientLock.Acquire;
   try
-    Result := AOperation(LHTTPClient);
+    if not Assigned(FHTTPClient) then
+      FHTTPClient := Self.CreateHTTPClient;
+
+    Result := AOperation(FHTTPClient);
   finally
-    LHTTPClient.Free;
+    FHTTPClientLock.Release;
   end;
 end;
 
@@ -310,6 +350,9 @@ begin
   FScopes := TStringList.Create;
   FSSLValidator := TIAM4DSSLCertificateValidator.Create;
   FSSLHelper := TIAM4DHTTPClientSSLHelper.Create(FSSLValidator);
+
+  FHTTPClient := nil;
+  FHTTPClientLock := TCriticalSection.Create;
 
   if AStorage = nil then
   begin
@@ -344,6 +387,14 @@ begin
   if Assigned(FCallbackHandler) and FCallbackHandler.IsListening then
     FCallbackHandler.Stop;
   FCallbackHandler := nil;
+
+  FHTTPClientLock.Acquire;
+  try
+    FreeAndNil(FHTTPClient);
+  finally
+    FHTTPClientLock.Release;
+  end;
+  FHTTPClientLock.Free;
 
   FSSLHelper.Free;
   FSSLValidator := nil;
@@ -489,15 +540,23 @@ end;
 
 function TIAM4DKeycloakClient.EncodeFormParams(const AParams: TStrings): string;
 var
+  LSB: TStringBuilder;
   LIndex: Integer;
 begin
-  Result := EmptyStr;
-  for LIndex := 0 to AParams.Count - 1 do
-  begin
-    if LIndex > 0 then
-      Result := Result + '&';
-    Result := Result + TNetEncoding.URL.Encode(AParams.Names[LIndex]) + '=' +
-      TNetEncoding.URL.Encode(AParams.ValueFromIndex[LIndex]);
+  // Use TStringBuilder for O(n) performance instead of O(n²) string concatenation
+  LSB := TStringBuilder.Create;
+  try
+    for LIndex := 0 to AParams.Count - 1 do
+    begin
+      if LIndex > 0 then
+        LSB.Append('&');
+      LSB.Append(TNetEncoding.URL.Encode(AParams.Names[LIndex]))
+         .Append('=')
+         .Append(TNetEncoding.URL.Encode(AParams.ValueFromIndex[LIndex]));
+    end;
+    Result := LSB.ToString;
+  finally
+    LSB.Free;
   end;
 end;
 
@@ -582,6 +641,8 @@ begin
     LParams.AddPair(IAM4D_OAUTH2_PARAM_NONCE, FNonce);
     if not (ALoginHint.Trim.IsEmpty) then
       LParams.AddPair(IAM4D_OAUTH2_PARAM_LOGIN_HINT, ALoginHint);
+    if Length(FKeycloakConfig.AcrValues) > 0 then
+      LParams.AddPair(IAM4D_OAUTH2_PARAM_ACR_VALUES, string.Join(' ', FKeycloakConfig.AcrValues));
     if FKeycloakConfig.GrantType = gtAuthorizationCode then
     begin
       LParams.AddPair(IAM4D_OAUTH2_PARAM_CODE_CHALLENGE, FPKCEChallenge);
@@ -709,7 +770,7 @@ begin
   Result := TAsyncCore.New<string>(
     function(const AOperation: IAsyncOperation): string
     begin
-      Result := Self.CompleteAuthorizationFlowInternal(ACode, AState).AccessToken;
+      Result := Self.CompleteAuthorizationFlow(ACode, AState);
     end);
 end;
 
@@ -800,7 +861,7 @@ begin
   Result := TAsyncCore.New<string>(
     function(const AOperation: IAsyncOperation): string
     begin
-      Result := Self.GetAccessTokenInternal;
+      Result := Self.GetAccessToken;
     end);
 end;
 
@@ -808,15 +869,8 @@ function TIAM4DKeycloakClient.GetUserInfoAsync: IAsyncPromise<TIAM4DUserInfo>;
 begin
   Result := TAsyncCore.New<TIAM4DUserInfo>(
     function(const AOperation: IAsyncOperation): TIAM4DUserInfo
-    var
-      LJSONObj: TJSONObject;
     begin
-      LJSONObj := Self.GetUserInfoInternal;
-      try
-        Result := TIAM4DUserInfo.FromJSONObject(LJSONObj);
-      finally
-        LJSONObj.Free;
-      end;
+      Result := Self.GetUserInfo;
     end);
 end;
 
@@ -925,8 +979,45 @@ begin
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      Self.LogoutInternal;
+      Self.Logout;
     end);
+end;
+
+// ============================================================================
+// Synchronous Operations
+// ============================================================================
+
+function TIAM4DKeycloakClient.GetAccessToken: string;
+begin
+  Result := GetAccessTokenInternal;
+end;
+
+function TIAM4DKeycloakClient.AuthenticateClient: string;
+begin
+  AuthenticateClientInternal;
+  Result := FTokenStorage.LoadTokens.AccessToken;
+end;
+
+function TIAM4DKeycloakClient.CompleteAuthorizationFlow(const ACode, AState: string): string;
+begin
+  Result := CompleteAuthorizationFlowInternal(ACode, AState).AccessToken;
+end;
+
+function TIAM4DKeycloakClient.GetUserInfo: TIAM4DUserInfo;
+var
+  LJSONObj: TJSONObject;
+begin
+  LJSONObj := GetUserInfoInternal;
+  try
+    Result := TIAM4DUserInfo.FromJSONObject(LJSONObj);
+  finally
+    LJSONObj.Free;
+  end;
+end;
+
+procedure TIAM4DKeycloakClient.Logout;
+begin
+  LogoutInternal;
 end;
 
 function TIAM4DKeycloakClient.PostToTokenEndpoint(
@@ -1033,7 +1124,8 @@ begin
     if LNonceValue.Trim.IsEmpty then
       raise EIAM4DException.Create('Missing nonce in ID Token payload.');
 
-    if LNonceValue <> FNonce then
+    // Use constant-time comparison for consistency with other security checks
+    if not SecureStringEquals(LNonceValue, FNonce) then
       raise EIAM4DException.CreateFmt('Nonce mismatch in ID Token. Expected: %s, Found: %s', [FNonce, LNonceValue]);
   finally
     LJSONValue.Free;

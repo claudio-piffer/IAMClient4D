@@ -138,6 +138,15 @@ type
     Scopes: TArray<string>;
 
     /// <summary>
+    /// Authentication Methods References (amr) - RFC 8176.
+    /// Array of identifiers for authentication methods used.
+    /// Common values: "pwd" (password), "user" (user presence/passkey),
+    ///   "pin", "fpt" (fingerprint), "hwk" (hardware key), "swk" (software key),
+    ///   "otp", "mfa", "sms", "kba" (knowledge-based auth).
+    /// </summary>
+    Amr: TArray<string>;
+
+    /// <summary>
     /// Raw JWT token string.
     /// </summary>
     RawToken: string;
@@ -171,6 +180,24 @@ type
     /// Checks if user has specific scope (case-insensitive).
     /// </summary>
     function HasScope(const AScope: string): Boolean;
+
+    /// <summary>
+    /// Checks if specific authentication method was used (case-insensitive).
+    /// Use RFC 8176 values: 'pwd', 'user', 'hwk', 'swk', 'otp', 'mfa', etc.
+    /// </summary>
+    function HasAuthMethod(const AMethod: string): Boolean;
+
+    /// <summary>
+    /// Checks if passkey/WebAuthn was used for authentication.
+    /// Returns True if AMR contains "user", "hwk", or "swk" (RFC 8176).
+    /// </summary>
+    function WasPasskeyUsed: Boolean;
+
+    /// <summary>
+    /// Checks if multi-factor authentication was used.
+    /// Returns True if AMR contains "mfa".
+    /// </summary>
+    function WasMfaUsed: Boolean;
 
     /// <summary>
     /// Converts claims to JSON object (aud always array, times ISO-8601 UTC).
@@ -453,6 +480,44 @@ begin
   Result := False;
 end;
 
+function TIAM4DJWTClaims.HasAuthMethod(const AMethod: string): Boolean;
+var
+  LIndex: Integer;
+begin
+  if Length(Amr) = 0 then
+    Exit(False);
+
+  for LIndex := 0 to High(Amr) do
+  begin
+    if CompareText(Amr[LIndex], AMethod) = 0 then
+      Exit(True);
+  end;
+
+  Result := False;
+end;
+
+function TIAM4DJWTClaims.WasPasskeyUsed: Boolean;
+const
+  PASSKEY_AMR_VALUES: array[0..2] of string = ('user', 'hwk', 'swk');
+var
+  LMethod, LPasskeyMethod: string;
+begin
+  Result := False;
+
+  if Length(Amr) = 0 then
+    Exit;
+
+  for LMethod in Amr do
+    for LPasskeyMethod in PASSKEY_AMR_VALUES do
+      if CompareText(LMethod, LPasskeyMethod) = 0 then
+        Exit(True);
+end;
+
+function TIAM4DJWTClaims.WasMfaUsed: Boolean;
+begin
+  Result := HasAuthMethod('mfa');
+end;
+
 function TIAM4DJWTClaims.ToJSON: TJSONObject;
 var
   LIndex: Integer;
@@ -520,6 +585,14 @@ begin
       LJArr.Add(Scopes[LIndex]);
     Result.AddPair('scopes', LJArr);
   end;
+
+  if Length(Amr) > 0 then
+  begin
+    LJArr := TJSONArray.Create;
+    for LIndex := 0 to High(Amr) do
+      LJArr.Add(Amr[LIndex]);
+    Result.AddPair('amr', LJArr);
+  end;
 end;
 
 class function TIAM4DJWTClaims.Empty: TIAM4DJWTClaims;
@@ -580,6 +653,8 @@ begin
     Result.Scopes := SplitScopes(LScopeStr)
   else
     Result.Scopes := JsonGetArrayOfStrings(Payload, 'scope');
+
+  Result.Amr := JsonGetArrayOfStrings(Payload, 'amr');
 end;
 
 function TIAM4DKeycloakRealmAccess.HasRole(const ARole: string): Boolean;

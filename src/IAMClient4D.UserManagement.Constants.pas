@@ -140,6 +140,11 @@ const
   /// </summary>
   IAM4D_MAX_BATCH_SIZE = 1000;
 
+  /// <summary>
+  /// Error message used when a batch operation is cancelled.
+  /// </summary>
+  IAM4D_OPERATION_CANCELLED = 'Operation cancelled';
+
 implementation
 
 end.

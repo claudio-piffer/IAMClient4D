@@ -128,6 +128,40 @@ uses
   IAMClient4D.Common.Constants,
   IAMClient4D.Exceptions;
 
+/// <summary>
+/// Escapes HTML special characters to prevent XSS attacks.
+/// </summary>
+/// <remarks>
+/// Converts: &amp; &lt; &gt; &quot; &#39;
+/// SECURITY: Must be applied to all user-controlled input before HTML insertion.
+/// </remarks>
+function HTMLEscape(const AText: string): string;
+var
+  I: Integer;
+  LChar: Char;
+  LBuilder: TStringBuilder;
+begin
+  LBuilder := TStringBuilder.Create(Length(AText) * 2);
+  try
+    for I := 1 to Length(AText) do
+    begin
+      LChar := AText[I];
+      case LChar of
+        '&': LBuilder.Append('&amp;');
+        '<': LBuilder.Append('&lt;');
+        '>': LBuilder.Append('&gt;');
+        '"': LBuilder.Append('&quot;');
+        '''': LBuilder.Append('&#39;');
+      else
+        LBuilder.Append(LChar);
+      end;
+    end;
+    Result := LBuilder.ToString;
+  finally
+    LBuilder.Free;
+  end;
+end;
+
 constructor TIAM4DIndyHttpCallbackServer.Create(const APort: Word; const ARedirectPath: string);
 begin
   inherited Create;
@@ -142,7 +176,12 @@ begin
     FRedirectPath := '/' + FRedirectPath;
 
   FServer := TIdHTTPServer.Create(nil);
-  FServer.DefaultPort := FPort;
+  
+  with FServer.Bindings.Add do
+  begin
+    IP := '127.0.0.1';
+    Port := FPort;
+  end;
   FServer.OnCommandGet := DoCommandGet;
   FPageTexts := TIAM4DCallbackPageTexts.CreateDefault;
 end;
@@ -204,7 +243,7 @@ begin
             begin
               FCallback(crtOther, E.Message);
               AResponseInfo.ResponseNo := 400;
-              AResponseInfo.ContentText := GetHtmlAuthErrorPage(E.Message);
+              AResponseInfo.ContentText := GetHtmlAuthErrorPage(HTMLEscape(E.Message));
               AResponseInfo.ContentType := 'text/html';
             end;
           end;
@@ -221,7 +260,8 @@ begin
       begin
         var LErrorCode: string := ARequestInfo.Params.Values['error'];
         var LErrorDesc: string := ARequestInfo.Params.Values['error_description'];
-        var LErrorHtml: string := GetHtmlAuthErrorPage(Format('%s<br><br>%s', [LErrorCode, LErrorDesc]));
+        var LErrorHtml: string := GetHtmlAuthErrorPage(
+          Format('%s<br><br>%s', [HTMLEscape(LErrorCode), HTMLEscape(LErrorDesc)]));
         if Assigned(FCallback) then
           FCallback(crtOther, LErrorCode + ': ' + LErrorDesc);
         AResponseInfo.ResponseNo := 400;

@@ -33,14 +33,6 @@ uses
 
 type
   /// <summary>
-  /// JWKS source type enumeration.
-  /// </summary>
-  TJWKSSourceType = (
-    jsstNone,
-    jsstURL,
-    jsstFile);
-
-  /// <summary>
   /// JWT signature verifier interface.
   /// </summary>
   /// <remarks>
@@ -138,16 +130,6 @@ type
     /// Validates JWT token and returns claims if valid.
     /// </summary>
     function ValidateToken(const AToken: string; out AClaims: TJSONObject): Boolean;
-
-    /// <summary>
-    /// Configures JWKS retrieval from URL with cache duration.
-    /// </summary>
-    procedure ConfigureJWKSFromURL(const AJWKS_URL: string; const ACacheDurationMinutes: Integer = 5);
-
-    /// <summary>
-    /// Configures JWKS from local file path.
-    /// </summary>
-    procedure ConfigureJWKSFromFile(const AJWKS_FilePath: string);
 
     /// <summary>
     /// Returns clock skew tolerance in seconds.

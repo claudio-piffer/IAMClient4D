@@ -28,7 +28,8 @@ interface
 uses
   System.SysUtils,
   System.JSON,
-  IAMClient4D.Security.Core;
+  IAMClient4D.Security.Core,
+  IAMClient4D.Security.Crypto.Interfaces;
 
 type
   /// <summary>
@@ -36,20 +37,34 @@ type
   /// </summary>
   /// <remarks>
   /// Automatically delegates to appropriate verifier based on algorithm.
-  /// Supported algorithms: RS256, RS384, RS512 (RSA with PKCS#1 v1.5).
-  /// Future extensions: PS256, PS384, PS512 (RSA-PSS), ES256, ES384, ES512 (ECDSA).
+  /// Supported algorithms:
+  /// - RS256, RS384, RS512 (RSA with PKCS#1 v1.5)
+  /// - PS256, PS384, PS512 (RSA-PSS with SHA-2)
+  /// Future extensions: ES256, ES384, ES512 (ECDSA).
+  /// Crypto provider: Configurable for different cryptographic backends.
   /// Thread-safety: Thread-safe for concurrent verification operations.
   /// </remarks>
   TUniversalJWTSignatureVerifier = class(TInterfacedObject, IIAM4DJWTSignatureVerifier)
   private
+    FCryptoProvider: IIAM4DCryptoProvider;
     FRSAVerifier: IIAM4DJWTSignatureVerifier;
+    FRSAPSSVerifier: IIAM4DJWTSignatureVerifier;
 
-    function IsRSAAlgorithm(const AAlg: string): Boolean;
+    function IsRSAPKCS1Algorithm(const AAlg: string): Boolean;
+    function IsRSAPSSAlgorithm(const AAlg: string): Boolean;
+
+    procedure InitializeVerifiers;
   public
     /// <summary>
-    /// Creates universal verifier with support for all standard JWT algorithms.
+    /// Creates universal verifier with default LockBox3 crypto provider.
     /// </summary>
-    constructor Create;
+    constructor Create; overload;
+
+    /// <summary>
+    /// Creates universal verifier with specified crypto provider.
+    /// </summary>
+    /// <param name="ACryptoProvider">Crypto provider for signature operations</param>
+    constructor Create(const ACryptoProvider: IIAM4DCryptoProvider); overload;
 
     /// <summary>
     /// Destroys verifier and releases internal verifier instances.
@@ -71,39 +86,64 @@ type
     /// Returns array of all supported algorithms.
     /// </summary>
     function GetSupportedAlgorithms: TArray<string>;
+
+    /// <summary>
+    /// Returns the crypto provider used by this verifier.
+    /// </summary>
+    property CryptoProvider: IIAM4DCryptoProvider read FCryptoProvider;
   end;
 
 implementation
 
 uses
   IAMClient4D.Security.JWT.Verifiers.RSA,
+  IAMClient4D.Security.JWT.Verifiers.RSAPSS,
+  IAMClient4D.Security.Crypto.LockBox3,
   IAMClient4D.Exceptions;
 
 { TUniversalJWTSignatureVerifier }
 
 constructor TUniversalJWTSignatureVerifier.Create;
 begin
+  Create(TIAM4DLockBox3CryptoProvider.Create);
+end;
+
+constructor TUniversalJWTSignatureVerifier.Create(const ACryptoProvider: IIAM4DCryptoProvider);
+begin
   inherited Create;
-  FRSAVerifier := TRSAJWTSignatureVerifier.Create;
+  FCryptoProvider := ACryptoProvider;
+  InitializeVerifiers;
+end;
+
+procedure TUniversalJWTSignatureVerifier.InitializeVerifiers;
+begin
+  FRSAVerifier := TRSAJWTSignatureVerifier.Create(FCryptoProvider);
+  FRSAPSSVerifier := TRSAPSSJWTSignatureVerifier.Create(FCryptoProvider);
 end;
 
 destructor TUniversalJWTSignatureVerifier.Destroy;
 begin
   FRSAVerifier := nil;
+  FRSAPSSVerifier := nil;
+  FCryptoProvider := nil;
   inherited;
 end;
 
 function TUniversalJWTSignatureVerifier.GetSupportedAlgorithms: TArray<string>;
 begin
-  Result := TArray<string>.Create('RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS512');
+  Result := FCryptoProvider.GetSupportedAlgorithms;
 end;
 
-function TUniversalJWTSignatureVerifier.IsRSAAlgorithm(const AAlg: string): Boolean;
+function TUniversalJWTSignatureVerifier.IsRSAPKCS1Algorithm(const AAlg: string): Boolean;
 begin
   Result := SameText(AAlg, 'RS256') or
             SameText(AAlg, 'RS384') or
-            SameText(AAlg, 'RS512') or
-            SameText(AAlg, 'PS256') or
+            SameText(AAlg, 'RS512');
+end;
+
+function TUniversalJWTSignatureVerifier.IsRSAPSSAlgorithm(const AAlg: string): Boolean;
+begin
+  Result := SameText(AAlg, 'PS256') or
             SameText(AAlg, 'PS384') or
             SameText(AAlg, 'PS512');
 end;
@@ -115,9 +155,15 @@ begin
   if AAlg.Trim.IsEmpty then
     raise EIAM4DSecurityValidationException.Create('Algorithm cannot be empty');
 
-  if IsRSAAlgorithm(AAlg) then
+  if IsRSAPKCS1Algorithm(AAlg) then
   begin
+    // RS256, RS384, RS512 - RSA with PKCS#1 v1.5 padding
     Result := FRSAVerifier.Verify(ASigningInput, ASignatureBytes, APublicKeyJWK, AAlg);
+  end
+  else if IsRSAPSSAlgorithm(AAlg) then
+  begin
+    // PS256, PS384, PS512 - RSA-PSS with SHA-2
+    Result := FRSAPSSVerifier.Verify(ASigningInput, ASignatureBytes, APublicKeyJWK, AAlg);
   end
   else
   begin

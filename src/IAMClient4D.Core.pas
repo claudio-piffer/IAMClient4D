@@ -146,6 +146,7 @@ type
     FResponseTimeout: Integer; // milliseconds
     FExternalCallbackURL: string;
     FTokenExpiryBufferSeconds: Integer;
+    FAcrValues: TArray<string>;
   public
     /// <summary>
     /// Creates client configuration with specified grant type
@@ -159,7 +160,8 @@ type
       const AConnectionTimeout: Integer = 30000;
       const AResponseTimeout: Integer = 60000;
       const AExternalCallbackURL: string = '';
-      const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS
+      const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS;
+      const AAcrValues: TArray<string> = nil
       ): TIAM4DClientConfig; static;
 
     /// <summary>
@@ -172,7 +174,8 @@ type
       const AConnectionTimeout: Integer = 30000;
       const AResponseTimeout: Integer = 60000;
       const AExternalCallbackURL: string = '';
-      const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS
+      const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS;
+      const AAcrValues: TArray<string> = nil
       ): TIAM4DClientConfig; static;
 
     /// <summary>
@@ -198,6 +201,11 @@ type
     property ResponseTimeout: Integer read FResponseTimeout;
     property ExternalCallbackURL: string read FExternalCallbackURL;
     property TokenExpiryBufferSeconds: Integer read FTokenExpiryBufferSeconds;
+    /// <summary>
+    /// ACR values to request specific authentication levels from Keycloak.
+    /// Examples: 'urn:keycloak:acr:passkey', 'urn:keycloak:acr:2fa'
+    /// </summary>
+    property AcrValues: TArray<string> read FAcrValues;
   end;
 
   /// <summary>
@@ -428,6 +436,61 @@ type
     /// </summary>
     function LogoutAsync: IAsyncVoidPromise;
 
+    // ========================================================================
+    // Synchronous Operations
+    // ========================================================================
+
+    /// <summary>
+    /// Gets valid access token synchronously (refreshes if expired).
+    /// </summary>
+    /// <returns>Valid access token string.</returns>
+    /// <exception cref="EIAM4DRefreshTokenExpiredException">
+    /// Raised when refresh token has expired (Authorization Code flow).
+    /// </exception>
+    /// <remarks>
+    /// For Authorization Code flow: Automatically refreshes using refresh token.
+    /// For Client Credentials flow: Automatically requests new token.
+    /// </remarks>
+    function GetAccessToken: string;
+
+    /// <summary>
+    /// Authenticates using Client Credentials flow synchronously.
+    /// </summary>
+    /// <returns>Access token string.</returns>
+    /// <exception cref="EIAM4DException">
+    /// Raised when not configured for Client Credentials flow or on errors.
+    /// </exception>
+    function AuthenticateClient: string;
+
+    /// <summary>
+    /// Completes Authorization Code flow with received code and state synchronously.
+    /// </summary>
+    /// <param name="ACode">Authorization code from callback.</param>
+    /// <param name="AState">State parameter for CSRF validation.</param>
+    /// <returns>Access token string.</returns>
+    /// <exception cref="EIAM4DStateMismatchException">
+    /// Raised when state parameter does not match.
+    /// </exception>
+    function CompleteAuthorizationFlow(const ACode, AState: string): string;
+
+    /// <summary>
+    /// Retrieves user info from OIDC UserInfo endpoint synchronously.
+    /// </summary>
+    /// <returns>User information record with standard OIDC claims.</returns>
+    /// <exception cref="EIAM4DException">
+    /// Raised when using Client Credentials flow (no user context).
+    /// </exception>
+    function GetUserInfo: TIAM4DUserInfo;
+
+    /// <summary>
+    /// Logs out user and clears tokens synchronously.
+    /// </summary>
+    procedure Logout;
+
+    // ========================================================================
+    // Utility Methods
+    // ========================================================================
+
     /// <summary>
     /// Cancels ongoing authorization flow
     /// </summary>
@@ -517,7 +580,8 @@ class function TIAM4DClientConfig.Create(
   const AConnectionTimeout: Integer;
   const AResponseTimeout: Integer;
   const AExternalCallbackURL: string;
-  const ATokenExpiryBufferSeconds: Integer): TIAM4DClientConfig;
+  const ATokenExpiryBufferSeconds: Integer;
+  const AAcrValues: TArray<string>): TIAM4DClientConfig;
 begin
   if ABaseURL.Trim.IsEmpty then
     raise EArgumentException.Create('BaseURL cannot be empty.');
@@ -543,6 +607,7 @@ begin
   Result.FResponseTimeout := AResponseTimeout;
   Result.FExternalCallbackURL := AExternalCallbackURL;
   Result.FTokenExpiryBufferSeconds := ATokenExpiryBufferSeconds;
+  Result.FAcrValues := Copy(AAcrValues);
 end;
 
 class function TIAM4DClientConfig.CreateForAuthorizationCode(
@@ -552,7 +617,8 @@ class function TIAM4DClientConfig.CreateForAuthorizationCode(
   const AConnectionTimeout: Integer;
   const AResponseTimeout: Integer;
   const AExternalCallbackURL: string;
-  const ATokenExpiryBufferSeconds: Integer): TIAM4DClientConfig;
+  const ATokenExpiryBufferSeconds: Integer;
+  const AAcrValues: TArray<string>): TIAM4DClientConfig;
 begin
   Result := Create(
     ABaseURL,
@@ -565,7 +631,8 @@ begin
     AConnectionTimeout,
     AResponseTimeout,
     AExternalCallbackURL,
-    ATokenExpiryBufferSeconds);
+    ATokenExpiryBufferSeconds,
+    AAcrValues);
 end;
 
 class function TIAM4DClientConfig.CreateForClientCredentials(
@@ -587,7 +654,8 @@ begin
     AConnectionTimeout,
     AResponseTimeout,
     EmptyStr, // no external callback URL
-    ATokenExpiryBufferSeconds);
+    ATokenExpiryBufferSeconds,
+    nil); // ACR values not applicable for Client Credentials
 end;
 
 {TIAM4DUserInfo}
@@ -808,6 +876,31 @@ begin
   Result := CreateHTTPClient(LConfig);
 end;
 
+// Helper function: determines if HTTP status code is retryable
+// Returns True for transient errors (429, 500, 502, 503, 504), False for permanent errors
+function IsRetryableStatusCode(AStatusCode: Integer): Boolean;
+begin
+  case AStatusCode of
+    429, // Too Many Requests - retryable with backoff (rate limiting)
+    500, // Internal Server Error - might be temporary
+    502, // Bad Gateway - typically temporary
+    503, // Service Unavailable - explicitly temporary
+    504: // Gateway Timeout - temporary
+      Result := True;
+    501, // Not Implemented - permanent
+    505, // HTTP Version Not Supported - permanent
+    506, // Variant Also Negotiates - configuration error
+    507, // Insufficient Storage - capacity issue
+    508, // Loop Detected - configuration error
+    510, // Not Extended - permanent
+    511: // Network Authentication Required - permanent
+      Result := False;
+  else
+    // For unknown 5xx codes, default to retry
+    Result := (AStatusCode >= 500) and (AStatusCode < 600);
+  end;
+end;
+
 class function TIAM4DHTTPClientFactory.GetWithRetry(
   const AClient: THTTPClient;
   const AUrl: string;
@@ -818,6 +911,7 @@ var
   LAttempt: Integer;
   LDelayMs: Integer;
   LHeaders: TNetHeaders;
+  LStatusCode: Integer;
 begin
   LHeaders := AHeaders;
 
@@ -825,30 +919,42 @@ begin
   while True do
     try
       Result := AClient.Get(AUrl, nil, LHeaders);
+      LStatusCode := Integer(Result.StatusCode);
 
-      if (Result.StatusCode >= 400) and (Result.StatusCode < 500) then
-        Exit;
+      // 4xx: Client errors - don't retry (except 429 Too Many Requests)
+      if (LStatusCode >= 400) and (LStatusCode < 500) then
+      begin
+        if LStatusCode = 429 then
+          raise ENetHTTPClientException.CreateFmt('HTTP %d', [LStatusCode]) // Retryable
+        else
+          Exit; // Other 4xx are permanent
+      end;
 
-      if (Result.StatusCode >= 500) then
-        raise ENetHTTPClientException.CreateFmt('HTTP %d', [Integer(Result.StatusCode)]);
+      // 5xx: Server errors - retry only if transient
+      if LStatusCode >= 500 then
+      begin
+        if not IsRetryableStatusCode(LStatusCode) then
+          Exit; // Permanent server error - don't retry
+        raise ENetHTTPClientException.CreateFmt('HTTP %d', [LStatusCode]);
+      end;
 
       Exit;
     except
-      on ENetHTTPRequestException do
+      on E: ENetHTTPRequestException do
       begin
         if LAttempt >= AMaxRetries then
           raise;
 
-        LDelayMs := Round(100 * Power(3, LAttempt - 1));
+        LDelayMs := Round(100 * Power(2, LAttempt - 1));
         LDelayMs := Max(50, Trunc(LDelayMs * (0.8 + Random * 0.4)));
         Sleep(LDelayMs);
         Inc(LAttempt);
       end;
-      on ENetHTTPClientException do
+      on E: ENetHTTPClientException do
       begin
         if LAttempt >= AMaxRetries then
           raise;
-        LDelayMs := Round(100 * Power(3, LAttempt - 1));
+        LDelayMs := Round(100 * Power(2, LAttempt - 1));
         LDelayMs := Max(50, Trunc(LDelayMs * (0.8 + Random * 0.4)));
         Sleep(LDelayMs);
         Inc(LAttempt);
@@ -867,6 +973,7 @@ var
   LAttempt: Integer;
   LDelayMs: Integer;
   LHeaders: TNetHeaders;
+  LStatusCode: Integer;
 begin
   LHeaders := AHeaders;
 
@@ -874,21 +981,43 @@ begin
   while True do
     try
       Result := AClient.Post(AUrl, AForm, nil, nil, LHeaders);
+      LStatusCode := Integer(Result.StatusCode);
 
-      if (Result.StatusCode >= 400) and (Result.StatusCode < 500) then
-        Exit;
+      // 4xx: Client errors - don't retry (except 429 Too Many Requests)
+      if (LStatusCode >= 400) and (LStatusCode < 500) then
+      begin
+        if LStatusCode = 429 then
+          raise ENetHTTPClientException.CreateFmt('HTTP %d', [LStatusCode]) // Retryable
+        else
+          Exit; // Other 4xx are permanent
+      end;
 
-      if (Result.StatusCode >= 500) then
-        raise ENetHTTPClientException.CreateFmt('HTTP %d', [Integer(Result.StatusCode)]);
+      // 5xx: Server errors - retry only if transient
+      if LStatusCode >= 500 then
+      begin
+        if not IsRetryableStatusCode(LStatusCode) then
+          Exit; // Permanent server error - don't retry
+        raise ENetHTTPClientException.CreateFmt('HTTP %d', [LStatusCode]);
+      end;
 
       Exit;
     except
-      on ENetHTTPClientException do
+      on E: ENetHTTPRequestException do
       begin
         if LAttempt >= AMaxRetries then
           raise;
 
-        LDelayMs := Round(100 * Power(3, LAttempt - 1));
+        LDelayMs := Round(100 * Power(2, LAttempt - 1));
+        LDelayMs := Max(50, Trunc(LDelayMs * (0.8 + Random * 0.4)));
+        Sleep(LDelayMs);
+        Inc(LAttempt);
+      end;
+      on E: ENetHTTPClientException do
+      begin
+        if LAttempt >= AMaxRetries then
+          raise;
+
+        LDelayMs := Round(100 * Power(2, LAttempt - 1));
         LDelayMs := Max(50, Trunc(LDelayMs * (0.8 + Random * 0.4)));
         Sleep(LDelayMs);
         Inc(LAttempt);

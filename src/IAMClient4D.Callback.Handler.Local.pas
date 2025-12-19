@@ -96,6 +96,7 @@ implementation
 
 uses
   IAMClient4D.Common.Constants,
+  IAMClient4D.Common.SecureMemory,
   IAMClient4D.Common.OAuth2URLParser,
   IAMClient4D.Server.Callback.IndyHttpServer,
   IAMClient4D.Exceptions;
@@ -107,10 +108,6 @@ constructor TIAM4DLocalCallbackHandler.Create(
   const ACallbackPath: string);
 begin
   inherited Create(cbmLocalServer);
-
-  // Port 0 is allowed (let OS assign ephemeral port)
-  // if APort = 0 then
-  //   raise EIAM4DCallbackHandlerException.Create('Port must be greater than 0');
 
   FPort := APort;
   FCallbackPath := ACallbackPath;
@@ -223,6 +220,8 @@ begin
 end;
 
 procedure TIAM4DLocalCallbackHandler.ValidateStateParameter(const AReceivedState: string);
+const
+  MAX_STATE_LENGTH = 256;
 var
   LContext: TIAM4DOAuthContext;
 begin
@@ -231,7 +230,12 @@ begin
   if AReceivedState.Trim.IsEmpty then
     raise EIAM4DCallbackHandlerException.Create('Missing state parameter in OAuth2 callback');
 
-  if AReceivedState <> LContext.State then
+  if Length(AReceivedState) > MAX_STATE_LENGTH then
+    raise EIAM4DCallbackHandlerException.CreateFmt(
+      'State parameter exceeds maximum length (%d chars). Possible attack attempt.',
+      [MAX_STATE_LENGTH]);
+
+  if not SecureStringEquals(AReceivedState, LContext.State) then
     raise EIAM4DCallbackHandlerException.CreateFmt(
       'State mismatch in OAuth2 callback. Expected: %s, Received: %s',
       [LContext.State, AReceivedState]);

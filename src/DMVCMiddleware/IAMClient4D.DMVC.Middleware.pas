@@ -122,7 +122,7 @@ type
     /// Validator configuration:
     /// - Validator can be passed partially or fully configured
     /// - Middleware will apply settings from AConfig on top
-    /// - Ensure JWKS is configured (ConfigureJWKSFromURL/File) if using signature verification
+    /// - JWKS is handled automatically via internal provider with auto-discovery
     ///
     /// Memory management:
     /// - Validator is an interface: reference counting is automatic
@@ -211,34 +211,20 @@ begin
 
   LHTTPConfig := CreateHTTPConfig(FConfig.SSLValidationMode);
 
-  if not FConfig.Issuer.Trim.IsEmpty then
-  begin
-    LJWKSProvider := TIAM4DJWKSProvider.GetInstance;
-    LJWKSProvider.SetSSLValidationMode(FConfig.SSLValidationMode);
+  // Use singleton JWKS provider for optimal performance and thread-safety
+  LJWKSProvider := TIAM4DJWKSProvider.GetInstance;
+  LJWKSProvider.SetSSLValidationMode(FConfig.SSLValidationMode);
 
-    if FConfig.JWKSCacheDurationMinutes > 0 then
-      LJWKSProvider.SetCacheTTL(FConfig.JWKSCacheDurationMinutes * 60);
+  if FConfig.JWKSCacheDurationMinutes > 0 then
+    LJWKSProvider.SetCacheTTL(FConfig.JWKSCacheDurationMinutes * 60);
 
-    FJWTValidator := TIAM4DJWTValidator.Create(
-      FConfig.Issuer,
-      FConfig.Audience,
-      LJWKSProvider,
-      LHTTPConfig);
+  FJWTValidator := TIAM4DJWTValidator.Create(
+    FConfig.Issuer,
+    FConfig.Audience,
+    LJWKSProvider,
+    LHTTPConfig);
 
-    LogI('JWT middleware initialized with JWKS Provider (auto-discovery). Issuer=' + FConfig.Issuer);
-  end
-  else
-  begin
-    FJWTValidator := TIAM4DJWTValidator.Create(
-      FConfig.Issuer,
-      FConfig.Audience,
-      LHTTPConfig);
-
-    if not FConfig.JWKS_URL.IsEmpty then
-      FJWTValidator.ConfigureJWKSFromURL(FConfig.JWKS_URL, FConfig.JWKSCacheDurationMinutes);
-
-    LogI('JWT middleware initialized (legacy mode). Issuer=' + FConfig.Issuer + ' Audience=' + FConfig.Audience);
-  end;
+  LogI('JWT middleware initialized. Issuer=' + FConfig.Issuer + ' Audience=' + FConfig.Audience);
 
   FJWTValidator.ClockSkewSeconds := FConfig.ClockSkewSeconds;
 

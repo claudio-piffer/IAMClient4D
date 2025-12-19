@@ -60,26 +60,33 @@ type
   private
     type
       /// <summary>
-      /// Cached JWKS entry with URI and fetch timestamp.
+      /// Cached single JWK key with LRU tracking.
       /// </summary>
-      TCachedJWKS = record
-        JWKS: TJSONObject;
+      TCachedKey = record
+        Key: TJSONObject; 
+        Issuer: string; 
+        Kid: string; 
         JWKSUri: string;
-        FetchedAt: TDateTime;
+        FetchedAt: TDateTime; 
+        LastUsedAt: TDateTime; 
       end;
+    const
+      DEFAULT_MAX_CACHED_KEYS = 100; 
   private
     class var FInstance: IIAM4DJWKSProvider;
     class var FInstanceLock: TCriticalSection;
 
-      FCache: TDictionary<string, TCachedJWKS>;
-      FManualKeys: TDictionary<string, TJSONObject>;
-      FCacheLock: TLightweightMREW;
-      FCacheTTL: Integer;
-      FSSLValidator: IIAM4DSSLCertificateValidator;
-      FHTTPClient: THTTPClient;
-      FHTTPConfig: TIAM4DHTTPClientConfig;
-      FNegativeKidCache: TDictionary<string, TDateTime>;
-      FNegativeTtlSec: Integer;
+  private
+    FKeyCache: TDictionary<string, TCachedKey>;
+    FMaxCachedKeys: Integer;
+    FManualKeys: TDictionary<string, TJSONObject>;
+    FCacheLock: TLightweightMREW;
+    FCacheTTL: Integer;
+    FSSLValidator: IIAM4DSSLCertificateValidator;
+    FHTTPClient: THTTPClient;
+    FHTTPConfig: TIAM4DHTTPClientConfig;
+    FNegativeKidCache: TDictionary<string, TDateTime>;
+    FNegativeTtlSec: Integer;
 
     function MakeNegKey(const AIssuer, AKeyId: string): string;
     function IsKidNegCached(const AIssuer, AKeyId: string): Boolean;
@@ -87,7 +94,6 @@ type
     function DiscoverJWKSUri(const AIssuer: string): string;
     function FetchJWKS(const AJWKSUri: string): TJSONObject;
     function FindKeyInJWKS(const AJWKS: TJSONObject; const AKeyId: string): TJSONObject;
-    function IsCacheValid(const AEntry: TCachedJWKS): Boolean;
     function GetManualKeyLookup(const AIssuer, AKeyId: string): string;
     function NormalizeIssuer(const AIssuer: string): string;
     function GetUtcNow: TDateTime;
@@ -96,11 +102,12 @@ type
       const ARequest: TURLRequest; const Certificate: TCertificate;
       var Accepted: Boolean);
 
-    // Helper methods for refactored GetPublicKey
+    function MakeKeyLookup(const AIssuer, AKid: string): string;
     function TryGetFromManualKeys(const AIssuer, AKeyId: string; out AKey: TJSONObject): Boolean;
-    function TryGetFromCache(const AIssuer, AKeyId: string; out AKey: TJSONObject): Boolean;
-    function FetchAndCacheJWKS(const AIssuer: string; out AJWKSUri: string): TJSONObject;
-    procedure UpdateCacheEntry(const AIssuer, AJWKSUri: string; AJWKS: TJSONObject);
+    function TryGetKeyFromCache(const AIssuer, AKeyId: string; out AKey: TJSONObject): Boolean;
+    procedure AddKeyToCache(const AIssuer, AKid, AJWKSUri: string; AKey: TJSONObject);
+    procedure EvictLRUKey;
+    function IsKeyExpired(const AEntry: TCachedKey): Boolean;
   public
     /// <summary>
     /// Returns singleton instance (thread-safe lazy initialization).
@@ -111,16 +118,6 @@ type
     /// Releases singleton instance.
     /// </summary>
     class procedure ReleaseInstance;
-
-    /// <summary>
-    /// Class constructor - initializes singleton infrastructure.
-    /// </summary>
-    class constructor Create;
-
-    /// <summary>
-    /// Class destructor - releases singleton infrastructure.
-    /// </summary>
-    class destructor Destroy;
 
     /// <summary>
     /// Creates JWKS provider with HTTP configuration.
@@ -192,6 +189,11 @@ type
     /// Sets negative-cache TTL (seconds) for missing kid lookups (default 60).
     /// </summary>
     procedure SetNegativeKidTTLSeconds(ASeconds: Integer);
+
+    /// <summary>
+    /// Sets maximum number of cached keys (default 100). When exceeded, LRU eviction occurs.
+    /// </summary>
+    procedure SetMaxCachedKeys(ACount: Integer);
   end;
 
 implementation
@@ -202,28 +204,19 @@ uses
 
 { TIAM4DJWKSProvider }
 
-class constructor TIAM4DJWKSProvider.Create;
-begin
-  FInstanceLock := TCriticalSection.Create;
-  FInstance := nil;
-end;
-
-class destructor TIAM4DJWKSProvider.Destroy;
-begin
-  ReleaseInstance;
-  FreeAndNil(FInstanceLock);
-end;
-
 class function TIAM4DJWKSProvider.GetInstance: IIAM4DJWKSProvider;
 begin
   if not Assigned(FInstance) then
   begin
-    FInstanceLock.Enter;
-    try
-      if not Assigned(FInstance) then
-        FInstance := TIAM4DJWKSProvider.Create;
-    finally
-      FInstanceLock.Leave;
+    if Assigned(FInstanceLock) then
+    begin
+      FInstanceLock.Enter;
+      try
+        if not Assigned(FInstance) then
+          FInstance := TIAM4DJWKSProvider.Create;
+      finally
+        FInstanceLock.Leave;
+      end;
     end;
   end;
   Result := FInstance;
@@ -231,6 +224,12 @@ end;
 
 class procedure TIAM4DJWKSProvider.ReleaseInstance;
 begin
+  if not Assigned(FInstanceLock) then
+  begin
+    FInstance := nil;
+    Exit;
+  end;
+
   FInstanceLock.Enter;
   try
     FInstance := nil;
@@ -243,7 +242,8 @@ constructor TIAM4DJWKSProvider.Create(const AHTTPConfig: TIAM4DHTTPClientConfig)
 begin
   inherited Create;
 
-  FCache := TDictionary<string, TCachedJWKS>.Create;
+  FKeyCache := TDictionary<string, TCachedKey>.Create;
+  FMaxCachedKeys := DEFAULT_MAX_CACHED_KEYS;
   FManualKeys := TDictionary<string, TJSONObject>.Create;
   FNegativeKidCache := TDictionary<string, TDateTime>.Create;
   FNegativeTtlSec := 60;
@@ -262,29 +262,53 @@ var
   LConfig: TIAM4DHTTPClientConfig;
 begin
   LConfig := TIAM4DHTTPClientConfig.Create(10000, 10000, ASSLValidationMode);
-  Create(LConfig);
+  
+  inherited Create;
+
+  FKeyCache := TDictionary<string, TCachedKey>.Create;
+  FMaxCachedKeys := DEFAULT_MAX_CACHED_KEYS;
+  FManualKeys := TDictionary<string, TJSONObject>.Create;
+  FNegativeKidCache := TDictionary<string, TDateTime>.Create;
+  FNegativeTtlSec := 60;
+
+  FCacheTTL := 3600;
+  FSSLValidator := TIAM4DSSLCertificateValidator.Create;
+  FHTTPConfig := LConfig;
+
+  FHTTPClient := TIAM4DHTTPClientFactory.CreateHTTPClient(FHTTPConfig);
+
+  SetSSLValidationMode(FHTTPConfig.SSLValidationMode);
 end;
 
 destructor TIAM4DJWKSProvider.Destroy;
 begin
-  ClearCache;
+  if Assigned(FHTTPClient) then
+    FHTTPClient.OnValidateServerCertificate := nil;
 
-  FCacheLock.BeginWrite;
-  try
-    for var LKey in FManualKeys.Values do
-      LKey.Free;
-    FManualKeys.Clear;
-    FNegativeKidCache.Clear;
-  finally
-    FCacheLock.EndWrite;
+  if Assigned(FKeyCache) then
+  begin
+    for var LPair in FKeyCache do
+      if Assigned(LPair.Value.Key) then
+        LPair.Value.Key.Free;
+    FKeyCache.Clear;
   end;
 
-  FreeAndNil(FCache);
+  if Assigned(FManualKeys) then
+  begin
+    for var LPair in FManualKeys do
+      LPair.Value.Free;
+    FManualKeys.Clear;
+  end;
+
+  if Assigned(FNegativeKidCache) then
+    FNegativeKidCache.Clear;
+
+  FreeAndNil(FKeyCache);
   FreeAndNil(FManualKeys);
   FreeAndNil(FNegativeKidCache);
-  FSSLValidator := nil;
-
   FreeAndNil(FHTTPClient);
+
+  FSSLValidator := nil;
 
   inherited;
 end;
@@ -320,15 +344,20 @@ begin
   Result := NormalizeIssuer(AIssuer) + '|' + AKeyId;
 end;
 
-function TIAM4DJWKSProvider.IsCacheValid(const AEntry: TCachedJWKS): Boolean;
+function TIAM4DJWKSProvider.IsKeyExpired(const AEntry: TCachedKey): Boolean;
 var
   LElapsedSeconds: Int64;
 begin
-  if not Assigned(AEntry.JWKS) then
-    Exit(False);
+  if not Assigned(AEntry.Key) then
+    Exit(True);
 
   LElapsedSeconds := SecondsBetween(GetUtcNow, AEntry.FetchedAt);
-  Result := LElapsedSeconds <= FCacheTTL;
+  Result := LElapsedSeconds > FCacheTTL;
+end;
+
+function TIAM4DJWKSProvider.MakeKeyLookup(const AIssuer, AKid: string): string;
+begin
+  Result := NormalizeIssuer(AIssuer) + '|' + AKid;
 end;
 
 function TIAM4DJWKSProvider.IsKidNegCached(const AIssuer, AKeyId: string): Boolean;
@@ -395,50 +424,106 @@ begin
   end;
 end;
 
-function TIAM4DJWKSProvider.TryGetFromCache(const AIssuer, AKeyId: string; out AKey: TJSONObject): Boolean;
+function TIAM4DJWKSProvider.TryGetKeyFromCache(const AIssuer, AKeyId: string; out AKey: TJSONObject): Boolean;
 var
-  LCachedEntry: TCachedJWKS;
+  LLookup: string;
+  LEntry: TCachedKey;
 begin
   Result := False;
   AKey := nil;
+  LLookup := MakeKeyLookup(AIssuer, AKeyId);
 
   FCacheLock.BeginRead;
   try
-    if FCache.TryGetValue(AIssuer, LCachedEntry) and IsCacheValid(LCachedEntry) then
+    if FKeyCache.TryGetValue(LLookup, LEntry) then
     begin
-      AKey := FindKeyInJWKS(LCachedEntry.JWKS, AKeyId);
-      Result := Assigned(AKey);
+      if not IsKeyExpired(LEntry) then
+      begin
+        AKey := LEntry.Key.Clone as TJSONObject;
+        Result := True;
+      end;
     end;
   finally
     FCacheLock.EndRead;
   end;
+
+  if Result then
+  begin
+    FCacheLock.BeginWrite;
+    try
+      if FKeyCache.TryGetValue(LLookup, LEntry) then
+      begin
+        LEntry.LastUsedAt := GetUtcNow;
+        FKeyCache[LLookup] := LEntry;
+      end;
+    finally
+      FCacheLock.EndWrite;
+    end;
+  end;
 end;
 
-procedure TIAM4DJWKSProvider.UpdateCacheEntry(const AIssuer, AJWKSUri: string; AJWKS: TJSONObject);
+procedure TIAM4DJWKSProvider.AddKeyToCache(const AIssuer, AKid, AJWKSUri: string; AKey: TJSONObject);
 var
-  LNewEntry, LExisting: TCachedJWKS;
+  LEntry: TCachedKey;
+  LLookup: string;
+  LExisting: TCachedKey;
 begin
+  if not Assigned(AKey) then
+    Exit;
+
+  LLookup := MakeKeyLookup(AIssuer, AKid);
+
   FCacheLock.BeginWrite;
   try
-    if FCache.TryGetValue(AIssuer, LExisting) and Assigned(LExisting.JWKS) then
-      LExisting.JWKS.Free;
+    while FKeyCache.Count >= FMaxCachedKeys do
+      EvictLRUKey;
 
-    LNewEntry.JWKS := AJWKS.Clone as TJSONObject;
-    LNewEntry.JWKSUri := AJWKSUri;
-    LNewEntry.FetchedAt := GetUtcNow;
+    if FKeyCache.TryGetValue(LLookup, LExisting) then
+      if Assigned(LExisting.Key) then
+        LExisting.Key.Free;
 
-    FCache.AddOrSetValue(AIssuer, LNewEntry);
+    LEntry.Key := AKey.Clone as TJSONObject;
+    LEntry.Issuer := AIssuer;
+    LEntry.Kid := AKid;
+    LEntry.JWKSUri := AJWKSUri;
+    LEntry.FetchedAt := GetUtcNow;
+    LEntry.LastUsedAt := GetUtcNow;
+
+    FKeyCache.AddOrSetValue(LLookup, LEntry);
   finally
     FCacheLock.EndWrite;
   end;
 end;
 
-function TIAM4DJWKSProvider.FetchAndCacheJWKS(const AIssuer: string; out AJWKSUri: string): TJSONObject;
+procedure TIAM4DJWKSProvider.EvictLRUKey;
+var
+  LOldestKey: string;
+  LOldestTime: TDateTime;
+  LPair: TPair<string, TCachedKey>;
+  LEntry: TCachedKey;
 begin
-  AJWKSUri := DiscoverJWKSUri(AIssuer);
-  Result := FetchJWKS(AJWKSUri);
+  if FKeyCache.Count = 0 then
+    Exit;
 
-  UpdateCacheEntry(AIssuer, AJWKSUri, Result);
+  LOldestTime := MaxDateTime;
+  LOldestKey := '';
+
+  for LPair in FKeyCache do
+  begin
+    if LPair.Value.LastUsedAt < LOldestTime then
+    begin
+      LOldestTime := LPair.Value.LastUsedAt;
+      LOldestKey := LPair.Key;
+    end;
+  end;
+
+  if LOldestKey <> '' then
+  begin
+    if FKeyCache.TryGetValue(LOldestKey, LEntry) then
+      if Assigned(LEntry.Key) then
+        LEntry.Key.Free;
+    FKeyCache.Remove(LOldestKey);
+  end;
 end;
 
 function TIAM4DJWKSProvider.DiscoverJWKSUri(const AIssuer: string): string;
@@ -543,7 +628,7 @@ begin
       LKeyKid := LKeyObj.GetValue<string>('kid', '');
       LKeyKty := LKeyObj.GetValue<string>('kty', '');
 
-      if (LKeyKty = 'RSA') and ((AKeyId = '') or (LKeyKid = AKeyId)) then
+      if ((LKeyKty = 'RSA') or (LKeyKty = 'EC')) and ((AKeyId = '') or (LKeyKid = AKeyId)) then
       begin
         Result := LKeyObj.Clone as TJSONObject;
         Exit;
@@ -557,6 +642,7 @@ var
   LNormalizedIssuer: string;
   LJWKSUri: string;
   LJWKS: TJSONObject;
+  LFoundKey: TJSONObject;
 begin
   LNormalizedIssuer := NormalizeIssuer(AIssuer);
 
@@ -568,33 +654,39 @@ begin
   if TryGetFromManualKeys(LNormalizedIssuer, AKeyId, Result) then
     Exit;
 
-  if TryGetFromCache(LNormalizedIssuer, AKeyId, Result) then
+  if TryGetKeyFromCache(LNormalizedIssuer, AKeyId, Result) then
     Exit;
 
-  LJWKS := FetchAndCacheJWKS(LNormalizedIssuer, LJWKSUri);
+  LJWKSUri := DiscoverJWKSUri(LNormalizedIssuer);
+  LJWKS := FetchJWKS(LJWKSUri);
   try
-    Result := FindKeyInJWKS(LJWKS, AKeyId);
-    if Assigned(Result) then
+    LFoundKey := FindKeyInJWKS(LJWKS, AKeyId);
+    if Assigned(LFoundKey) then
+    begin
+      AddKeyToCache(LNormalizedIssuer, AKeyId, LJWKSUri, LFoundKey);
+      Result := LFoundKey;
       Exit;
+    end;
 
     LJWKS.Free;
     LJWKS := FetchJWKS(LJWKSUri);
-    UpdateCacheEntry(LNormalizedIssuer, LJWKSUri, LJWKS);
 
-    Result := FindKeyInJWKS(LJWKS, AKeyId);
-    if Assigned(Result) then
+    LFoundKey := FindKeyInJWKS(LJWKS, AKeyId);
+    if Assigned(LFoundKey) then
+    begin
+      AddKeyToCache(LNormalizedIssuer, AKeyId, LJWKSUri, LFoundKey);
+      Result := LFoundKey;
       Exit;
+    end;
   finally
-    LJWKS.Free;
+    if Assigned(LJWKS) then
+      LJWKS.Free;
   end;
 
-  if not Assigned(Result) then
-  begin
-    PutKidNegCache(LNormalizedIssuer, AKeyId);
-    raise EIAM4DSecurityValidationException.CreateFmt(
-      'Public key with kid "%s" not found in JWKS for issuer "%s".',
-      [AKeyId, LNormalizedIssuer]);
-  end;
+  PutKidNegCache(LNormalizedIssuer, AKeyId);
+  raise EIAM4DSecurityValidationException.CreateFmt(
+    'Public key with kid "%s" not found in JWKS for issuer "%s".',
+    [AKeyId, LNormalizedIssuer]);
 end;
 
 procedure TIAM4DJWKSProvider.SetManualKey(const AIssuer, AKeyId: string;
@@ -627,16 +719,19 @@ end;
 
 procedure TIAM4DJWKSProvider.ClearCache;
 var
-  LEntry: TCachedJWKS;
+  LEntry: TCachedKey;
 begin
+  if not Assigned(FKeyCache) then
+    Exit;
+
   FCacheLock.BeginWrite;
   try
-    for LEntry in FCache.Values do
+    for LEntry in FKeyCache.Values do
     begin
-      if Assigned(LEntry.JWKS) then
-        LEntry.JWKS.Free;
+      if Assigned(LEntry.Key) then
+        LEntry.Key.Free;
     end;
-    FCache.Clear;
+    FKeyCache.Clear;
   finally
     FCacheLock.EndWrite;
   end;
@@ -684,13 +779,33 @@ var
   LJWKSUri: string;
   LJWKS: TJSONObject;
   LNormalizedIssuer: string;
+  LKeysArray: TJSONArray;
+  LKey: TJSONValue;
+  LKeyObj: TJSONObject;
+  LKeyKid: string;
 begin
   try
     LNormalizedIssuer := NormalizeIssuer(AIssuer);
     LJWKSUri := DiscoverJWKSUri(LNormalizedIssuer);
     LJWKS := FetchJWKS(LJWKSUri);
     try
-      UpdateCacheEntry(LNormalizedIssuer, LJWKSUri, LJWKS);
+      LKeysArray := LJWKS.GetValue<TJSONArray>('keys');
+      if Assigned(LKeysArray) then
+      begin
+        for LKey in LKeysArray do
+        begin
+          if (LKey <> nil) and (LKey is TJSONObject) then
+          begin
+            LKeyObj := LKey as TJSONObject;
+            if (LKeyObj.GetValue<string>('kty', '') = 'RSA') or
+               (LKeyObj.GetValue<string>('kty', '') = 'EC') then
+            begin
+              LKeyKid := LKeyObj.GetValue<string>('kid', '');
+              AddKeyToCache(LNormalizedIssuer, LKeyKid, LJWKSUri, LKeyObj);
+            end;
+          end;
+        end;
+      end;
     finally
       LJWKS.Free;
     end;
@@ -699,4 +814,28 @@ begin
   end;
 end;
 
+procedure TIAM4DJWKSProvider.SetMaxCachedKeys(ACount: Integer);
+begin
+  if ACount < 1 then
+    raise EIAM4DSecurityValidationException.Create('Max cached keys must be >= 1');
+
+  FCacheLock.BeginWrite;
+  try
+    FMaxCachedKeys := ACount;
+    while FKeyCache.Count > FMaxCachedKeys do
+      EvictLRUKey;
+  finally
+    FCacheLock.EndWrite;
+  end;
+end;
+
+initialization
+  TIAM4DJWKSProvider.FInstanceLock := TCriticalSection.Create;
+  TIAM4DJWKSProvider.FInstance := nil;
+
+finalization
+  TIAM4DJWKSProvider.ReleaseInstance;
+  FreeAndNil(TIAM4DJWKSProvider.FInstanceLock);
+
 end.
+

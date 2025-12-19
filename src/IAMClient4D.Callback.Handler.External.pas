@@ -100,6 +100,7 @@ implementation
 { TIAM4DExternalCallbackHandler }
 
 uses
+  IAMClient4D.Common.SecureMemory,
   IAMClient4D.Exceptions;
 
 constructor TIAM4DExternalCallbackHandler.Create(const AExternalCallbackURL: string);
@@ -146,6 +147,8 @@ begin
 end;
 
 procedure TIAM4DExternalCallbackHandler.ValidateState(const AReceivedState: string);
+const
+  MAX_STATE_LENGTH = 256;
 var
   LContext: TIAM4DOAuthContext;
 begin
@@ -157,11 +160,16 @@ begin
       raise EIAM4DCallbackHandlerException.Create(
         'Missing state parameter in OAuth2 callback');
 
+    if Length(AReceivedState) > MAX_STATE_LENGTH then
+      raise EIAM4DCallbackHandlerException.CreateFmt(
+        'State parameter exceeds maximum length (%d chars). Possible attack attempt.',
+        [MAX_STATE_LENGTH]);
+
     if not LContext.IsValid then
       raise EIAM4DCallbackHandlerException.Create(
         'OAuth context is not valid. Authorization flow may have expired or not been started.');
 
-    if AReceivedState <> LContext.State then
+    if not SecureStringEquals(AReceivedState, LContext.State) then
       raise EIAM4DCallbackHandlerException.CreateFmt(
         'State mismatch in OAuth2 callback. Expected: %s, Received: %s. ' +
         'This could indicate a CSRF attack or session mix-up.',

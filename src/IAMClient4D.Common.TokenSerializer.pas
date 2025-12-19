@@ -101,19 +101,20 @@ begin
   Result.ExpiresIn := AJSONObject.GetValue<Integer>(IAM4D_OAUTH2_TOKEN_EXPIRES_IN, 0);
   Result.RefreshExpiresIn := AJSONObject.GetValue<Integer>(IAM4D_OAUTH2_TOKEN_REFRESH_EXPIRES_IN, 0);
 
+  // All expiry times are stored and compared in UTC for consistency
   if AJSONObject.TryGetValue<string>(JSON_KEY_ACCESS_TOKEN_EXPIRY, LExpiryStr) and (LExpiryStr <> EmptyStr) then
     Result.AccessTokenExpiry := ISO8601ToDate(LExpiryStr, True)
   else
-    Result.AccessTokenExpiry := Now + Result.ExpiresIn / IAM4D_SECOND_PER_DAY;
+    Result.AccessTokenExpiry := TTimeZone.Local.ToUniversalTime(Now) + Result.ExpiresIn / IAM4D_SECOND_PER_DAY;
 
   if AJSONObject.TryGetValue<string>(JSON_KEY_REFRESH_TOKEN_EXPIRY, LExpiryStr) and (LExpiryStr <> EmptyStr) then
     Result.RefreshTokenExpiry := ISO8601ToDate(LExpiryStr, True)
   else
   begin
     if Result.RefreshExpiresIn = 0 then
-      Result.RefreshTokenExpiry := IncDay(Now, 10)
+      Result.RefreshTokenExpiry := IncDay(TTimeZone.Local.ToUniversalTime(Now), 10)
     else
-      Result.RefreshTokenExpiry := Now + Result.RefreshExpiresIn / IAM4D_SECOND_PER_DAY;
+      Result.RefreshTokenExpiry := TTimeZone.Local.ToUniversalTime(Now) + Result.RefreshExpiresIn / IAM4D_SECOND_PER_DAY;
   end;
 end;
 

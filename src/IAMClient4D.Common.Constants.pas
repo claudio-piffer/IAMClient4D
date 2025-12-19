@@ -87,6 +87,30 @@ const
   IAM4D_TOKEN_REFRESH_TOKEN_EXPIRY = 'refresh_token_expiry';
   IAM4D_TOKEN_GRANT_TYPE = 'grant_type';
 
+  // === OAuth2 ACR Values Parameter ===
+  IAM4D_OAUTH2_PARAM_ACR_VALUES = 'acr_values';
+
+  // === RFC 8176 - Authentication Method Reference (AMR) Values ===
+  IAM4D_AMR_PASSWORD = 'pwd';       // Password authentication
+  IAM4D_AMR_USER_PRESENCE = 'user'; // User presence test (WebAuthn/Passkey)
+  IAM4D_AMR_PIN = 'pin';            // Personal Identification Number
+  IAM4D_AMR_FINGERPRINT = 'fpt';    // Fingerprint biometric
+  IAM4D_AMR_HARDWARE_KEY = 'hwk';   // Hardware-secured key (e.g., YubiKey)
+  IAM4D_AMR_SOFTWARE_KEY = 'swk';   // Software-secured key
+  IAM4D_AMR_OTP = 'otp';            // One-time password
+  IAM4D_AMR_MFA = 'mfa';            // Multi-factor authentication
+  IAM4D_AMR_SMS = 'sms';            // SMS confirmation
+  IAM4D_AMR_FACE = 'face';          // Facial recognition biometric
+  IAM4D_AMR_RETINA = 'retina';      // Retina scan biometric
+  IAM4D_AMR_VOICE = 'vbm';          // Voice biometric
+  IAM4D_AMR_GEO = 'geo';            // Geolocation
+  IAM4D_AMR_KBA = 'kba';            // Knowledge-based authentication
+
+  // === Keycloak-specific ACR (Authentication Context Class Reference) Values ===
+  IAM4D_ACR_PASSKEY = 'urn:keycloak:acr:passkey';
+  IAM4D_ACR_2FA = 'urn:keycloak:acr:2fa';
+  IAM4D_ACR_1FA = 'urn:keycloak:acr:1fa';
+
 implementation
 
 end.

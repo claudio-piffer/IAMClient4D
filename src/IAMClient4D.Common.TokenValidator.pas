@@ -28,6 +28,7 @@ interface
 uses
   System.SysUtils,
   System.DateUtils,
+  System.TimeSpan,
   IAMClient4D.Core;
 
 const
@@ -85,6 +86,18 @@ type
 
 implementation
 
+/// <summary>
+/// Returns current time in UTC.
+/// </summary>
+/// <remarks>
+/// IMPORTANT: JWT expiry times (exp claim) are Unix timestamps in UTC.
+/// All expiry comparisons must use UTC to avoid timezone-dependent behavior.
+/// </remarks>
+function NowUTC: TDateTime;
+begin
+  Result := TTimeZone.Local.ToUniversalTime(Now);
+end;
+
 { TIAM4DTokenValidator }
 
 class function TIAM4DTokenValidator.IsAccessTokenValid(
@@ -108,13 +121,17 @@ class function TIAM4DTokenValidator.IsExpiryTimeValid(
   const ABufferSeconds: Integer): Boolean;
 var
   LBufferedExpiry: TDateTime;
+  LNowUTC: TDateTime;
 begin
   if AExpiryTime = 0 then
     Exit(True);
 
   LBufferedExpiry := IncSecond(AExpiryTime, -ABufferSeconds);
 
-  Result := LBufferedExpiry > Now;
+  // IMPORTANT: JWT expiry times are Unix timestamps (UTC).
+  // Use UTC time for comparison to avoid timezone-dependent behavior.
+  LNowUTC := NowUTC;
+  Result := LBufferedExpiry > LNowUTC;
 end;
 
 class function TIAM4DTokenValidator.HasAnyValidToken(
@@ -126,13 +143,18 @@ begin
 end;
 
 class function TIAM4DTokenValidator.GetSecondsUntilExpiry(const AExpiryTime: TDateTime): Int64;
+var
+  LNowUTC: TDateTime;
 begin
+  // Expiry = 0 means "never expires"
   if AExpiryTime = 0 then
-    Exit(MaxInt); 
+    Exit(MaxInt);
 
-  Result := SecondsBetween(Now, AExpiryTime);
-  if Now > AExpiryTime then
-    Result := -Result; 
+  // IMPORTANT: Use UTC time for calculation
+  LNowUTC := NowUTC;
+  Result := SecondsBetween(LNowUTC, AExpiryTime);
+  if LNowUTC > AExpiryTime then
+    Result := -Result;
 end;
 
 class function TIAM4DTokenValidator.HasTokenData(const ATokens: TIAM4DTokens): Boolean;

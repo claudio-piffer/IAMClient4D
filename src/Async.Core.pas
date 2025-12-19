@@ -897,6 +897,19 @@ begin
 end;
 
 function TAsyncOperationController.WaitForCompletion(ATimeout: Cardinal; ARaiseOnError: Boolean): TAsyncOperationState;
+
+  function CreateExceptionCopy(ASource: Exception): Exception;
+  var
+    LExceptionClass: ExceptClass;
+  begin
+    try
+      LExceptionClass := ExceptClass(ASource.ClassType);
+      Result := LExceptionClass.Create(ASource.Message);
+    except
+      Result := Exception.Create(ASource.ClassName + ': ' + ASource.Message);
+    end;
+  end;
+
 var
   LStartTime: Cardinal;
   LElapsed: Cardinal;
@@ -914,7 +927,7 @@ begin
     if LCurrentState in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled] then
     begin
       if ARaiseOnError and (LCurrentState = TAsyncOperationState.Faulted) and Assigned(FException) then
-        LExceptionToRaise := Exception.Create(FException.ClassName + ': ' + FException.Message);
+        LExceptionToRaise := CreateExceptionCopy(FException);
     end;
   finally
     FCriticalSection.Release;
@@ -954,7 +967,7 @@ begin
         Result := FState;
 
         if ARaiseOnError and (FState = TAsyncOperationState.Faulted) and Assigned(FException) then
-          LExceptionToRaise := Exception.Create(FException.ClassName + ': ' + FException.Message);
+          LExceptionToRaise := CreateExceptionCopy(FException);
       finally
         FCriticalSection.Release;
       end;
@@ -991,6 +1004,7 @@ procedure TAsyncOperationController.SignalCompletion;
 var
   LCallbacks: TArray<TAsyncCoreFinallyCallback>;
   LIndex: Integer;
+  LCapturedException: Exception;
 begin
   FCriticalSection.Acquire;
   try
@@ -1021,7 +1035,18 @@ begin
             end;
           end)(LCallbacks[LIndex]);
       except
-        // Ignore exceptions in callbacks to ensure other callbacks and event setting proceed
+        on E: Exception do
+        begin
+          if Assigned(TAsyncCore.OnUnhandledError) then
+          begin
+            LCapturedException := Exception(AcquireExceptionObject);
+            try
+              TAsyncCore.OnUnhandledError(LCapturedException);
+            finally
+              LCapturedException.Free;
+            end;
+          end;
+        end;
       end;
     end;
   end;
@@ -1040,11 +1065,20 @@ begin
 end;
 
 function TAsyncOperationController.GetException: Exception;
+var
+  LExceptionClass: ExceptClass;
 begin
   FCriticalSection.Acquire;
   try
     if Assigned(FException) then
-      Result := Exception.Create(FException.ClassName + ': ' + FException.Message)
+    begin
+      try
+        LExceptionClass := ExceptClass(FException.ClassType);
+        Result := LExceptionClass.Create(FException.Message);
+      except
+        Result := Exception.Create(FException.ClassName + ': ' + FException.Message);
+      end;
+    end
     else
       Result := nil;
   finally
@@ -1069,6 +1103,7 @@ function TAsyncOperationController<T>.WaitForResult(ATimeout: Cardinal): T;
 var
   LState: TAsyncOperationState;
   LExceptionToRaise: Exception;
+  LExceptionClass: ExceptClass;
 begin
   LExceptionToRaise := nil;
 
@@ -1078,7 +1113,14 @@ begin
       Exit(FResult);
 
     if FState = TAsyncOperationState.Faulted then
-      LExceptionToRaise := Exception.Create(FException.ClassName + ': ' + FException.Message);
+    begin
+      try
+        LExceptionClass := ExceptClass(FException.ClassType);
+        LExceptionToRaise := LExceptionClass.Create(FException.Message);
+      except
+        LExceptionToRaise := Exception.Create(FException.ClassName + ': ' + FException.Message);
+      end;
+    end;
 
     if FState = TAsyncOperationState.Cancelled then
       raise EAsyncCancelException.Create;
