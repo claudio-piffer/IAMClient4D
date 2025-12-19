@@ -30,19 +30,19 @@ type
   TMainForm = class(TUniForm)
     UniContainerPanel1: TUniContainerPanel;
     UniContainerPanel2: TUniContainerPanel;
-    UniButton1: TUniButton;
-    UniButton2: TUniButton;
-    UniButton3: TUniButton;
+    AccessTokeniButton: TUniButton;
+    ValidateTokenButton: TUniButton;
+    UserInfoButton: TUniButton;
     UniMemo1: TUniMemo;
     UniStatusBar1: TUniStatusBar;
-    UniButton4: TUniButton;
+    LogoutButton: TUniButton;
     UniSweetAlert: TUniSweetAlert;
     UniImage1: TUniImage;
     procedure UniFormCreate(Sender: TObject);
-    procedure UniButton1Click(Sender: TObject);
-    procedure UniButton2Click(Sender: TObject);
-    procedure UniButton3Click(Sender: TObject);
-    procedure UniButton4Click(Sender: TObject);
+    procedure AccessTokeniButtonClick(Sender: TObject);
+    procedure ValidateTokenButtonClick(Sender: TObject);
+    procedure UserInfoButtonClick(Sender: TObject);
+    procedure LogoutButtonClick(Sender: TObject);
     procedure UniFormActivate(Sender: TObject);
     procedure UniFormShow(Sender: TObject);
   private
@@ -74,27 +74,28 @@ end;
 
 procedure TMainForm.UniFormCreate(Sender: TObject);
 begin
-  UniButton1.JSInterface.JSCall('addCls', ['mybtn-primary']);
-  UniButton2.JSInterface.JSCall('addCls', ['mybtn-warning']);
-  UniButton3.JSInterface.JSCall('addCls', ['mybtn-success']);
-  UniButton4.JSInterface.JSCall('addCls', ['mybtn-danger']);
+  AccessTokeniButton.JSInterface.JSCall('addCls', ['mybtn-primary']);
+  ValidateTokenButton.JSInterface.JSCall('addCls', ['mybtn-warning']);
+  UserInfoButton.JSInterface.JSCall('addCls', ['mybtn-success']);
+  LogoutButton.JSInterface.JSCall('addCls', ['mybtn-danger']);
   UniStatusBar1.Height := 30;
   UniStatusBar1.JSInterface.JSCall('addCls', ['mystatus']);
 end;
 
-procedure TMainForm.UniButton1Click(Sender: TObject);
+procedure TMainForm.AccessTokeniButtonClick(Sender: TObject);
 begin
   UniMemo1.Lines.Clear;
-  UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessTokenAsync.Run.WaitForResult(500));
+  UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessToken);
 end;
 
-procedure TMainForm.UniButton2Click(Sender: TObject);
+procedure TMainForm.ValidateTokenButtonClick(Sender: TObject);
 var
   LJWTValidator: IIAM4DJWTValidator;
   LClaims: TJSONObject;
 begin
+  UniMemo1.Lines.Clear;
+  UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessToken);
   LJWTValidator := TIAM4DJWTValidator.Create(UniMainModule.IAMClient.Issuer, 'api-server', svmAllowSelfSigned);
-  LJWTValidator.ConfigureJWKSFromURL(UniMainModule.IAMClient.JWKSUri);
   try
     if LJWTValidator.ValidateToken(UniMemo1.Lines.Text, LClaims) then
     begin
@@ -126,12 +127,12 @@ begin
   end;
 end;
 
-procedure TMainForm.UniButton3Click(Sender: TObject);
+procedure TMainForm.UserInfoButtonClick(Sender: TObject);
 var
   LUserInfo: TIAM4DUserInfo;
 begin
   UniMemo1.Lines.Clear;
-  LUserInfo := UniMainModule.IAMClient.GetUserInfoAsync.Run.WaitForResult();
+  LUserInfo := UniMainModule.IAMClient.GetUserInfo;
   UniMemo1.Lines.Add('=== User Info ===');
   UniMemo1.Lines.Add('Sub: ' + LUserInfo.Sub);
   UniMemo1.Lines.Add('Preferred Username: ' + LUserInfo.PreferredUsername);
@@ -140,11 +141,11 @@ begin
   UniMemo1.Lines.Add('Email Verified: ' + BoolToStr(LUserInfo.EmailVerified, True));
 end;
 
-procedure TMainForm.UniButton4Click(Sender: TObject);
+procedure TMainForm.LogoutButtonClick(Sender: TObject);
 begin
   UniMemo1.Lines.Clear;
 
-  UniMainModule.IAMClient.LogoutAsync.Run.WaitForCompletion();
+  UniMainModule.IAMClient.Logout;
   UniSession.TerminateAfterSecs(0);
   TUniGUIApplication(UniApplication).Terminate;
 end;
@@ -159,8 +160,8 @@ begin
   UniMemo1.Lines.Clear;
   if Assigned(UniMainModule.IAMClient) then
   begin
-    UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessTokenAsync.Run.WaitForResult);
-    UniStatusBar1.Panels.Items[0].Text := Format('Welcome %s', [UniMainModule.IAMClient.GetUserInfoAsync.Run.WaitForResult().PreferredUsername]);
+    UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessToken);
+    UniStatusBar1.Panels.Items[0].Text := Format('Welcome %s', [UniMainModule.IAMClient.GetUserInfo.PreferredUsername]);
   end;
 end;
 

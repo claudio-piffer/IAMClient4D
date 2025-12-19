@@ -9,12 +9,12 @@ uses
   Async.Core,
   IAMClient4D.Core,
   IAMClient4D.UserManagement.Core,
-  IAMClient4D.UserManagement.Keycloak;
+  IAMClient4D.UserManagement.Keycloak.Async;
 
 type
   TUserManagementSamples = class
   private
-    FUserManager: IIAM4DUserManager;
+    FUserManager: IIAM4DUserManagerAsync;
   public
     constructor Create(const AClient: IIAM4DClient);
 
@@ -107,7 +107,7 @@ constructor TUserManagementSamples.Create(const AClient: IIAM4DClient);
 begin
   inherited Create;
 
-  FUserManager := TIAM4DKeycloakUserManager.Create(AClient);
+  FUserManager := TIAM4DKeycloakUserManagerAsync.Create(AClient);
 end;
 
 function TUserManagementSamples.CreateUserWithAttributes(const AUser: TIAM4DUser): IAsyncPromise<string>;

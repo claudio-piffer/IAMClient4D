@@ -29,7 +29,6 @@ implementation
 uses
   UniGUIVars,
   uniGUIApplication,
-  Async.Core,
   IAMClient4D.Config.Builder;
 
 function UniMainModule: TUniMainModule;
@@ -57,9 +56,7 @@ begin
     if ((LCallBackFrom <> EmptyStr) and (LCode <> EmptyStr) and (LState <> EmptyStr)) then
     begin
       Self.IAMClient := Self.IAMClientManager.GetClient(LState);
-      LAccessToken := UniMainModule.IAMClient.CompleteAuthorizationFlowAsync(LCode, LState)
-        .Run
-        .WaitForResult;
+      LAccessToken := UniMainModule.IAMClient.CompleteAuthorizationFlow(LCode, LState);
       Self.IAMClientManager.RemoveClient(LState);
       Handled := True;
     end;

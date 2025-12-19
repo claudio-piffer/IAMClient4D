@@ -24,7 +24,7 @@ object MainForm: TMainForm
     Margins.Top = 8
     Margins.Right = 8
     Margins.Bottom = 8
-    ActivePage = PKCETabSheet
+    ActivePage = CCTabSheet
     Align = alClient
     TabHeight = 38
     TabOrder = 0

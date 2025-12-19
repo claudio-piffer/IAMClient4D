@@ -655,20 +655,14 @@ end;
 procedure TMainForm.VerifyJWTActionExecute(Sender: TObject);
 var
   LJWTValidator: IIAM4DJWTValidator;
-  LJWKSProvider: IIAM4DJWKSProvider;
   LClaims: TJSONObject;
 begin
   PKCEMemo.Lines.Clear;
-  PKCEMemo.Lines.Add(FKeycloakClientPKCE.GetAccessTokenAsync.Run.WaitForResult(BASE_MS_TIMEOUT));
-
-  LJWKSProvider := TIAM4DJWKSProvider.GetInstance;
-
-  LJWKSProvider.SetSSLValidationMode(svmAllowSelfSigned);
+  PKCEMemo.Lines.Add(FKeycloakClientPKCE.GetAccessToken);
 
   LJWTValidator := TIAM4DJWTValidator.Create(
     FKeycloakClientPKCE.Issuer,
     'api-server',
-    LJWKSProvider,
     svmAllowSelfSigned);
 
   if LJWTValidator.ValidateToken(PKCEMemo.Lines.Text, LClaims) then
@@ -757,8 +751,7 @@ var
   LJWTValidator: IIAM4DJWTValidator;
   LClaims: TJSONObject;
 begin
-  LJWTValidator := TIAM4DJWTValidator.Create(FKeycloakClientCredential.Issuer, 'api-server', svmAllowSelfSigned);
-  LJWTValidator.ConfigureJWKSFromURL(FKeycloakClientCredential.JWKSUri);
+  LJWTValidator := TIAM4DJWTValidator.Create(FKeycloakClientCredential.Issuer, 'account', svmAllowSelfSigned);
   if LJWTValidator.ValidateToken(CCMemo.Lines.Text, LClaims) then
   begin
     try

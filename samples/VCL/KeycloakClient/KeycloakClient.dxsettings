@@ -78,3 +78,20 @@
 		<dxSkinXmas2008Blue>false</dxSkinXmas2008Blue>
 	</Skins>
 </Appearance>
+<Reports>
+	<Version>1.0.0</Version>
+	<AI>
+		<OpenAi>
+			<Active>false</Active>
+			<Endpoint/>
+			<ApiKey/>
+			<ModelName/>
+		</OpenAi>
+		<AzureOpenAi>
+			<Active>false</Active>
+			<Endpoint/>
+			<ApiKey/>
+			<DeploymentName/>
+		</AzureOpenAi>
+	</AI>
+</Reports>

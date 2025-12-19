@@ -38,6 +38,7 @@ IAMClient4D is a Delphi client library for integrating applications with Keycloa
 - [Security](#-security)
 - [License](#-license)
 - [Contributing](#-contributing)
+- [Changelog](CHANGELOG.md)
 - [Roadmap](#-roadmap)
 
 ---
@@ -161,7 +162,7 @@ The library consistently covers both:
 
 ### Security
 - 🔒 **Complete JWT Validation**:
-  - Cryptographic signature verification (RS256/RS384/RS512)
+  - Cryptographic signature verification (RS256/RS384/RS512, PS256/PS384/PS512, ES256/ES384/ES512 with TMS Cryptography Pack)
   - **12 claim validation** (iss, sub, aud, exp, nbf, iat, jti, typ, azp, kid, alg + signature)
   - Compliant with RFC 7519, RFC 7515, RFC 7523
   - `alg=none` blocking and algorithm allow-list
@@ -169,7 +170,7 @@ The library consistently covers both:
 - 🔒 **Configurable SSL Modes**: Strict, self-signed, custom validators
 - 🔒 **Certificate Pinning**: SHA-256 public key pinning support
 - 🔒 **Clock Skew Management**: Configurable tolerance for time differences
-- 🔒 **AES-256-GCM Token Storage**: In-memory encryption with CSPRNG keys
+- 🔒 **Encrypted Token Storage**: AES-256-CBC+HMAC (default) or AES-256-GCM (TMS Cryptography Pack) with pluggable crypto providers
 
 ### Keycloak Admin API
 - 👥 **User Management**: Create, update, delete, search users
@@ -1074,6 +1075,27 @@ The heart of the library. Abstracts the complexity of the OAuth2/OIDC protocol b
 - `LogoutAsync`: Performs logout (local and remote)
 - `InitializeAuthorizationFlow`: Prepares auth flow for web apps (call before generating auth URL)
 - `CompleteAuthorizationFlowAsync`: Completes auth flow with received code and state (for web apps)
+- `SetAuthorizationFlowTimeout(Seconds)`: Configure timeout for authorization flow (default: 300 seconds / 5 minutes)
+
+#### Interface Segregation
+
+`IIAM4DClient` is composed of specialized interfaces for flexible dependency injection:
+
+| Interface | Purpose |
+|-----------|---------|
+| `IAsyncAuth` | Async authentication operations |
+| `ISyncAuth` | Synchronous authentication operations |
+| `ITokenManagement` | Token status and flow control |
+| `ISSLConfiguration` | SSL/TLS security configuration |
+
+**Usage**:
+```pascal
+// Use specific interface when you only need a subset of functionality
+procedure DoAuth(const AAuth: IAsyncAuth);
+begin
+  AAuth.GetAccessTokenAsync.OnSuccess(...).Run;
+end;
+```
 
 #### `TIAM4DClientConfig`
 
@@ -1114,6 +1136,7 @@ Strongly-typed token container:
 
 **Methods**:
 - `FromJSONObject`, `ToJSONObject`: Serialization support
+- `Clear`: Securely wipes all tokens from memory (triple-pass: zeros, 0xFF, zeros)
 
 #### `TIAM4DHTTPClientFactory`
 
@@ -1154,7 +1177,7 @@ TIAM4DClientConfigBuilder.New
 - `WithPinnedPublicKeys(...)`: SHA-256 certificate pinning
 - `WithTimeouts(...)`: Connection/response timeouts
 - `WithTokenExpiryBuffer(...)`: Token expiration buffer (seconds)
-- `WithIAMClient4DAESStorage`: AES-256 storage (with/without custom key)
+- `WithIAMClient4DAESStorage(Key, AAD, [Provider])`: AES-256 encrypted storage with optional provider selection (`scpLockBox3`, `scpTMS`)
 - `WithCustomStorage(...)`: Custom storage
 - `WithExternalCallback(...)`: External callback URL (web apps)
 - `Build`: Build client (synchronous)
@@ -1166,6 +1189,20 @@ TIAM4DClientConfigBuilder.New
 - Configuration validation before build
 - Automatic OIDC discovery in BuildAsync
 - Secure memory management (zeroed keys)
+
+#### Configuration Include File
+
+**`IAMClient4D.Config.inc`**: Centralized conditional compilation symbols for optional features.
+
+```pascal
+// Enable TMS Cryptography Pack support (ECDSA, AES-GCM)
+{.$DEFINE IAM4D_TMS}  // Uncomment to enable
+```
+
+Include this file in units that need conditional compilation:
+```pascal
+{$I IAMClient4D.Config.inc}
+```
 
 ---
 
@@ -1397,15 +1434,96 @@ Manages JWT verification public keys:
 
 **Thread Safety**: Internal synchronization for cache access
 
+#### JWT Validator Factory
+
+**`TIAM4DJWTValidatorFactory`** (`IAMClient4D.Security.JWT.Factory.pas`):
+
+Factory class for creating `IIAM4DJWTValidator` instances with automatic lifetime management:
+
+```pascal
+uses
+  IAMClient4D.Security.JWT.Factory,
+  IAMClient4D.Security.Crypto.Interfaces;
+
+// Simple usage (LockBox3 default)
+var LValidator := TIAM4DJWTValidatorFactory.CreateValidator(
+  'https://keycloak.example.com/realms/myrealm',
+  'my-api');
+
+// With explicit crypto provider
+var LValidator := TIAM4DJWTValidatorFactory.CreateValidator(
+  'https://keycloak.example.com/realms/myrealm',
+  'my-api',
+  cpTMS);  // Uses TMS Cryptography Pack
+
+// With shared JWKS provider (recommended for caching)
+var LJWKSProvider := TIAM4DJWKSProvider.GetInstance;
+var LValidator := TIAM4DJWTValidatorFactory.CreateValidator(
+  'https://keycloak.example.com/realms/myrealm',
+  'my-api',
+  LJWKSProvider);
+```
+
+**Features**:
+- 11 overloaded `CreateValidator` methods
+- Returns interface references for automatic lifetime management
+- Supports pluggable crypto providers (LockBox3, TMS, custom)
+
 #### RSA Verifier
 
 **`IAMClient4D.Security.JWT.Verifiers.RSA`**:
 
-RS256 signature verification logic:
+RS256/RS384/RS512 signature verification logic (PKCS#1 v1.5):
 
 - Constructs RSA keys from JWKS parameters `n` and `e`
-- Uses Delphi cryptographic primitives
+- Uses LockBox3 cryptographic primitives
+- Timing-safe signature comparison
 - Integration with generic validator
+
+#### RSA-PSS Verifier
+
+**`IAMClient4D.Security.JWT.Verifiers.RSAPSS`**:
+
+PS256/PS384/PS512 signature verification (RFC 8017):
+
+- Uses Windows CNG API on Windows
+- Pure Pascal implementation on other platforms
+- MGF1 mask generation function
+- Salt length equals hash length
+
+#### Crypto Provider System
+
+IAMClient4D v2.0 introduces pluggable cryptographic providers for JWT signature verification.
+
+**`TIAM4DCryptoProviderType`** (`IAMClient4D.Security.Crypto.Interfaces.pas`):
+
+| Type | Description |
+|------|-------------|
+| `cpLockBox3` | Default provider (integrated) - RS256/384/512, PS256/384/512 |
+| `cpTMS` | TMS Cryptography Pack - adds ES256/384/512 (requires `IAM4D_TMS` define) |
+| `cpCustom` | Custom `IIAM4DCryptoProvider` implementation |
+
+**Enabling TMS Cryptography Pack Support**:
+
+1. Edit `src/IAMClient4D.Config.inc` and uncomment `{$DEFINE IAM4D_TMS}`
+2. Ensure TMS Cryptography Pack is installed
+3. Use `cpTMS` when creating validators
+
+**Algorithm Support by Provider**:
+
+| Algorithm | LockBox3 | TMS |
+|-----------|----------|-----|
+| RS256/384/512 | ✅ | ✅ |
+| PS256/384/512 | ✅ | ✅ |
+| ES256/384/512 | ❌ | ✅ |
+
+#### ECDSA Support (TMS Only)
+
+When TMS Cryptography Pack is enabled (`{$DEFINE IAM4D_TMS}` in `IAMClient4D.Config.inc`):
+
+- ES256: ECDSA with P-256/SHA-256
+- ES384: ECDSA with P-384/SHA-384
+- ES512: ECDSA with P-521/SHA-512
 
 #### SSL Certificate Validation
 
@@ -1467,6 +1585,39 @@ Concrete implementation:
 - Maximum security for in-memory tokens
 
 **Extensibility**: Create custom implementations (file, database, secure enclave) by implementing `IIAM4DTokenStorage`
+
+#### Pluggable Storage Crypto Providers
+
+IAMClient4D v2.0 supports pluggable encryption providers for token storage.
+
+**`TIAM4DStorageCryptoProviderType`** (`IAMClient4D.Storage.Crypto.Interfaces.pas`):
+
+| Type | Algorithm | Description |
+|------|-----------|-------------|
+| `scpLockBox3` | AES-256-CBC + HMAC-SHA256 | Default, Encrypt-then-MAC |
+| `scpTMS` | AES-256-GCM | AEAD, requires `IAM4D_TMS` define |
+| `scpCustom` | Custom | Your implementation |
+
+**Storage Encryption Comparison**:
+
+| Feature | LockBox3 (CBC+HMAC) | TMS (GCM) |
+|---------|---------------------|-----------|
+| Algorithm | AES-256-CBC + HMAC-SHA256 | AES-256-GCM |
+| Authentication | Encrypt-then-MAC | Native AEAD |
+| IV/Nonce Size | 16 bytes | 12 bytes |
+| Tag Size | 32 bytes (HMAC) | 16 bytes |
+| Performance | Two-pass | Single-pass |
+| Availability | Always | Requires `IAM4D_TMS` |
+
+**Usage with Builder**:
+
+```pascal
+// Default (LockBox3)
+.WithIAMClient4DAESStorage(LKey32, LAAD)
+
+// TMS provider
+.WithIAMClient4DAESStorage(LKey32, LAAD, scpTMS)
+```
 
 ---
 
@@ -1837,6 +1988,59 @@ end;
 | **Groups**  | GetGroups, GetUserGroups       | AddUserToGroupByPathAsync                         | -                                                    |
 | **Email**   | -                              | SendVerifyEmailAsync, SendPasswordResetEmailAsync | -                                                    |
 | **Sessions**| GetUserSessions, LogoutUser    | LogoutUserAsync                                   | -                                                    |
+
+#### Synchronous API for Server Contexts
+
+For server applications (DMVCFramework, uniGUI, ISAPI) where code already executes in worker threads, using async methods would add unnecessary overhead. IAMClient4D provides a complete synchronous API:
+
+**Core Operations** (`IIAM4DClient`):
+```pascal
+// In a DMVCFramework controller (already in worker thread)
+function GetAccessToken: string;           // Auto-refresh if expired
+function AuthenticateClient: string;       // Client Credentials flow
+function CompleteAuthorizationFlow(const ACode, AState: string): string;
+function GetUserInfo: TIAM4DUserInfo;
+procedure Logout;
+```
+
+**User Management Example**:
+```pascal
+procedure TAdminController.CreateUser;
+var
+  LUser: TIAM4DUser;
+  LUserID: string;
+begin
+  // Parse request body to user
+  LUser := TIAM4DUser.Create(
+    BodyAs<TJSONObject>.S['username'],
+    BodyAs<TJSONObject>.S['email'],
+    BodyAs<TJSONObject>.S['firstName'],
+    BodyAs<TJSONObject>.S['lastName']
+  );
+
+  try
+    // Synchronous calls - no async overhead in server context
+    LUserID := FUserManager.CreateUser(LUser);
+    FUserManager.AssignRoleByName(LUserID, 'user');
+    FUserManager.SendVerifyEmail(LUserID);
+
+    Render(201, TJSONObject.Create.AddPair('id', LUserID));
+  except
+    on E: EIAM4DUserManagementException do
+      Render(E.HttpStatusCode, E.Message);
+  end;
+end;
+```
+
+**When to Use Sync vs Async**:
+
+| Context | Recommended API | Reason |
+|---------|-----------------|--------|
+| VCL/FMX UI | Async (`*Async`) | Non-blocking UI, responsive interface |
+| DMVCFramework | Sync | Already in worker thread, async adds overhead |
+| uniGUI | Sync | Server-side rendering in worker threads |
+| Console/Service | Either | Depends on concurrency requirements |
+| Background jobs | Sync | Simpler code, no callback complexity |
 
 ---
 
@@ -2483,10 +2687,10 @@ end;
 
 ### JWT Security
 
-- ✅ **Signature Verification**: RS256 with JWKS public key rotation
-- ✅ **Claim Validation**: Issuer, audience, expiration, not-before, issued-at
+- ✅ **Signature Verification**: RS256/384/512, PS256/384/512 (RSA-PSS), ES256/384/512 (ECDSA with TMS Cryptography Pack) with JWKS public key rotation
+- ✅ **Claim Validation**: Issuer, audience, expiration, not-before, issued-at, JWT ID (jti), token age (iat)
 - ✅ **Clock Skew Tolerance**: Configurable (default: 60s)
-- ✅ **Algorithm Whitelist**: Only RS256 accepted (prevents algorithm confusion)
+- ✅ **Algorithm Allow-List**: Configurable (default: RS256, RS384, RS512, PS256, PS384, PS512)
 
 ### SSL/TLS Security
 
@@ -2586,13 +2790,18 @@ Open an issue with:
 
 ## 🗺️ Roadmap
 
-### Planned Features
+### Completed in v2.0.0
 
-#### Security Improvements
-- ✨ Integration with TMS Cryptography Pack library
+- ✅ TMS Cryptography Pack integration (ECDSA ES256/384/512, AES-256-GCM)
+- ✅ Pluggable crypto providers (LockBox3, TMS, custom)
+- ✅ Complete synchronous API for server contexts
+- ✅ JWT Validator Factory with automatic lifetime management
+
+### Planned Features
 
 #### Examples & Documentation
 - ✨ Complete FMX/FGX mobile app with login and refresh
+- ✨ Video tutorials
 
 ### Community Requests
 
@@ -2627,7 +2836,7 @@ IAMClient4D is made possible thanks to these excellent open-source libraries and
 
 <div align="center">
 
-**Built with ❤️ for the Delphi community**
+**Made with ❤️ by Claudio Piffer for the Delphi community**
 
 ⭐ **Star this repo** if IAMClient4D helps your project!
 

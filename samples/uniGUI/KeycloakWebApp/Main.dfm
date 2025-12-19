@@ -31,7 +31,7 @@ object MainForm: TMainForm
       TabOrder = 1
       Layout = 'border'
       LayoutConfig.Region = 'north'
-      object UniButton1: TUniButton
+      object AccessTokeniButton: TUniButton
         Left = 5
         Top = 6
         Width = 150
@@ -39,11 +39,13 @@ object MainForm: TMainForm
         Hint = ''
         Caption = 'Access token'
         TabOrder = 1
+        ScreenMask.Enabled = True
+        ScreenMask.Message = 'Wait please...'
         LayoutConfig.Region = 'west'
         LayoutConfig.Margin = '5 5 5 5'
-        OnClick = UniButton1Click
+        OnClick = AccessTokeniButtonClick
       end
-      object UniButton2: TUniButton
+      object ValidateTokenButton: TUniButton
         Left = 161
         Top = 6
         Width = 150
@@ -51,11 +53,13 @@ object MainForm: TMainForm
         Hint = ''
         Caption = 'Validate token'
         TabOrder = 2
+        ScreenMask.Enabled = True
+        ScreenMask.Message = 'Wait please...'
         LayoutConfig.Region = 'west'
         LayoutConfig.Margin = '5 5 5 5'
-        OnClick = UniButton2Click
+        OnClick = ValidateTokenButtonClick
       end
-      object UniButton3: TUniButton
+      object UserInfoButton: TUniButton
         Left = 315
         Top = 6
         Width = 150
@@ -63,11 +67,13 @@ object MainForm: TMainForm
         Hint = ''
         Caption = 'User info'
         TabOrder = 3
+        ScreenMask.Enabled = True
+        ScreenMask.Message = 'Wait please...'
         LayoutConfig.Region = 'west'
         LayoutConfig.Margin = '5 5 5 5'
-        OnClick = UniButton3Click
+        OnClick = UserInfoButtonClick
       end
-      object UniButton4: TUniButton
+      object LogoutButton: TUniButton
         Left = 469
         Top = 6
         Width = 150
@@ -75,9 +81,11 @@ object MainForm: TMainForm
         Hint = ''
         Caption = 'Logout'
         TabOrder = 4
+        ScreenMask.Enabled = True
+        ScreenMask.Message = 'Wait please...'
         LayoutConfig.Region = 'west'
         LayoutConfig.Margin = '5 5 5 5'
-        OnClick = UniButton4Click
+        OnClick = LogoutButtonClick
       end
       object UniImage1: TUniImage
         Left = 600
@@ -1065,6 +1073,10 @@ object MainForm: TMainForm
       BorderStyle = ubsNone
       Lines.Strings = (
         '')
+      ParentFont = False
+      Font.Height = -16
+      Font.Name = 'Courier New'
+      ReadOnly = True
       TabOrder = 2
       LayoutConfig.Region = 'center'
       LayoutConfig.Margin = '0 4 4 4'
