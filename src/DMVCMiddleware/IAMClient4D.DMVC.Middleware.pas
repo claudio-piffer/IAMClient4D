@@ -472,7 +472,9 @@ begin
   LPathInfo := LowerCase(AContext.Request.PathInfo);
   Result :=
     (AContext.Request.HTTPMethod = TMVCHTTPMethodType.httpGET) and
-    LPathInfo.Contains('swagger') and
+    (LPathInfo.Contains('swagger') or
+     LPathInfo.Contains('openapi') or
+     LPathInfo.Contains('api-docs')) and
     LPathInfo.EndsWith('.json');
 end;
 
