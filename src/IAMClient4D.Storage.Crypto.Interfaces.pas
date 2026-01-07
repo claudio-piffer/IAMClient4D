@@ -40,18 +40,21 @@ type
   /// <summary>
   /// Available storage crypto provider types.
   /// </summary>
+  /// <remarks>
+  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
+  /// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
+  /// <para>
+  /// <b>LockBox3:</b> AES-256-CBC + HMAC-SHA256 (default)
+  /// </para>
+  /// <para>
+  /// <b>TMS:</b> AES-256-GCM (requires IAM4D_TMS define)
+  /// </para>
+  /// </remarks>
   TIAM4DStorageCryptoProviderType = (
     /// <summary>
-    /// LockBox3 crypto provider - AES-256-CBC + HMAC-SHA256 (default).
-    /// Always available, no additional dependencies required.
+    /// Default provider based on compilation defines (LockBox3 or TMS).
     /// </summary>
-    scpLockBox3,
-
-    /// <summary>
-    /// TMS Cryptography Pack - AES-256-GCM.
-    /// Requires IAM4D_TMS define in IAMClient4D.Config.inc and TMS library installed.
-    /// </summary>
-    scpTMS,
+    scpDefault,
 
     /// <summary>
     /// Custom provider - user must provide IIAM4DStorageCryptoProvider instance.

@@ -13,6 +13,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Crypto Provider Selection (Breaking Change)
+
+- **Compile-time mutual exclusivity**: LockBox3 and TMS are now mutually exclusive at compile-time
+  - Default: LockBox3 (without define)
+  - With `{$DEFINE IAM4D_TMS}`: TMS only, LockBox3 excluded
+
+- **Simplified enums**:
+  - `TIAM4DCryptoProviderType`: now `cpDefault`, `cpCustom` (removed `cpLockBox3`, `cpTMS`)
+  - `TIAM4DStorageCryptoProviderType`: now `scpDefault`, `scpCustom` (removed `scpLockBox3`, `scpTMS`)
+
+- **Updated factories**:
+  - `TIAM4DCryptoProviderFactory.CreateProvider` automatically uses the compiled provider
+  - New method `GetDefaultProviderName` to identify the active provider
+
+#### Migration Guide
+
+| API v2.0.0 | Current API |
+|------------|-------------|
+| `CreateProvider(cpLockBox3)` | `CreateProvider(cpDefault)` or `CreateProvider()` |
+| `CreateProvider(cpTMS)` | `CreateProvider(cpDefault)` (with `IAM4D_TMS` define) |
+| `scpLockBox3` | `scpDefault` |
+| `scpTMS` | `scpDefault` (with `IAM4D_TMS` define) |
+
 ### Fixed
 
 ### Removed
@@ -39,11 +62,11 @@ Complete Delphi client library for Keycloak and OAuth2/OpenID Connect integratio
 
 - **`TIAM4DCryptoProviderFactory`** (`IAMClient4D.Security.Crypto.Factory.pas`)
   - Factory for creating `IIAM4DCryptoProvider` instances
-  - Runtime crypto library selection
+  - Compile-time crypto library selection (LockBox3 default, TMS with `IAM4D_TMS` define)
 
 - **`TIAM4DCryptoProviderType`** (`IAMClient4D.Security.Crypto.Interfaces.pas`)
-  - Enumeration: `cpLockBox3`, `cpTMS`, `cpCustom`
-  - Enables switching between cryptographic libraries without code changes
+  - Enumeration: `cpDefault`, `cpCustom`
+  - `cpDefault` uses the compiled provider automatically
 
 - **TMS Cryptography Pack Support** (`IAMClient4D.Security.Crypto.TMS.pas`)
   - Optional provider enabled via `{$DEFINE IAM4D_TMS}` in `IAMClient4D.Config.inc`
@@ -61,7 +84,7 @@ Complete Delphi client library for Keycloak and OAuth2/OpenID Connect integratio
 
 - **`IIAM4DStorageCryptoProvider`** (`IAMClient4D.Storage.Crypto.Interfaces.pas`)
   - Interface for storage encryption abstraction
-  - `TIAM4DStorageCryptoProviderType` enum: `scpLockBox3`, `scpTMS`, `scpCustom`
+  - `TIAM4DStorageCryptoProviderType` enum: `scpDefault`, `scpCustom`
 
 - **`TIAM4DStorageCryptoProviderFactory`** (`IAMClient4D.Storage.Crypto.Factory.pas`)
   - Factory for creating storage crypto provider instances

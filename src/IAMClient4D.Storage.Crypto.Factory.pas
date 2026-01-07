@@ -27,8 +27,8 @@
 /// Factory for creating storage crypto provider instances.
 /// </summary>
 /// <remarks>
-/// This factory allows selecting the underlying cryptographic library
-/// (LockBox3 AES-CBC+HMAC or TMS AES-GCM) for token storage encryption.
+/// The crypto provider is selected at compile-time based on IAM4D_TMS define.
+/// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
 /// </remarks>
 unit IAMClient4D.Storage.Crypto.Factory;
 
@@ -43,12 +43,12 @@ type
   /// Factory for creating storage crypto provider instances.
   /// </summary>
   /// <remarks>
-  /// This factory creates providers for token storage encryption.
+  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
   /// <para>
-  /// <b>LockBox3 (default):</b> AES-256-CBC + HMAC-SHA256 - always available.
+  /// <b>LockBox3 (default):</b> AES-256-CBC + HMAC-SHA256
   /// </para>
   /// <para>
-  /// <b>TMS:</b> AES-256-GCM - requires IAM4D_TMS define and TMS library.
+  /// <b>TMS:</b> AES-256-GCM (requires IAM4D_TMS define)
   /// </para>
   /// <para>
   /// <b>Thread-safety:</b> Each call creates a new provider instance.
@@ -60,45 +60,36 @@ type
     /// Creates a storage crypto provider of the specified type.
     /// </summary>
     /// <param name="AKey32">32-byte encryption key</param>
-    /// <param name="AType">Type of provider to create (default: scpLockBox3)</param>
+    /// <param name="AType">Type of provider to create (default: scpDefault)</param>
     /// <returns>Interface to the storage crypto provider (reference counted)</returns>
     /// <exception cref="EArgumentException">If key is not 32 bytes or scpCustom is specified</exception>
-    /// <exception cref="ENotSupportedException">If TMS is requested but IAM4D_TMS is not defined</exception>
     class function CreateProvider(
       const AKey32: TBytes;
-      AType: TIAM4DStorageCryptoProviderType = scpLockBox3
+      AType: TIAM4DStorageCryptoProviderType = scpDefault
     ): IIAM4DStorageCryptoProvider; static;
 
     /// <summary>
-    /// Checks if a provider type is available at runtime.
+    /// Returns the algorithm name for the default provider.
     /// </summary>
-    /// <param name="AType">Provider type to check</param>
-    /// <returns>True if the provider is available, False otherwise</returns>
-    /// <remarks>
-    /// LockBox3 is always available. TMS is only available when IAM4D_TMS is defined.
-    /// Custom providers are always considered "available" (user must provide instance).
-    /// </remarks>
-    class function IsProviderAvailable(
-      AType: TIAM4DStorageCryptoProviderType
-    ): Boolean; static;
+    /// <returns>'AES-256-CBC-HMAC-SHA256' for LockBox3, 'AES-256-GCM' for TMS</returns>
+    class function GetDefaultAlgorithmName: string; static;
 
     /// <summary>
-    /// Returns the algorithm name for the specified provider type.
+    /// Returns the name of the default provider for this build configuration.
     /// </summary>
-    /// <param name="AType">Provider type</param>
-    /// <returns>Algorithm name (e.g., 'AES-256-CBC-HMAC-SHA256', 'AES-256-GCM')</returns>
-    class function GetAlgorithmName(
-      AType: TIAM4DStorageCryptoProviderType
-    ): string; static;
+    /// <returns>'LockBox3' or 'TMS Cryptography Pack' depending on defines</returns>
+    class function GetDefaultProviderName: string; static;
   end;
 
 implementation
 
 uses
-  IAMClient4D.Storage.Crypto.LockBox3
-  {$IFDEF IAM4D_TMS}
-  , IAMClient4D.Storage.Crypto.TMS
-  {$ENDIF};
+  {$IFDEF IAM4D_CRYPTO_LOCKBOX3}
+  IAMClient4D.Storage.Crypto.LockBox3;
+  {$ENDIF}
+  {$IFDEF IAM4D_CRYPTO_TMS}
+  IAMClient4D.Storage.Crypto.TMS;
+  {$ENDIF}
 
 { TIAM4DStorageCryptoProviderFactory }
 
@@ -110,17 +101,11 @@ begin
     raise EArgumentException.Create('Key must be exactly 32 bytes');
 
   case AType of
-    scpLockBox3:
-      Result := TIAM4DLockBox3StorageCryptoProvider.Create(AKey32);
-
-    scpTMS:
-      {$IFDEF IAM4D_TMS}
+    scpDefault:
+      {$IFDEF IAM4D_CRYPTO_TMS}
       Result := TIAM4DTMSStorageCryptoProvider.Create(AKey32);
       {$ELSE}
-      raise ENotSupportedException.Create(
-        'TMS Cryptography Pack provider is not available. ' +
-        'Define IAM4D_TMS in IAMClient4D.Config.inc and ensure TMS library is installed. ' +
-        'Use scpLockBox3 (default) or provide a custom IIAM4DStorageCryptoProvider.');
+      Result := TIAM4DLockBox3StorageCryptoProvider.Create(AKey32);
       {$ENDIF}
 
     scpCustom:
@@ -128,47 +113,31 @@ begin
         'scpCustom requires a custom IIAM4DStorageCryptoProvider instance. ' +
         'Instantiate your custom provider directly instead of using the factory.');
   else
-    // Default fallback to LockBox3
+    // Default fallback
+    {$IFDEF IAM4D_CRYPTO_TMS}
+    Result := TIAM4DTMSStorageCryptoProvider.Create(AKey32);
+    {$ELSE}
     Result := TIAM4DLockBox3StorageCryptoProvider.Create(AKey32);
+    {$ENDIF}
   end;
 end;
 
-class function TIAM4DStorageCryptoProviderFactory.IsProviderAvailable(
-  AType: TIAM4DStorageCryptoProviderType): Boolean;
+class function TIAM4DStorageCryptoProviderFactory.GetDefaultAlgorithmName: string;
 begin
-  case AType of
-    scpLockBox3:
-      Result := True;
-
-    scpTMS:
-      {$IFDEF IAM4D_TMS}
-      Result := True;
-      {$ELSE}
-      Result := False;
-      {$ENDIF}
-
-    scpCustom:
-      Result := True;
-  else
-    Result := False;
-  end;
+  {$IFDEF IAM4D_CRYPTO_TMS}
+  Result := 'AES-256-GCM';
+  {$ELSE}
+  Result := 'AES-256-CBC-HMAC-SHA256';
+  {$ENDIF}
 end;
 
-class function TIAM4DStorageCryptoProviderFactory.GetAlgorithmName(
-  AType: TIAM4DStorageCryptoProviderType): string;
+class function TIAM4DStorageCryptoProviderFactory.GetDefaultProviderName: string;
 begin
-  case AType of
-    scpLockBox3:
-      Result := 'AES-256-CBC-HMAC-SHA256';
-
-    scpTMS:
-      Result := 'AES-256-GCM';
-
-    scpCustom:
-      Result := 'Custom';
-  else
-    Result := 'Unknown';
-  end;
+  {$IFDEF IAM4D_CRYPTO_TMS}
+  Result := 'TMS Cryptography Pack';
+  {$ELSE}
+  Result := 'LockBox3';
+  {$ENDIF}
 end;
 
 end.

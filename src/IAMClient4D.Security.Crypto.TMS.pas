@@ -25,9 +25,9 @@ unit IAMClient4D.Security.Crypto.TMS;
 
 {$I IAMClient4D.Config.inc}
 
+{$IFDEF IAM4D_CRYPTO_TMS}
 interface
 
-{$IFDEF IAM4D_TMS}
 uses
   System.SysUtils,
   System.Classes,
@@ -631,6 +631,10 @@ begin
   end;
 end;
 
-{$ENDIF IAM4D_TMS}
+{$ELSE}
+// Unit is empty when LockBox3 is active (mutual exclusivity)
+interface
+implementation
+{$ENDIF}
 
 end.

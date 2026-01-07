@@ -91,13 +91,13 @@ implementation
 
 uses
   IAMClient4D.Exceptions,
-  IAMClient4D.Security.Crypto.LockBox3;
+  IAMClient4D.Security.Crypto.Factory;
 
 { TRSAPSSJWTSignatureVerifier }
 
 constructor TRSAPSSJWTSignatureVerifier.Create;
 begin
-  Create(TIAM4DLockBox3CryptoProvider.Create);
+  Create(TIAM4DCryptoProviderFactory.CreateProvider);
 end;
 
 constructor TRSAPSSJWTSignatureVerifier.Create(const ACryptoProvider: IIAM4DCryptoProvider);

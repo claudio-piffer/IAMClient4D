@@ -33,9 +33,9 @@ unit IAMClient4D.Storage.Crypto.TMS;
 
 {$I IAMClient4D.Config.inc}
 
+{$IFDEF IAM4D_CRYPTO_TMS}
 interface
 
-{$IFDEF IAM4D_TMS}
 uses
   System.SysUtils,
   IAMClient4D.Storage.Crypto.Interfaces;
@@ -241,6 +241,10 @@ begin
   Result := 'AES-256-GCM';
 end;
 
+{$ELSE}
+// Unit is empty when LockBox3 is active (mutual exclusivity)
+interface
+implementation
 {$ENDIF}
 
 end.

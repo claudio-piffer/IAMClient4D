@@ -56,7 +56,7 @@ type
     procedure InitializeVerifiers;
   public
     /// <summary>
-    /// Creates universal verifier with default LockBox3 crypto provider.
+    /// Creates universal verifier with default crypto provider (based on compilation defines).
     /// </summary>
     constructor Create; overload;
 
@@ -98,14 +98,14 @@ implementation
 uses
   IAMClient4D.Security.JWT.Verifiers.RSA,
   IAMClient4D.Security.JWT.Verifiers.RSAPSS,
-  IAMClient4D.Security.Crypto.LockBox3,
+  IAMClient4D.Security.Crypto.Factory,
   IAMClient4D.Exceptions;
 
 { TUniversalJWTSignatureVerifier }
 
 constructor TUniversalJWTSignatureVerifier.Create;
 begin
-  Create(TIAM4DLockBox3CryptoProvider.Create);
+  Create(TIAM4DCryptoProviderFactory.CreateProvider);
 end;
 
 constructor TUniversalJWTSignatureVerifier.Create(const ACryptoProvider: IIAM4DCryptoProvider);

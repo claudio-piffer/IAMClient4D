@@ -32,6 +32,7 @@ uses
   System.NetEncoding,
   System.DateUtils,
   System.TimeSpan,
+  System.SyncObjs,
   System.Generics.Collections,
   System.Net.URLClient,
   System.Net.HttpClient,
@@ -41,6 +42,20 @@ uses
   IAMClient4D.Common.JSONUtils;
 
 type
+  /// <summary>
+  /// Cached validated JWT token entry with claims.
+  /// </summary>
+  TValidatedTokenCacheEntry = record
+    /// <summary>Claims serialized as JSON string</summary>
+    ClaimsJSON: string;
+    /// <summary>Token expiration time (exp claim) in UTC</summary>
+    ExpirationTime: TDateTime;
+    /// <summary>Timestamp when token was cached (UTC)</summary>
+    CachedAt: TDateTime;
+    /// <summary>Last access timestamp for LRU eviction (UTC)</summary>
+    LastUsedAt: TDateTime;
+  end;
+
   /// <summary>
   /// JWT validator implementation for token signature and claims validation.
   /// </summary>
@@ -59,6 +74,12 @@ type
     MAX_JTI_CACHE_ENTRIES = 100000;
     /// <summary>JTI cache cleanup interval in seconds (throttled to avoid O(n) on every call)</summary>
     JTI_CLEANUP_INTERVAL_SECONDS = 60;
+    /// <summary>Default maximum cached validated tokens</summary>
+    DEFAULT_MAX_TOKEN_CACHE_ENTRIES = 10000;
+    /// <summary>Default token cache cleanup interval in seconds</summary>
+    DEFAULT_TOKEN_CACHE_CLEANUP_INTERVAL = 60;
+    /// <summary>Default pre-expiry buffer: remove tokens N seconds before actual expiry</summary>
+    DEFAULT_TOKEN_CACHE_PRE_EXPIRY_BUFFER = 30;
   private
     FExpectedIssuer: string;
     FExpectedAudience: string;
@@ -84,6 +105,15 @@ type
     // Token age validation (iat)
     FIatMaxAge: Integer; // seconds, 0 = disabled
 
+    // Validated token cache (avoids re-validation of same token)
+    FTokenCacheEnabled: Boolean;
+    FTokenCache: TDictionary<string, TValidatedTokenCacheEntry>;
+    FTokenCacheLock: TLightweightMREW;
+    FMaxTokenCacheEntries: Integer;
+    FTokenCacheCleanupInterval: Integer; // seconds
+    FTokenCachePreExpiryBuffer: Integer; // seconds before exp to remove from cache
+    FLastTokenCacheCleanup: TDateTime; // UTC timestamp of last cleanup
+
     function ValidateClaims(const Claims: TJSONObject; const ExpectedIssuer, ExpectedAudience: string): Boolean;
     function GetUtcNow: TDateTime;
     function InternalVerifySignature(const ASigningInput: string; const ASignatureBytes: TBytes; const APublicKeyJWK: TJSONObject; const AAlg: string): Boolean;
@@ -102,6 +132,12 @@ type
     procedure CleanupExpiredJtiEntries;
     function IsJtiAlreadyUsed(const AJti: string): Boolean;
     procedure AddJtiToCache(const AJti: string);
+
+    // Token validation cache management
+    function TryGetCachedToken(const AToken: string; out AClaims: TJSONObject): Boolean;
+    procedure AddTokenToCache(const AToken: string; const AClaims: TJSONObject);
+    procedure CleanupExpiredTokens;
+    procedure EvictOldestToken;
 
     // Constant-time claim comparison helpers (prevents timing attacks)
     function SecureCompareIssuer(const AIssuer, AExpected: string): Boolean;
@@ -237,6 +273,46 @@ type
     /// Clears the jti cache manually. Useful for testing or memory management.
     /// </summary>
     procedure ClearJtiCache;
+
+    /// <summary>
+    /// Enables/disables validated token caching (default: enabled).
+    /// </summary>
+    /// <remarks>
+    /// When enabled, successfully validated tokens are cached until expiration.
+    /// Subsequent requests with the same token skip signature verification and claims parsing.
+    /// Thread-safe: Uses TLightweightMREW for optimal read-heavy performance.
+    /// </remarks>
+    procedure SetTokenCacheEnabled(const AValue: Boolean);
+
+    /// <summary>
+    /// Sets maximum number of cached validated tokens (default: 10000).
+    /// </summary>
+    /// <remarks>
+    /// When cache is full, LRU (Least Recently Used) eviction is applied.
+    /// </remarks>
+    procedure SetMaxTokenCacheEntries(const AValue: Integer);
+
+    /// <summary>
+    /// Sets token cache cleanup interval in seconds (default: 60).
+    /// </summary>
+    /// <remarks>
+    /// Expired tokens are removed from cache periodically at this interval.
+    /// </remarks>
+    procedure SetTokenCacheCleanupInterval(const AValue: Integer);
+
+    /// <summary>
+    /// Sets pre-expiry buffer in seconds (default: 30).
+    /// </summary>
+    /// <remarks>
+    /// Tokens are removed from cache N seconds before their actual expiration time.
+    /// This prevents serving tokens that are about to expire.
+    /// </remarks>
+    procedure SetTokenCachePreExpiryBuffer(const AValue: Integer);
+
+    /// <summary>
+    /// Clears all cached validated tokens manually.
+    /// </summary>
+    procedure ClearTokenCache;
   end;
 
 implementation
@@ -287,6 +363,14 @@ begin
 
   // Initialize iat max age (disabled by default)
   FIatMaxAge := 0;
+
+  // Initialize token validation cache (enabled by default)
+  FTokenCacheEnabled := True;
+  FTokenCache := TDictionary<string, TValidatedTokenCacheEntry>.Create;
+  FMaxTokenCacheEntries := DEFAULT_MAX_TOKEN_CACHE_ENTRIES;
+  FTokenCacheCleanupInterval := DEFAULT_TOKEN_CACHE_CLEANUP_INTERVAL;
+  FTokenCachePreExpiryBuffer := DEFAULT_TOKEN_CACHE_PRE_EXPIRY_BUFFER;
+  FLastTokenCacheCleanup := 0;
 end;
 
 constructor TIAM4DJWTValidator.Create(const AExpectedIssuer, AExpectedAudience: string;
@@ -364,6 +448,8 @@ begin
   FreeAndNil(FSSLValidator);
   FreeAndNil(FJtiCache);
   FreeAndNil(FJtiCacheLock);
+  FreeAndNil(FTokenCache);
+  // TLightweightMREW is a record, no Free needed
 
   FSignatureVerifier := nil;
   FJWKSProvider := nil;
@@ -593,6 +679,13 @@ begin
   LHeaderJSON := nil;
   LMustFreePublicKey := False;
 
+  // Try cache lookup first - avoids full validation if token was previously validated
+  if TryGetCachedToken(AToken, AClaims) then
+  begin
+    Result := True;
+    Exit;
+  end;
+
   try
     try
       LParts := AToken.Split(['.']);
@@ -662,6 +755,9 @@ begin
 
       if not ValidateClaims(AClaims, FExpectedIssuer, FExpectedAudience) then
         Exit;
+
+      // Add validated token to cache for future requests
+      AddTokenToCache(AToken, AClaims);
 
       Result := True;
     except
@@ -822,6 +918,202 @@ begin
     FJtiCache.AddOrSetValue(AJti, LExpiryTime);
   finally
     TMonitor.Exit(FJtiCacheLock);
+  end;
+end;
+
+{ Token validation cache methods }
+
+function TIAM4DJWTValidator.TryGetCachedToken(const AToken: string; out AClaims: TJSONObject): Boolean;
+var
+  LEntry: TValidatedTokenCacheEntry;
+  LNowUTC: TDateTime;
+  LEffectiveExpiry: TDateTime;
+begin
+  Result := False;
+  AClaims := nil;
+
+  if not FTokenCacheEnabled then
+    Exit;
+
+  if not Assigned(FTokenCache) then
+    Exit;
+
+  LNowUTC := GetUtcNow;
+
+  FTokenCacheLock.BeginRead;
+  try
+    if FTokenCache.TryGetValue(AToken, LEntry) then
+    begin
+      // Calculate effective expiry with pre-expiry buffer
+      LEffectiveExpiry := LEntry.ExpirationTime - (FTokenCachePreExpiryBuffer / SecsPerDay);
+
+      if LNowUTC < LEffectiveExpiry then
+      begin
+        // Cache hit - parse claims from cached JSON
+        AClaims := TJSONObject.ParseJSONValue(LEntry.ClaimsJSON) as TJSONObject;
+        Result := Assigned(AClaims);
+      end;
+    end;
+  finally
+    FTokenCacheLock.EndRead;
+  end;
+
+  // Update LastUsedAt outside read lock (separate write lock)
+  if Result then
+  begin
+    FTokenCacheLock.BeginWrite;
+    try
+      if FTokenCache.TryGetValue(AToken, LEntry) then
+      begin
+        LEntry.LastUsedAt := LNowUTC;
+        FTokenCache[AToken] := LEntry;
+      end;
+    finally
+      FTokenCacheLock.EndWrite;
+    end;
+  end;
+end;
+
+procedure TIAM4DJWTValidator.AddTokenToCache(const AToken: string; const AClaims: TJSONObject);
+var
+  LEntry: TValidatedTokenCacheEntry;
+  LExpTimestamp: Int64;
+  LNowUTC: TDateTime;
+begin
+  if not FTokenCacheEnabled then
+    Exit;
+
+  if not Assigned(FTokenCache) then
+    Exit;
+
+  if not Assigned(AClaims) then
+    Exit;
+
+  LExpTimestamp := AClaims.GetValue<Int64>('exp', 0);
+  if LExpTimestamp = 0 then
+    Exit; // Token without exp cannot be cached
+
+  LNowUTC := GetUtcNow;
+
+  LEntry.ClaimsJSON := AClaims.ToJSON;
+  LEntry.ExpirationTime := UnixToDateTime(LExpTimestamp);
+  LEntry.CachedAt := LNowUTC;
+  LEntry.LastUsedAt := LNowUTC;
+
+  FTokenCacheLock.BeginWrite;
+  try
+    // Periodic cleanup (throttled)
+    if SecondsBetween(LNowUTC, FLastTokenCacheCleanup) >= FTokenCacheCleanupInterval then
+    begin
+      CleanupExpiredTokens;
+      FLastTokenCacheCleanup := LNowUTC;
+    end;
+
+    // LRU eviction if cache is full
+    while FTokenCache.Count >= FMaxTokenCacheEntries do
+      EvictOldestToken;
+
+    FTokenCache.AddOrSetValue(AToken, LEntry);
+  finally
+    FTokenCacheLock.EndWrite;
+  end;
+end;
+
+procedure TIAM4DJWTValidator.CleanupExpiredTokens;
+var
+  LKey: string;
+  LExpiredKeys: TList<string>;
+  LEntry: TValidatedTokenCacheEntry;
+  LNowUTC: TDateTime;
+  LEffectiveExpiry: TDateTime;
+begin
+  // Called ONLY inside write lock
+  if not Assigned(FTokenCache) then
+    Exit;
+
+  LNowUTC := GetUtcNow;
+  LExpiredKeys := TList<string>.Create;
+  try
+    for LKey in FTokenCache.Keys do
+    begin
+      LEntry := FTokenCache[LKey];
+      LEffectiveExpiry := LEntry.ExpirationTime - (FTokenCachePreExpiryBuffer / SecsPerDay);
+
+      if LNowUTC >= LEffectiveExpiry then
+        LExpiredKeys.Add(LKey);
+    end;
+
+    for LKey in LExpiredKeys do
+      FTokenCache.Remove(LKey);
+  finally
+    LExpiredKeys.Free;
+  end;
+end;
+
+procedure TIAM4DJWTValidator.EvictOldestToken;
+var
+  LOldestKey: string;
+  LOldestTime: TDateTime;
+  LPair: TPair<string, TValidatedTokenCacheEntry>;
+begin
+  // Called ONLY inside write lock
+  if not Assigned(FTokenCache) or (FTokenCache.Count = 0) then
+    Exit;
+
+  LOldestTime := MaxDateTime;
+  LOldestKey := '';
+
+  for LPair in FTokenCache do
+  begin
+    if LPair.Value.LastUsedAt < LOldestTime then
+    begin
+      LOldestTime := LPair.Value.LastUsedAt;
+      LOldestKey := LPair.Key;
+    end;
+  end;
+
+  if LOldestKey <> '' then
+    FTokenCache.Remove(LOldestKey);
+end;
+
+procedure TIAM4DJWTValidator.SetTokenCacheEnabled(const AValue: Boolean);
+begin
+  FTokenCacheEnabled := AValue;
+  if not AValue then
+    ClearTokenCache;
+end;
+
+procedure TIAM4DJWTValidator.SetMaxTokenCacheEntries(const AValue: Integer);
+begin
+  if AValue < 1 then
+    raise EIAM4DSecurityValidationException.Create('Max token cache entries must be >= 1');
+  FMaxTokenCacheEntries := AValue;
+end;
+
+procedure TIAM4DJWTValidator.SetTokenCacheCleanupInterval(const AValue: Integer);
+begin
+  if AValue < 1 then
+    raise EIAM4DSecurityValidationException.Create('Token cache cleanup interval must be >= 1');
+  FTokenCacheCleanupInterval := AValue;
+end;
+
+procedure TIAM4DJWTValidator.SetTokenCachePreExpiryBuffer(const AValue: Integer);
+begin
+  if AValue < 0 then
+    raise EIAM4DSecurityValidationException.Create('Token cache pre-expiry buffer must be >= 0');
+  FTokenCachePreExpiryBuffer := AValue;
+end;
+
+procedure TIAM4DJWTValidator.ClearTokenCache;
+begin
+  if Assigned(FTokenCache) then
+  begin
+    FTokenCacheLock.BeginWrite;
+    try
+      FTokenCache.Clear;
+    finally
+      FTokenCacheLock.EndWrite;
+    end;
   end;
 end;
 

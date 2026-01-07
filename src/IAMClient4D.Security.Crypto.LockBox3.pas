@@ -21,8 +21,11 @@
   ---------------------------------------------------------------------------
 }
 
+{$I IAMClient4D.Config.inc}
+
 unit IAMClient4D.Security.Crypto.LockBox3;
 
+{$IFDEF IAM4D_CRYPTO_LOCKBOX3}
 interface
 
 uses
@@ -465,5 +468,11 @@ begin
       LMessageHC.Free;
   end;
 end;
+
+{$ELSE}
+// Unit is empty when TMS is active (mutual exclusivity)
+interface
+implementation
+{$ENDIF}
 
 end.

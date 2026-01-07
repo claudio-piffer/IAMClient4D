@@ -36,9 +36,8 @@ type
   /// Factory for creating cryptographic provider instances.
   /// </summary>
   /// <remarks>
-  /// This factory allows selecting the underlying cryptographic library
-  /// (LockBox3, TMS, etc.) without changing client code.
-  /// All methods return interface references for automatic lifetime management.
+  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
+  /// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
   ///
   /// Thread-safety: Each call creates a new provider instance.
   /// </remarks>
@@ -47,26 +46,31 @@ type
     /// <summary>
     /// Creates a crypto provider of the specified type.
     /// </summary>
-    /// <param name="AType">Type of crypto provider to create (default: cpLockBox3)</param>
+    /// <param name="AType">Type of crypto provider to create (default: cpDefault)</param>
     /// <returns>Interface to the crypto provider (reference counted)</returns>
-    /// <exception cref="EIAM4DCryptoNotSupportedException">
-    /// Raised if the requested provider type is not yet implemented.
-    /// </exception>
     /// <exception cref="EArgumentException">
     /// Raised if cpCustom is specified (use direct instantiation instead).
     /// </exception>
     class function CreateProvider(
-      AType: TIAM4DCryptoProviderType = cpLockBox3
+      AType: TIAM4DCryptoProviderType = cpDefault
     ): IIAM4DCryptoProvider; static;
+
+    /// <summary>
+    /// Returns the name of the default provider for this build configuration.
+    /// </summary>
+    /// <returns>'LockBox3' or 'TMS Cryptography Pack' depending on defines</returns>
+    class function GetDefaultProviderName: string; static;
   end;
 
 implementation
 
 uses
-  IAMClient4D.Security.Crypto.LockBox3
-  {$IFDEF IAM4D_TMS}
-  , IAMClient4D.Security.Crypto.TMS
-  {$ENDIF};
+  {$IFDEF IAM4D_CRYPTO_LOCKBOX3}
+  IAMClient4D.Security.Crypto.LockBox3;
+  {$ENDIF}
+  {$IFDEF IAM4D_CRYPTO_TMS}
+  IAMClient4D.Security.Crypto.TMS;
+  {$ENDIF}
 
 { TIAM4DCryptoProviderFactory }
 
@@ -74,27 +78,34 @@ class function TIAM4DCryptoProviderFactory.CreateProvider(
   AType: TIAM4DCryptoProviderType): IIAM4DCryptoProvider;
 begin
   case AType of
-    cpLockBox3:
-      Result := TIAM4DLockBox3CryptoProvider.Create;
-
-    cpTMS:
-      {$IFDEF IAM4D_TMS}
+    cpDefault:
+      {$IFDEF IAM4D_CRYPTO_TMS}
       Result := TIAM4DTMSCryptoProvider.Create;
       {$ELSE}
-      raise EIAM4DCryptoNotSupportedException.Create(
-        'TMS Cryptography Pack provider is not available. ' +
-        'Define IAM4D_TMS in IAMClient4D.Config.inc and ensure TMS library is installed. ' +
-        'Use cpLockBox3 or provide a custom IIAM4DCryptoProvider.');
+      Result := TIAM4DLockBox3CryptoProvider.Create;
       {$ENDIF}
 
     cpCustom:
       raise EArgumentException.Create(
         'cpCustom requires a custom IIAM4DCryptoProvider instance. ' +
-        'Use CreateValidator with ACryptoProvider parameter instead.');
+        'Use direct instantiation instead.');
   else
-    // Default fallback to LockBox3
+    // Default fallback
+    {$IFDEF IAM4D_CRYPTO_TMS}
+    Result := TIAM4DTMSCryptoProvider.Create;
+    {$ELSE}
     Result := TIAM4DLockBox3CryptoProvider.Create;
+    {$ENDIF}
   end;
+end;
+
+class function TIAM4DCryptoProviderFactory.GetDefaultProviderName: string;
+begin
+  {$IFDEF IAM4D_CRYPTO_TMS}
+  Result := 'TMS Cryptography Pack';
+  {$ELSE}
+  Result := 'LockBox3';
+  {$ENDIF}
 end;
 
 end.

@@ -21,6 +21,8 @@
   ---------------------------------------------------------------------------
 }
 
+{$I IAMClient4D.Config.inc}
+
 /// <summary>
 /// LockBox3-based storage crypto provider using AES-256-CBC + HMAC-SHA256.
 /// </summary>
@@ -31,6 +33,7 @@
 /// </remarks>
 unit IAMClient4D.Storage.Crypto.LockBox3;
 
+{$IFDEF IAM4D_CRYPTO_LOCKBOX3}
 interface
 
 uses
@@ -234,5 +237,11 @@ function TIAM4DLockBox3StorageCryptoProvider.GetAlgorithm: string;
 begin
   Result := 'AES-256-CBC-HMAC-SHA256';
 end;
+
+{$ELSE}
+// Unit is empty when TMS is active (mutual exclusivity)
+interface
+implementation
+{$ENDIF}
 
 end.

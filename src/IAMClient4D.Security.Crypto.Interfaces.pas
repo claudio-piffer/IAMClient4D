@@ -55,14 +55,13 @@ type
   /// Available cryptographic provider types.
   /// </summary>
   /// <remarks>
-  /// Used by TIAM4DCryptoProviderFactory and TIAM4DJWTValidatorFactory
-  /// to select the underlying cryptographic library.
+  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
+  /// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
+  /// Use cpDefault for automatic selection based on compilation defines.
   /// </remarks>
   TIAM4DCryptoProviderType = (
-    /// <summary>LockBox3 crypto provider (default, integrated)</summary>
-    cpLockBox3,
-    /// <summary>TMS Cryptography Pack (future implementation)</summary>
-    cpTMS,
+    /// <summary>Default provider based on compilation defines (LockBox3 or TMS)</summary>
+    cpDefault,
     /// <summary>Custom provider - user must provide IIAM4DCryptoProvider instance</summary>
     cpCustom);
 

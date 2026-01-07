@@ -1177,7 +1177,7 @@ TIAM4DClientConfigBuilder.New
 - `WithPinnedPublicKeys(...)`: SHA-256 certificate pinning
 - `WithTimeouts(...)`: Connection/response timeouts
 - `WithTokenExpiryBuffer(...)`: Token expiration buffer (seconds)
-- `WithIAMClient4DAESStorage(Key, AAD, [Provider])`: AES-256 encrypted storage with optional provider selection (`scpLockBox3`, `scpTMS`)
+- `WithIAMClient4DAESStorage(Key, AAD)`: AES-256 encrypted storage (uses compiled provider: LockBox3 default, TMS with `IAM4D_TMS`)
 - `WithCustomStorage(...)`: Custom storage
 - `WithExternalCallback(...)`: External callback URL (web apps)
 - `Build`: Build client (synchronous)
@@ -1445,16 +1445,16 @@ uses
   IAMClient4D.Security.JWT.Factory,
   IAMClient4D.Security.Crypto.Interfaces;
 
-// Simple usage (LockBox3 default)
+// Simple usage - automatically uses compiled provider (LockBox3 or TMS)
 var LValidator := TIAM4DJWTValidatorFactory.CreateValidator(
   'https://keycloak.example.com/realms/myrealm',
   'my-api');
 
-// With explicit crypto provider
+// With custom crypto provider
 var LValidator := TIAM4DJWTValidatorFactory.CreateValidator(
   'https://keycloak.example.com/realms/myrealm',
   'my-api',
-  cpTMS);  // Uses TMS Cryptography Pack
+  MyCustomCryptoProvider);
 
 // With shared JWKS provider (recommended for caching)
 var LJWKSProvider := TIAM4DJWKSProvider.GetInstance;
@@ -1467,7 +1467,7 @@ var LValidator := TIAM4DJWTValidatorFactory.CreateValidator(
 **Features**:
 - 11 overloaded `CreateValidator` methods
 - Returns interface references for automatic lifetime management
-- Supports pluggable crypto providers (LockBox3, TMS, custom)
+- Crypto provider selected at compile-time (LockBox3 default, TMS with `IAM4D_TMS` define)
 
 #### RSA Verifier
 
@@ -1499,15 +1499,16 @@ IAMClient4D v2.0 introduces pluggable cryptographic providers for JWT signature 
 
 | Type | Description |
 |------|-------------|
-| `cpLockBox3` | Default provider (integrated) - RS256/384/512, PS256/384/512 |
-| `cpTMS` | TMS Cryptography Pack - adds ES256/384/512 (requires `IAM4D_TMS` define) |
+| `cpDefault` | Uses compiled provider (LockBox3 or TMS based on `IAM4D_TMS` define) |
 | `cpCustom` | Custom `IIAM4DCryptoProvider` implementation |
+
+**Note**: LockBox3 and TMS are mutually exclusive at compile-time. Only one is compiled into the library.
 
 **Enabling TMS Cryptography Pack Support**:
 
 1. Edit `src/IAMClient4D.Config.inc` and uncomment `{$DEFINE IAM4D_TMS}`
-2. Ensure TMS Cryptography Pack is installed
-3. Use `cpTMS` when creating validators
+2. Ensure TMS Cryptography Pack is installed and in project search path
+3. Rebuild the project - all code automatically uses TMS
 
 **Algorithm Support by Provider**:
 
@@ -1592,31 +1593,28 @@ IAMClient4D v2.0 supports pluggable encryption providers for token storage.
 
 **`TIAM4DStorageCryptoProviderType`** (`IAMClient4D.Storage.Crypto.Interfaces.pas`):
 
-| Type | Algorithm | Description |
-|------|-----------|-------------|
-| `scpLockBox3` | AES-256-CBC + HMAC-SHA256 | Default, Encrypt-then-MAC |
-| `scpTMS` | AES-256-GCM | AEAD, requires `IAM4D_TMS` define |
-| `scpCustom` | Custom | Your implementation |
+| Type | Description |
+|------|-------------|
+| `scpDefault` | Uses compiled provider (LockBox3 or TMS based on `IAM4D_TMS` define) |
+| `scpCustom` | Custom `IIAM4DStorageCryptoProvider` implementation |
+
+**Note**: LockBox3 and TMS are mutually exclusive at compile-time.
 
 **Storage Encryption Comparison**:
 
-| Feature | LockBox3 (CBC+HMAC) | TMS (GCM) |
+| Feature | LockBox3 (default) | TMS (with `IAM4D_TMS`) |
 |---------|---------------------|-----------|
 | Algorithm | AES-256-CBC + HMAC-SHA256 | AES-256-GCM |
 | Authentication | Encrypt-then-MAC | Native AEAD |
 | IV/Nonce Size | 16 bytes | 12 bytes |
 | Tag Size | 32 bytes (HMAC) | 16 bytes |
 | Performance | Two-pass | Single-pass |
-| Availability | Always | Requires `IAM4D_TMS` |
 
 **Usage with Builder**:
 
 ```pascal
-// Default (LockBox3)
+// Automatically uses compiled provider (LockBox3 or TMS)
 .WithIAMClient4DAESStorage(LKey32, LAAD)
-
-// TMS provider
-.WithIAMClient4DAESStorage(LKey32, LAAD, scpTMS)
 ```
 
 ---
