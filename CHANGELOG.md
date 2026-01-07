@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.0.0] - 2025-12-19
+## [2.0.0] - 2025-01-07
 
 Complete Delphi client library for Keycloak and OAuth2/OpenID Connect integration with enterprise-grade security features.
 
