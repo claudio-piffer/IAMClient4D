@@ -29,6 +29,8 @@ uses
   System.SysUtils,
   System.Classes,
   System.JSON,
+  System.SyncObjs,
+  System.Generics.Collections,
   MVCFramework,
   MVCFramework.Commons,
   IAMClient4D.Security.Core,
@@ -74,12 +76,14 @@ type
   private
     FConfig: TIAM4DJWTMiddlewareConfig;
     FJWTValidator: IIAM4DJWTValidator;
+    FPublicCache: TDictionary<string, Boolean>;
+    FPublicCacheLock: TMultiReadExclusiveWriteSynchronizer;
 
     function CreateHTTPConfig(const ASSLValidationMode: TIAM4DSSLValidationMode): TIAM4DHTTPClientConfig;
     procedure ConfigureValidatorAzp(const AExpectedAzp: string; ARequireAzpWhenMultipleAud: Boolean);
     function ExtractToken(AContext: TWebContext): string;
-    function WantsAuthentication(AContext: TWebContext): Boolean;
     procedure HandleAuthenticationError(AContext: TWebContext; const AMessage: string);
+    function IsPublicAction(const AControllerQualifiedClassName, AActionName: string): Boolean;
 
     function IsSwaggerRequest(AContext: TWebContext): Boolean;
     procedure InjectSwaggerSecurity(var AJSON: string);
@@ -150,10 +154,11 @@ implementation
 
 uses
   System.StrUtils,
-  System.Generics.Collections,
+  System.Rtti,
   Web.HTTPApp,
   IAMClient4D.DMVC.DTO,
   IAMClient4D.DMVC.Common,
+  IAMClient4D.DMVC.Attributes,
   MVCFramework.Logger;
 
 { TIAM4DJWTMiddlewareConfig }
@@ -207,6 +212,8 @@ var
   LJWKSProvider: IIAM4DJWKSProvider;
 begin
   inherited Create;
+  FPublicCache := TDictionary<string, Boolean>.Create;
+  FPublicCacheLock := TMultiReadExclusiveWriteSynchronizer.Create;
   FConfig := AConfig;
 
   LHTTPConfig := CreateHTTPConfig(FConfig.SSLValidationMode);
@@ -247,6 +254,8 @@ var
   LJWKSProvider: IIAM4DJWKSProvider;
 begin
   inherited Create;
+  FPublicCache := TDictionary<string, Boolean>.Create;
+  FPublicCacheLock := TMultiReadExclusiveWriteSynchronizer.Create;
 
   LConfig := TIAM4DJWTMiddlewareConfig.Create(AIssuer, AAudience, '');
   LConfig.SSLValidationMode := ASSLValidationMode;
@@ -274,6 +283,8 @@ constructor TIAM4DJWTMiddleware.Create(
   const AConfig: TIAM4DJWTMiddlewareConfig);
 begin
   inherited Create;
+  FPublicCache := TDictionary<string, Boolean>.Create;
+  FPublicCacheLock := TMultiReadExclusiveWriteSynchronizer.Create;
 
   if not Assigned(AValidator) then
     raise EIAM4DInvalidConfigurationException.Create('Custom validator cannot be nil. ' +
@@ -293,6 +304,8 @@ end;
 destructor TIAM4DJWTMiddleware.Destroy;
 begin
   FJWTValidator := nil;
+  FPublicCache.Free;
+  FPublicCacheLock.Free;
   inherited;
 end;
 
@@ -322,20 +335,6 @@ begin
     Exit;
 
   Result := Trim(LAuthHeader.Substring(FConfig.TokenPrefix.Length));
-end;
-
-function TIAM4DJWTMiddleware.WantsAuthentication(AContext: TWebContext): Boolean;
-var
-  LHasToken: Boolean;
-begin
-  if (AContext.Request.HTTPMethod = TMVCHTTPMethodType.httpOPTIONS) then
-    Exit(False);
-
-  LHasToken := ExtractToken(AContext) <> '';
-  if FConfig.AllowAnonymous then
-    Result := LHasToken
-  else
-    Result := True;
 end;
 
 procedure TIAM4DJWTMiddleware.HandleAuthenticationError(AContext: TWebContext; const AMessage: string);
@@ -496,14 +495,14 @@ begin
   if (AContext.Request.HTTPMethod = TMVCHTTPMethodType.httpOPTIONS) or IsSwaggerRequest(AContext) then
     Exit;
 
-  if not WantsAuthentication(AContext) then
-    Exit;
-
   LToken := ExtractToken(AContext);
+
+  // No token present: mark as not authenticated but do NOT block.
+  // The actual enforcement happens in OnBeforeControllerAction,
+  // where RTTI can check for [IAM4DPublic].
   if LToken.IsEmpty then
   begin
-    HandleAuthenticationError(AContext, 'Missing or invalid Authorization header');
-    AHandled := True;
+    AContext.Data[CONTEXT_KEY_AUTH_STATUS] := AUTH_STATUS_NOT_AUTHENTICATED;
     Exit;
   end;
 
@@ -513,10 +512,11 @@ begin
       LResponseOK := FJWTValidator.ValidateToken(LToken, LClaims);
       if not LResponseOK then
       begin
-        HandleAuthenticationError(AContext, 'Invalid or expired JWT token');
-        AHandled := True;
+        AContext.Data[CONTEXT_KEY_AUTH_STATUS] := AUTH_STATUS_NOT_AUTHENTICATED;
         Exit;
       end;
+
+      AContext.Data[CONTEXT_KEY_AUTH_STATUS] := AUTH_STATUS_AUTHENTICATED;
 
       if Assigned(LClaims) then
       begin
@@ -630,8 +630,7 @@ begin
       begin
         LogE(Format('Unexpected JWT error [%s]: %s | Stack: %s',
           [E.ClassName, E.Message, E.StackTrace]));
-        HandleAuthenticationError(AContext, 'Authentication error: ' + E.Message);
-        AHandled := True;
+        AContext.Data[CONTEXT_KEY_AUTH_STATUS] := AUTH_STATUS_NOT_AUTHENTICATED;
       end;
     end;
   finally
@@ -640,9 +639,114 @@ begin
   end;
 end;
 
-procedure TIAM4DJWTMiddleware.OnBeforeControllerAction(AContext: TWebContext; const AControllerQualifiedClassName, AActionName: string; var AHandled: Boolean);
+function TIAM4DJWTMiddleware.IsPublicAction(const AControllerQualifiedClassName, AActionName: string): Boolean;
+var
+  LCacheKey: string;
+  LFound: Boolean;
+  LIsPublic: Boolean;
+  LRttiCtx: TRttiContext;
+  LRttiType: TRttiType;
+  LRttiMethod: TRttiMethod;
+  LAttr: TCustomAttribute;
 begin
-  //don't remove
+  LCacheKey := AControllerQualifiedClassName + '.' + AActionName;
+
+  // Fast path: read from cache
+  FPublicCacheLock.BeginRead;
+  try
+    LFound := FPublicCache.TryGetValue(LCacheKey, LIsPublic);
+  finally
+    FPublicCacheLock.EndRead;
+  end;
+
+  if LFound then
+    Exit(LIsPublic);
+
+  // Slow path: RTTI inspection
+  LIsPublic := False;
+  LRttiCtx := TRttiContext.Create;
+  try
+    LRttiType := LRttiCtx.FindType(AControllerQualifiedClassName);
+    if Assigned(LRttiType) then
+    begin
+      // Check class-level attribute
+      for LAttr in LRttiType.GetAttributes do
+        if LAttr is IAM4DPublicAttribute then
+        begin
+          LIsPublic := True;
+          Break;
+        end;
+
+      // Check method-level attribute
+      if not LIsPublic then
+      begin
+        LRttiMethod := LRttiType.GetMethod(AActionName);
+        if Assigned(LRttiMethod) then
+          for LAttr in LRttiMethod.GetAttributes do
+            if LAttr is IAM4DPublicAttribute then
+            begin
+              LIsPublic := True;
+              Break;
+            end;
+      end;
+    end;
+  finally
+    LRttiCtx.Free;
+  end;
+
+  // Store in cache
+  FPublicCacheLock.BeginWrite;
+  try
+    FPublicCache.AddOrSetValue(LCacheKey, LIsPublic);
+  finally
+    FPublicCacheLock.EndWrite;
+  end;
+
+  Result := LIsPublic;
+end;
+
+procedure TIAM4DJWTMiddleware.OnBeforeControllerAction(AContext: TWebContext; const AControllerQualifiedClassName, AActionName: string; var AHandled: Boolean);
+var
+  LAuthStatus: string;
+begin
+  if (AContext.Request.HTTPMethod = TMVCHTTPMethodType.httpOPTIONS) or IsSwaggerRequest(AContext) then
+    Exit;
+
+  // Public endpoints bypass authentication
+  if IsPublicAction(AControllerQualifiedClassName, AActionName) then
+    Exit;
+
+  // AllowAnonymous config: skip enforcement when no token was provided
+  if FConfig.AllowAnonymous then
+  begin
+    if not AContext.Data.ContainsKey(CONTEXT_KEY_AUTH_STATUS) then
+      Exit;
+    LAuthStatus := AContext.Data[CONTEXT_KEY_AUTH_STATUS];
+    if LAuthStatus = AUTH_STATUS_AUTHENTICATED then
+      Exit;
+    // Token was provided but invalid
+    if AContext.Data.ContainsKey(CONTEXT_KEY_JWT_TOKEN) then
+    begin
+      HandleAuthenticationError(AContext, 'Invalid or expired JWT token');
+      AHandled := True;
+    end;
+    Exit;
+  end;
+
+  // Protected endpoint: require successful authentication
+  if not AContext.Data.ContainsKey(CONTEXT_KEY_AUTH_STATUS) then
+  begin
+    HandleAuthenticationError(AContext, 'Missing or invalid Authorization header');
+    AHandled := True;
+    Exit;
+  end;
+
+  LAuthStatus := AContext.Data[CONTEXT_KEY_AUTH_STATUS];
+  if LAuthStatus <> AUTH_STATUS_AUTHENTICATED then
+  begin
+    HandleAuthenticationError(AContext, 'Missing or invalid Authorization header');
+    AHandled := True;
+  end;
 end;
 
 procedure TIAM4DJWTMiddleware.OnAfterControllerAction(AContext: TWebContext; const AControllerQualifiedClassName, AActionName: string; const AHandled: Boolean);

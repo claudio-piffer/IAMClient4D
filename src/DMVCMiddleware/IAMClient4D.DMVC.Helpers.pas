@@ -132,6 +132,12 @@ type
     /// Throws HTTP 403 if user doesn't belong to the specified Keycloak group.
     /// </summary>
     procedure RequireGroup(const AGroup: string);
+
+    /// <summary>
+    /// Returns True if the current request was not authenticated (no token or invalid token),
+    /// typically indicating a public endpoint. Useful for logging and debugging.
+    /// </summary>
+    function IsPublicEndpoint: Boolean;
   end;
 
 implementation
@@ -434,6 +440,11 @@ begin
   if not LKeycloak.HasGroup(AGroup) then
     raise EMVCException.Create(HTTP_STATUS.Forbidden,
       Format('Insufficient permissions: required group membership "%s" not found', [AGroup]));
+end;
+
+function TIAM4DJWTHelper.IsPublicEndpoint: Boolean;
+begin
+  Result := not IsAuthenticated;
 end;
 
 end.

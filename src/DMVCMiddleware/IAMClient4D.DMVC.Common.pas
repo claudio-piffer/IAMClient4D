@@ -36,6 +36,9 @@ const
   CONTEXT_KEY_KC_JSON = 'JWT_KC_JSON';
   CACHE_KEY = '__IAM4D_JWT_CLAIMS_CACHE__';
   KC_CACHE_KEY = '__IAM4D_KC_CLAIMS_CACHE__';
+  CONTEXT_KEY_AUTH_STATUS = 'JWT_Auth_Status';
+  AUTH_STATUS_AUTHENTICATED = 'authenticated';
+  AUTH_STATUS_NOT_AUTHENTICATED = 'not_authenticated';
 
 type
   /// <summary>
