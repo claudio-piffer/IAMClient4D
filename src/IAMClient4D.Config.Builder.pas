@@ -31,7 +31,6 @@ uses
   Async.Core,
   IAMClient4D.Core,
   IAMClient4D.Storage.Core,
-  IAMClient4D.Storage.Crypto.Interfaces,
   IAMClient4D.Common.Security;
 
 type
@@ -72,14 +71,9 @@ type
     /// </summary>
     function WithIAMClient4DAESStorage: IIAM4DClientConfigBuilder; overload;
     /// <summary>
-    /// Uses AES encrypted storage with provided key and crypto provider
+    /// Uses AES-256-GCM encrypted storage with provided key
     /// </summary>
-    /// <param name="AKey32">32-byte encryption key</param>
-    /// <param name="AAAD">Additional authenticated data (optional)</param>
-    /// <param name="ACryptoProvider">Crypto provider type (default: scpLockBox3)</param>
-    function WithIAMClient4DAESStorage(const AKey32: TBytes;
-      const AAAD: TBytes = nil;
-      ACryptoProvider: TIAM4DStorageCryptoProviderType = scpLockBox3): IIAM4DClientConfigBuilder; overload;
+    function WithIAMClient4DAESStorage(const AKey32: TBytes; const AAAD: TBytes = nil): IIAM4DClientConfigBuilder; overload;
     /// <summary>
     /// Uses custom token storage implementation
     /// </summary>
@@ -142,39 +136,27 @@ type
   /// Thread-safety: Not thread-safe. Use one instance per thread.
   /// Memory: Sensitive data (keys, passwords) is zeroed in destructor.
   /// Validation: Build methods validate configuration before creating client.
-  /// Optimization: Configuration fields stored separately, TIAM4DClientConfig
-  /// created only once in Build/BuildAsync (not on each With* call).
   /// </remarks>
   TIAM4DClientConfigBuilder = class(TInterfacedObject, IIAM4DClientConfigBuilder)
   private
+    FConfig: TIAM4DClientConfig;
     FConfigInitialized: Boolean;
-    FBaseURL: string;
-    FRealm: string;
-    FClientID: string;
-    FClientSecret: string;
-    FScopes: TArray<string>;
-    FGrantType: TIAM4DGrantType;
-    FSSLValidationMode: TIAM4DSSLValidationMode;
-    FConnectionTimeout: Integer;
-    FResponseTimeout: Integer;
-    FExternalCallbackURL: string;
-    FTokenExpiryBufferSeconds: Integer;
-    FAcrValues: TArray<string>;
 
     FStorageType: TIAM4DStorageType;
     FStorageKey32: TBytes;
     FStorageAAD: TBytes;
     FStoragePassword: string;
-    FStorageCryptoProviderType: TIAM4DStorageCryptoProviderType;
     FCustomStorage: IIAM4DTokenStorage;
 
     FCallbackMode: TIAM4DCallbackMode;
+
     FPinnedPublicKeys: TArray<string>;
+    FAcrValues: TArray<string>;
 
     procedure EnsureConfigInitialized;
     function CreateStorage: IIAM4DTokenStorage;
+    procedure ConfigureClientOrFail(const AClient: IIAM4DClient; const AConfig: TIAM4DClientConfig);
     procedure ValidateBeforeBuild;
-    function BuildConfig: TIAM4DClientConfig;
 
     function GetConfig: TIAM4DClientConfig;
   public
@@ -193,9 +175,7 @@ type
 
     function WithIAMClient4DAESStorage: IIAM4DClientConfigBuilder; overload;
 
-    function WithIAMClient4DAESStorage(const AKey32: TBytes;
-      const AAAD: TBytes = nil;
-      ACryptoProvider: TIAM4DStorageCryptoProviderType = scpLockBox3): IIAM4DClientConfigBuilder; overload;
+    function WithIAMClient4DAESStorage(const AKey32: TBytes; const AAAD: TBytes = nil): IIAM4DClientConfigBuilder; overload;
 
     function WithCustomStorage(const AStorage: IIAM4DTokenStorage): IIAM4DClientConfigBuilder;
 
@@ -226,48 +206,15 @@ implementation
 
 uses
   IAMClient4D.Common.CryptoUtils,
-  IAMClient4D.Common.SecureMemory,
   IAMClient4D.Keycloak,
   IAMClient4D.Storage.AESMemoryTokenStorage,
-  IAMClient4D.Storage.Crypto.Factory;
+  IAMClient4D.Exceptions;
 
 { TIAM4DClientConfigBuilder }
 
 function TIAM4DClientConfigBuilder.GetConfig: TIAM4DClientConfig;
 begin
-  if FConfigInitialized then
-    Result := BuildConfig
-  else
-    FillChar(Result, SizeOf(Result), 0);
-end;
-
-function TIAM4DClientConfigBuilder.BuildConfig: TIAM4DClientConfig;
-begin
-  if FGrantType = gtAuthorizationCode then
-    Result := TIAM4DClientConfig.CreateForAuthorizationCode(
-      FBaseURL,
-      FRealm,
-      FClientID,
-      FScopes,
-      FSSLValidationMode,
-      FConnectionTimeout,
-      FResponseTimeout,
-      FExternalCallbackURL,
-      FTokenExpiryBufferSeconds,
-      FAcrValues)
-  else if FGrantType = gtClientCredentials then
-    Result := TIAM4DClientConfig.CreateForClientCredentials(
-      FBaseURL,
-      FRealm,
-      FClientID,
-      FClientSecret,
-      FScopes,
-      FSSLValidationMode,
-      FConnectionTimeout,
-      FResponseTimeout,
-      FTokenExpiryBufferSeconds)
-  else
-    raise EInvalidOpException.Create('Grant type not set');
+  Result := FConfig;
 end;
 
 class function TIAM4DClientConfigBuilder.New: IIAM4DClientConfigBuilder;
@@ -276,22 +223,10 @@ var
 begin
   LBuilder := TIAM4DClientConfigBuilder.Create;
   LBuilder.FConfigInitialized := False;
-  LBuilder.FGrantType := gtUnknown;
-  LBuilder.FSSLValidationMode := svmStrict;
-  LBuilder.FConnectionTimeout := 30000;
-  LBuilder.FResponseTimeout := 60000;
-  LBuilder.FTokenExpiryBufferSeconds := IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS;
   LBuilder.FStorageType := stIAMClient4DAES;
-  LBuilder.FStorageCryptoProviderType := scpLockBox3;
   LBuilder.FCallbackMode := cbmLocalServer;
   LBuilder.FCustomStorage := nil;
   LBuilder.FStoragePassword := '';
-  SetLength(LBuilder.FBaseURL, 0);
-  SetLength(LBuilder.FRealm, 0);
-  SetLength(LBuilder.FClientID, 0);
-  SetLength(LBuilder.FClientSecret, 0);
-  SetLength(LBuilder.FScopes, 0);
-  SetLength(LBuilder.FExternalCallbackURL, 0);
   SetLength(LBuilder.FStorageKey32, 0);
   SetLength(LBuilder.FStorageAAD, 0);
   SetLength(LBuilder.FPinnedPublicKeys, 0);
@@ -313,9 +248,6 @@ begin
     SetLength(FStorageAAD, 0);
   end;
 
-  if Length(FClientSecret) > 0 then
-    SecureZeroString(FClientSecret);
-
   FStoragePassword := '';
   FCustomStorage := nil;
 
@@ -332,10 +264,11 @@ end;
 function TIAM4DClientConfigBuilder.ForAuthorizationCode(
   const ABaseURL, ARealm, AClientID: string): IIAM4DClientConfigBuilder;
 begin
-  FBaseURL := ABaseURL;
-  FRealm := ARealm;
-  FClientID := AClientID;
-  FGrantType := gtAuthorizationCode;
+  FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+    ABaseURL,
+    ARealm,
+    AClientID);
+
   FConfigInitialized := True;
   FCallbackMode := cbmLocalServer;
   Result := Self;
@@ -344,11 +277,12 @@ end;
 function TIAM4DClientConfigBuilder.ForClientCredentials(
   const ABaseURL, ARealm, AClientID, AClientSecret: string): IIAM4DClientConfigBuilder;
 begin
-  FBaseURL := ABaseURL;
-  FRealm := ARealm;
-  FClientID := AClientID;
-  FClientSecret := AClientSecret;
-  FGrantType := gtClientCredentials;
+  FConfig := TIAM4DClientConfig.CreateForClientCredentials(
+    ABaseURL,
+    ARealm,
+    AClientID,
+    AClientSecret);
+
   FConfigInitialized := True;
   Result := Self;
 end;
@@ -362,8 +296,7 @@ begin
   Result := Self;
 end;
 
-function TIAM4DClientConfigBuilder.WithIAMClient4DAESStorage(const AKey32: TBytes;
-  const AAAD: TBytes; ACryptoProvider: TIAM4DStorageCryptoProviderType): IIAM4DClientConfigBuilder;
+function TIAM4DClientConfigBuilder.WithIAMClient4DAESStorage(const AKey32: TBytes; const AAAD: TBytes): IIAM4DClientConfigBuilder;
 begin
   if Length(AKey32) <> 32 then
     raise EArgumentException.Create('AES storage key must be exactly 32 bytes');
@@ -371,7 +304,6 @@ begin
   FStorageType := stIAMClient4DAES;
   FCustomStorage := nil;
   FStorageKey32 := Copy(AKey32);
-  FStorageCryptoProviderType := ACryptoProvider;
   if Length(AAAD) > 0 then
     FStorageAAD := Copy(AAAD)
   else
@@ -391,7 +323,34 @@ end;
 function TIAM4DClientConfigBuilder.WithScopes(const AScopes: TArray<string>): IIAM4DClientConfigBuilder;
 begin
   EnsureConfigInitialized;
-  FScopes := Copy(AScopes);
+
+  if FConfig.GrantType = gtAuthorizationCode then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      AScopes,
+      FConfig.SSLValidationMode,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout,
+      FConfig.ExternalCallbackURL,
+      FConfig.TokenExpiryBufferSeconds,
+      FAcrValues);
+  end
+  else if FConfig.GrantType = gtClientCredentials then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.ClientSecret,
+      AScopes,
+      FConfig.SSLValidationMode,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout);
+  end;
+
   Result := Self;
 end;
 
@@ -399,28 +358,94 @@ function TIAM4DClientConfigBuilder.WithExternalCallback(const ACallbackURL: stri
 begin
   EnsureConfigInitialized;
 
-  if FGrantType <> gtAuthorizationCode then
+  if FConfig.GrantType <> gtAuthorizationCode then
     raise EInvalidOpException.Create('External callback is only for Authorization Code flow');
 
   if ACallbackURL.Trim.IsEmpty then
     raise EArgumentException.Create('External callback URL cannot be empty');
 
   FCallbackMode := cbmExternal;
-  FExternalCallbackURL := ACallbackURL;
+
+  FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+    FConfig.BaseURL,
+    FConfig.Realm,
+    FConfig.ClientID,
+    FConfig.Scopes,
+    FConfig.SSLValidationMode,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    ACallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FAcrValues);
+
   Result := Self;
 end;
 
 function TIAM4DClientConfigBuilder.WithStrictSSL: IIAM4DClientConfigBuilder;
 begin
   EnsureConfigInitialized;
-  FSSLValidationMode := svmStrict;
+
+  if FConfig.GrantType = gtAuthorizationCode then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.Scopes,
+      svmStrict,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout,
+      FConfig.ExternalCallbackURL,
+      FConfig.TokenExpiryBufferSeconds,
+      FAcrValues);
+  end
+  else if FConfig.GrantType = gtClientCredentials then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.ClientSecret,
+      FConfig.Scopes,
+      svmStrict,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout);
+  end;
+
   Result := Self;
 end;
 
 function TIAM4DClientConfigBuilder.WithAllowSelfSignedSSL: IIAM4DClientConfigBuilder;
 begin
   EnsureConfigInitialized;
-  FSSLValidationMode := svmAllowSelfSigned;
+
+  if FConfig.GrantType = gtAuthorizationCode then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.Scopes,
+      svmAllowSelfSigned,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout,
+      FConfig.ExternalCallbackURL,
+      FConfig.TokenExpiryBufferSeconds,
+      FAcrValues);
+  end
+  else if FConfig.GrantType = gtClientCredentials then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.ClientSecret,
+      FConfig.Scopes,
+      svmAllowSelfSigned,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout);
+  end;
+
   Result := Self;
 end;
 
@@ -440,8 +465,33 @@ begin
   if AResponseTimeoutMs <= 0 then
     raise EArgumentOutOfRangeException.Create('Response timeout must be > 0');
 
-  FConnectionTimeout := AConnectionTimeoutMs;
-  FResponseTimeout := AResponseTimeoutMs;
+  if FConfig.GrantType = gtAuthorizationCode then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.Scopes,
+      FConfig.SSLValidationMode,
+      AConnectionTimeoutMs,
+      AResponseTimeoutMs,
+      FConfig.ExternalCallbackURL,
+      FConfig.TokenExpiryBufferSeconds,
+      FAcrValues);
+  end
+  else if FConfig.GrantType = gtClientCredentials then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.ClientSecret,
+      FConfig.Scopes,
+      FConfig.SSLValidationMode,
+      AConnectionTimeoutMs,
+      AResponseTimeoutMs);
+  end;
+
   Result := Self;
 end;
 
@@ -452,7 +502,34 @@ begin
   if ABufferSeconds < 0 then
     raise EArgumentOutOfRangeException.Create('Token expiry buffer cannot be negative');
 
-  FTokenExpiryBufferSeconds := ABufferSeconds;
+  if FConfig.GrantType = gtAuthorizationCode then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.Scopes,
+      FConfig.SSLValidationMode,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout,
+      FConfig.ExternalCallbackURL,
+      ABufferSeconds,
+      FAcrValues);
+  end
+  else if FConfig.GrantType = gtClientCredentials then
+  begin
+    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
+      FConfig.BaseURL,
+      FConfig.Realm,
+      FConfig.ClientID,
+      FConfig.ClientSecret,
+      FConfig.Scopes,
+      FConfig.SSLValidationMode,
+      FConfig.ConnectionTimeout,
+      FConfig.ResponseTimeout,
+      ABufferSeconds);
+  end;
+
   Result := Self;
 end;
 
@@ -460,10 +537,24 @@ function TIAM4DClientConfigBuilder.WithAcrValues(const AValues: TArray<string>):
 begin
   EnsureConfigInitialized;
 
-  if FGrantType <> gtAuthorizationCode then
+  if FConfig.GrantType <> gtAuthorizationCode then
     raise EInvalidOpException.Create('ACR values are only applicable for Authorization Code flow');
 
   FAcrValues := Copy(AValues);
+
+  // Recreate config with new ACR values
+  FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+    FConfig.BaseURL,
+    FConfig.Realm,
+    FConfig.ClientID,
+    FConfig.Scopes,
+    FConfig.SSLValidationMode,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    FConfig.ExternalCallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FAcrValues);
+
   Result := Self;
 end;
 
@@ -471,7 +562,6 @@ function TIAM4DClientConfigBuilder.CreateStorage: IIAM4DTokenStorage;
 var
   LKey32: TBytes;
   LAAD: TBytes;
-  LProvider: IIAM4DStorageCryptoProvider;
 begin
   if Assigned(FCustomStorage) then
   begin
@@ -496,26 +586,36 @@ begin
           LAAD := TEncoding.UTF8.GetBytes('IAMClient4D/v1');
         end;
 
-        LProvider := TIAM4DStorageCryptoProviderFactory.CreateProvider(
-          LKey32, FStorageCryptoProviderType);
-        Result := TIAM4DAESMemoryTokenStorageRawKey32.Create(
-          LProvider, LAAD, FTokenExpiryBufferSeconds);
+        Result := TIAM4DAESMemoryTokenStorageRawKey32.Create(LKey32, LAAD, FConfig.TokenExpiryBufferSeconds);
       end;
   else
     raise EInvalidOpException.CreateFmt('Unknown storage type: %d', [Ord(FStorageType)]);
   end;
 end;
 
+procedure TIAM4DClientConfigBuilder.ConfigureClientOrFail(
+  const AClient: IIAM4DClient;
+  const AConfig: TIAM4DClientConfig);
+var
+  LState: TAsyncOperationState;
+begin
+  LState := AClient.ConfigureAsync(AConfig).Run.WaitForCompletion(30000, True);
+  if LState <> TAsyncOperationState.Completed then
+    raise EIAM4DException.CreateFmt(
+      'Client configuration did not complete successfully (state: %d).',
+      [Ord(LState)]);
+end;
+
 procedure TIAM4DClientConfigBuilder.ValidateBeforeBuild;
 begin
   EnsureConfigInitialized;
 
-  if FGrantType = gtUnknown then
+  if FConfig.GrantType = gtUnknown then
     raise EInvalidOpException.Create('Grant type not set. Call ForAuthorizationCode() or ForClientCredentials()');
 
-  if (FGrantType = gtAuthorizationCode) and
+  if (FConfig.GrantType = gtAuthorizationCode) and
     (FCallbackMode = cbmExternal) and
-    FExternalCallbackURL.IsEmpty then
+    (FConfig.ExternalCallbackURL.IsEmpty) then
     raise EInvalidOpException.Create(
       'External callback URL required when using WithExternalCallback(). Call WithExternalCallback(url) first.');
 end;
@@ -523,19 +623,17 @@ end;
 function TIAM4DClientConfigBuilder.Build: IIAM4DClient;
 var
   LStorage: IIAM4DTokenStorage;
-  LConfig: TIAM4DClientConfig;
 begin
   ValidateBeforeBuild;
 
   LStorage := CreateStorage;
-  LConfig := BuildConfig;
 
   Result := TIAM4DKeycloakClient.Create(FCallbackMode, LStorage);
 
-  Result.ConfigureAsync(LConfig).Run.WaitForCompletion(30000);
-
   if Length(FPinnedPublicKeys) > 0 then
     Result.AddPinnedPublicKeys(FPinnedPublicKeys);
+
+  ConfigureClientOrFail(Result, FConfig);
 end;
 
 function TIAM4DClientConfigBuilder.BuildAsync: IAsyncPromise<IIAM4DClient>;
@@ -547,7 +645,7 @@ var
 begin
   ValidateBeforeBuild;
 
-  LConfig := BuildConfig;
+  LConfig := FConfig;
   LCallbackMode := FCallbackMode;
   if Length(FPinnedPublicKeys) > 0 then
     LPinnedKeys := Copy(FPinnedPublicKeys);
@@ -562,7 +660,7 @@ begin
       if Length(LPinnedKeys) > 0 then
         Result.AddPinnedPublicKeys(LPinnedKeys);
 
-      Result.ConfigureAsync(LConfig).Run.WaitForCompletion(30000);
+      ConfigureClientOrFail(Result, LConfig);
     end);
 end;
 

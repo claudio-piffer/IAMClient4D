@@ -14,7 +14,7 @@ object MainForm: TMainForm
   TextHeight = 15
   object UniContainerPanel1: TUniContainerPanel
     Left = 8
-    Top = 8
+    Top = 13
     Width = 858
     Height = 401
     Hint = ''
@@ -1066,9 +1066,9 @@ object MainForm: TMainForm
     end
     object UniMemo1: TUniMemo
       Left = 7
-      Top = 87
+      Top = 119
       Width = 848
-      Height = 298
+      Height = 266
       Hint = ''
       BorderStyle = ubsNone
       Lines.Strings = (
@@ -1079,7 +1079,33 @@ object MainForm: TMainForm
       ReadOnly = True
       TabOrder = 2
       LayoutConfig.Region = 'center'
-      LayoutConfig.Margin = '0 4 4 4'
+      LayoutConfig.Margin = '6 4 4 4'
+    end
+    object UniContainerPanel3: TUniContainerPanel
+      Left = 8
+      Top = 84
+      Width = 847
+      Height = 37
+      Hint = ''
+      ParentColor = False
+      TabOrder = 3
+      Layout = 'border'
+      LayoutAttribs.Padding = '5 5 5 5'
+      LayoutConfig.Region = 'north'
+      object ExpectedAUDEdit: TUniEdit
+        Left = 24
+        Top = 6
+        Width = 820
+        Hint = ''
+        Text = ''
+        TabOrder = 1
+        EmptyText = 
+          'Enter the aud claim. Leave blank only to disable audience valida' +
+          'tion for testing or legacy systems'
+        FieldLabel = 'Expected Audience (aud)'
+        FieldLabelWidth = 180
+        InputType = 'text'
+      end
     end
   end
   object UniStatusBar1: TUniStatusBar

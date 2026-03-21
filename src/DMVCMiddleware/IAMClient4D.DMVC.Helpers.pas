@@ -193,16 +193,19 @@ begin
       TryStrToInt(Self.Data[CACHE_KEY], LCachedHash) and
       (LCurrentHash = LCachedHash) then
     begin
-      if Self.Data.ContainsKey(CONTEXT_KEY_STD_JSON) then
+      LJsonObj := TJSONObject.ParseJSONValue(Self.Data[CONTEXT_KEY_JWT_CLAIMS]) as TJSONObject;
+      if Assigned(LJsonObj) then
       begin
-        LJsonObj := TJSONObject.ParseJSONValue(Self.Data[CONTEXT_KEY_STD_JSON]) as TJSONObject;
-        if Assigned(LJsonObj) then
-          try
-            Result := TIAM4DJWTClaims.ParseFromPayload(LJsonObj);
-            Exit;
-          finally
-            LJsonObj.Free;
-          end;
+        try
+          Result := TIAM4DJWTClaims.ParseFromPayload(LJsonObj);
+
+          if Self.Data.ContainsKey(CONTEXT_KEY_JWT_TOKEN) then
+            Result.RawToken := Self.Data[CONTEXT_KEY_JWT_TOKEN];
+
+          Exit;
+        finally
+          LJsonObj.Free;
+        end;
       end;
     end;
   end;
@@ -326,16 +329,15 @@ begin
       TryStrToInt(Self.Data[KC_CACHE_KEY], LCachedHash) and
       (LCurrentHash = LCachedHash) then
     begin
-      if Self.Data.ContainsKey(CONTEXT_KEY_KC_JSON) then
+      LJsonObj := TJSONObject.ParseJSONValue(Self.Data[CONTEXT_KEY_JWT_CLAIMS]) as TJSONObject;
+      if Assigned(LJsonObj) then
       begin
-        LJsonObj := TJSONObject.ParseJSONValue(Self.Data[CONTEXT_KEY_KC_JSON]) as TJSONObject;
-        if Assigned(LJsonObj) then
-          try
-            Result := TIAM4DKeycloakClaims.ParseFromPayload(LJsonObj);
-            Exit;
-          finally
-            LJsonObj.Free;
-          end;
+        try
+          Result := TIAM4DKeycloakClaims.ParseFromPayload(LJsonObj);
+          Exit;
+        finally
+          LJsonObj.Free;
+        end;
       end;
     end;
   end;

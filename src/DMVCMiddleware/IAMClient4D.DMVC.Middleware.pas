@@ -52,6 +52,7 @@ type
   TIAM4DJWTMiddlewareConfig = record
     Issuer: string;
     Audience: string;
+    AudienceValidationEnabled: Boolean; // default True
     JWKS_URL: string; // Optional when using auto-discovery (Issuer-based)
     JWKSCacheDurationMinutes: Integer;
     ClockSkewSeconds: Integer;
@@ -80,7 +81,10 @@ type
     FPublicCacheLock: TMultiReadExclusiveWriteSynchronizer;
 
     function CreateHTTPConfig(const ASSLValidationMode: TIAM4DSSLValidationMode): TIAM4DHTTPClientConfig;
-    procedure ConfigureValidatorAzp(const AExpectedAzp: string; ARequireAzpWhenMultipleAud: Boolean);
+    procedure ConfigureValidatorOptions(
+      const AAudienceValidationEnabled: Boolean;
+      const AExpectedAzp: string;
+      ARequireAzpWhenMultipleAud: Boolean);
     function ExtractToken(AContext: TWebContext): string;
     procedure HandleAuthenticationError(AContext: TWebContext; const AMessage: string);
     function IsPublicAction(const AControllerQualifiedClassName, AActionName: string): Boolean;
@@ -105,7 +109,7 @@ type
 
     /// <summary>
     /// Creates middleware with auto-discovery. Recommended for production use with OIDC providers.
-    /// Uses singleton TIAM4DJWKSProvider for optimal performance.
+    /// Uses a dedicated TIAM4DJWKSProvider instance for isolated configuration.
     /// </summary>
     constructor Create(const AIssuer, AAudience: string; const ASSLValidationMode: TIAM4DSSLValidationMode = svmStrict; const AExpectedAzp: string = ''); overload;
 
@@ -148,6 +152,11 @@ type
     /// Configures whether azp is required when audience contains multiple values (default: True for OIDC compliance).
     /// </summary>
     procedure SetRequireAzpWhenMultipleAud(const AValue: Boolean);
+
+    /// <summary>
+    /// Enables/disables audience (aud) validation on the underlying validator.
+    /// </summary>
+    procedure SetAudienceValidationEnabled(const AValue: Boolean);
   end;
 
 implementation
@@ -167,6 +176,7 @@ class function TIAM4DJWTMiddlewareConfig.Create(const AIssuer, AAudience, AJWKS_
 begin
   Result.Issuer := AIssuer;
   Result.Audience := AAudience;
+  Result.AudienceValidationEnabled := True;
   Result.JWKS_URL := AJWKS_URL;
   Result.JWKSCacheDurationMinutes := 60;
   Result.ClockSkewSeconds := 60;
@@ -192,17 +202,23 @@ begin
     ASSLValidationMode);
 end;
 
-procedure TIAM4DJWTMiddleware.ConfigureValidatorAzp(const AExpectedAzp: string; ARequireAzpWhenMultipleAud: Boolean);
+procedure TIAM4DJWTMiddleware.ConfigureValidatorOptions(
+  const AAudienceValidationEnabled: Boolean;
+  const AExpectedAzp: string;
+  ARequireAzpWhenMultipleAud: Boolean);
+var
+  LConfigurable: IIAM4DJWTValidatorConfigurable;
 begin
-  if (FJWTValidator is TIAM4DJWTValidator) then
+  if Supports(FJWTValidator, IIAM4DJWTValidatorConfigurable, LConfigurable) then
   begin
+    LConfigurable.SetAudienceValidationEnabled(AAudienceValidationEnabled);
     if not AExpectedAzp.Trim.IsEmpty then
-      TIAM4DJWTValidator(FJWTValidator).SetExpectedAzp(AExpectedAzp);
-    TIAM4DJWTValidator(FJWTValidator).SetRequireAzpWhenMultipleAud(ARequireAzpWhenMultipleAud);
+      LConfigurable.SetExpectedAzp(AExpectedAzp);
+    LConfigurable.SetRequireAzpWhenMultipleAud(ARequireAzpWhenMultipleAud);
   end
   else
   begin
-    LogW('Custom validator does not support azp configuration. Skipping azp setup.');
+    LogW('Custom validator does not support advanced JWT claim configuration. Skipping audience/azp setup.');
   end;
 end;
 
@@ -218,9 +234,7 @@ begin
 
   LHTTPConfig := CreateHTTPConfig(FConfig.SSLValidationMode);
 
-  // Use singleton JWKS provider for optimal performance and thread-safety
-  LJWKSProvider := TIAM4DJWKSProvider.GetInstance;
-  LJWKSProvider.SetSSLValidationMode(FConfig.SSLValidationMode);
+  LJWKSProvider := TIAM4DJWKSProvider.Create(LHTTPConfig);
 
   if FConfig.JWKSCacheDurationMinutes > 0 then
     LJWKSProvider.SetCacheTTL(FConfig.JWKSCacheDurationMinutes * 60);
@@ -235,7 +249,7 @@ begin
 
   FJWTValidator.ClockSkewSeconds := FConfig.ClockSkewSeconds;
 
-  ConfigureValidatorAzp(FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
+  ConfigureValidatorOptions(FConfig.AudienceValidationEnabled, FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
 end;
 
 constructor TIAM4DJWTMiddleware.Create(const AIssuer, AAudience, AJWKS_URL: string; const AExpectedAzp: string);
@@ -265,6 +279,9 @@ begin
   LHTTPConfig := CreateHTTPConfig(ASSLValidationMode);
   LJWKSProvider := TIAM4DJWKSProvider.Create(LHTTPConfig);
 
+  if FConfig.JWKSCacheDurationMinutes > 0 then
+    LJWKSProvider.SetCacheTTL(FConfig.JWKSCacheDurationMinutes * 60);
+
   FJWTValidator := TIAM4DJWTValidator.Create(
     AIssuer,
     AAudience,
@@ -273,7 +290,7 @@ begin
 
   FJWTValidator.ClockSkewSeconds := FConfig.ClockSkewSeconds;
 
-  ConfigureValidatorAzp(FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
+  ConfigureValidatorOptions(FConfig.AudienceValidationEnabled, FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
 
   LogI('JWT middleware initialized (auto-discovery). Issuer=' + AIssuer);
 end;
@@ -295,7 +312,7 @@ begin
 
   FJWTValidator.ClockSkewSeconds := FConfig.ClockSkewSeconds;
 
-  ConfigureValidatorAzp(FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
+  ConfigureValidatorOptions(FConfig.AudienceValidationEnabled, FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
 
   LogI('JWT middleware initialized with custom validator. ' +
     'Issuer=' + FConfig.Issuer + ' Audience=' + FConfig.Audience);
@@ -312,13 +329,19 @@ end;
 procedure TIAM4DJWTMiddleware.SetExpectedAzp(const AValue: string);
 begin
   FConfig.ExpectedAzp := AValue;
-  ConfigureValidatorAzp(AValue, FConfig.RequireAzpWhenMultipleAud);
+  ConfigureValidatorOptions(FConfig.AudienceValidationEnabled, AValue, FConfig.RequireAzpWhenMultipleAud);
 end;
 
 procedure TIAM4DJWTMiddleware.SetRequireAzpWhenMultipleAud(const AValue: Boolean);
 begin
   FConfig.RequireAzpWhenMultipleAud := AValue;
-  ConfigureValidatorAzp(FConfig.ExpectedAzp, AValue);
+  ConfigureValidatorOptions(FConfig.AudienceValidationEnabled, FConfig.ExpectedAzp, AValue);
+end;
+
+procedure TIAM4DJWTMiddleware.SetAudienceValidationEnabled(const AValue: Boolean);
+begin
+  FConfig.AudienceValidationEnabled := AValue;
+  ConfigureValidatorOptions(AValue, FConfig.ExpectedAzp, FConfig.RequireAzpWhenMultipleAud);
 end;
 
 function TIAM4DJWTMiddleware.ExtractToken(AContext: TWebContext): string;
@@ -367,7 +390,7 @@ begin
 
     AContext.Response.StatusCode := HTTP_STATUS.Unauthorized;
     AContext.Response.ContentType := TMVCMediaType.APPLICATION_JSON;
-    AContext.Response.RawWebResponse.Content := LError.ToJSON;
+    AContext.Response.Content := LError.ToJSON;
   finally
     LError.Free;
   end;

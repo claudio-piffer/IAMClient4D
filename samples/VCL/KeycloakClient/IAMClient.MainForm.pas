@@ -123,6 +123,9 @@ type
     UserRolesAction: TAction;
     SearchUserAction: TAction;
     UserFederatedAction: TAction;
+    Panel14: TPanel;
+    Label1: TLabel;
+    AUDEdit: TEdit;
     procedure FormDestroy(Sender: TObject);
     procedure AccessTokenAsyncActionExecute(Sender: TObject);
     procedure AccessTokenAsyncActionUpdate(Sender: TObject);
@@ -339,6 +342,7 @@ end;
 procedure TMainForm.DoLogin;
 begin
   Screen.Cursor := crHourGlass;
+  PKCEActivityIndicator.Animate := False;
   FKeycloakClientPKCE.StartAuthorizationFlowAsync()
     .OnSuccess(procedure(const AAccessToken: string)
     begin
@@ -347,12 +351,10 @@ begin
     end)
     .OnError(procedure(const E: Exception)
     begin
-      PKCEActivityIndicator.Animate := False;
       ShowMessage('Authentication error: ' + E.Message);
     end)
     .OnFinally(procedure
     begin
-      PKCEActivityIndicator.Animate := False;
       Screen.Cursor := crDefault;
     end)
     .Run;
@@ -640,7 +642,7 @@ begin
     end)
     .OnError(procedure(const E: Exception)
     begin
-      ShowMessage('Errore: ' + E.Message);
+      ShowMessage('Error: ' + E.Message);
     end)
     .Run;
 end;
@@ -662,14 +664,17 @@ begin
 
   LJWTValidator := TIAM4DJWTValidator.Create(
     FKeycloakClientPKCE.Issuer,
-    'api-server',
+    Trim(AUDEdit.Text),
     svmAllowSelfSigned);
+
+  if Trim(AUDEdit.Text) = EmptyStr then
+    (LJWTValidator as IIAM4DJWTValidatorConfigurable).AudienceValidationEnabled := False;
 
   if LJWTValidator.ValidateToken(PKCEMemo.Lines.Text, LClaims) then
   begin
     try
       PKCEMemo.Lines.Clear;
-      PKCEMemo.Lines.Add(LClaims.ToString);
+      PKCEMemo.Lines.Add(LClaims.Format(4));
     finally
       LClaims.Free;
     end;
@@ -756,7 +761,7 @@ begin
   begin
     try
       CCMemo.Lines.Clear;
-      CCMemo.Lines.Add(LClaims.ToString);
+      CCMemo.Lines.Add(LClaims.Format(4));
     finally
       LClaims.Free;
     end;

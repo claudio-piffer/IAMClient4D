@@ -42,16 +42,6 @@ uses
 /// </summary>
 procedure DeriveFromRawKey32(const Key32: TBytes; out Kenc, Kmac: TBytes);
 
-/// <summary>
-/// Computes HMAC-SHA256 of data with given key
-/// </summary>
-function HMAC_SHA256(const Key, Data: TBytes): TBytes;
-
-/// <summary>
-/// Converts UInt64 to 8-byte big-endian representation
-/// </summary>
-function UInt64ToBigEndian8(const V: UInt64): TBytes;
-
 type
   /// <summary>
   /// AES-256-CBC encryption using LockBox library.
@@ -105,24 +95,6 @@ type
     function hasOnSetIVHandler(var Proc: TSetMemStreamProc): boolean;
   end;
 
-function HMAC_SHA256(const Key, Data: TBytes): TBytes;
-begin
-  Result := THashSHA2.GetHMACAsBytes(Data, Key, THashSHA2.TSHA2Version.SHA256);
-end;
-
-function UInt64ToBigEndian8(const V: UInt64): TBytes;
-begin
-  SetLength(Result, 8);
-  Result[0] := Byte(V shr 56);
-  Result[1] := Byte(V shr 48);
-  Result[2] := Byte(V shr 40);
-  Result[3] := Byte(V shr 32);
-  Result[4] := Byte(V shr 24);
-  Result[5] := Byte(V shr 16);
-  Result[6] := Byte(V shr 8);
-  Result[7] := Byte(V);
-end;
-
 procedure DeriveFromRawKey32(const Key32: TBytes; out Kenc, Kmac: TBytes);
 begin
   if Length(Key32) <> 32 then
@@ -160,8 +132,7 @@ var
 begin
   LSeed := TIAM4DCryptoUtils.GenerateSecureRandomBytes(16);
   Mem.Position := Mem.Size;
-  if Length(LSeed) > 0 then
-    Mem.WriteBuffer(LSeed[0], 16);
+  Mem.WriteBuffer(LSeed[0], 16);
 end;
 
 function TMinimalSelector.hasOnSetIVHandler(var Proc: TSetMemStreamProc): boolean;

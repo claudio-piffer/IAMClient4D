@@ -24,7 +24,8 @@ uses
   uniStatusBar,
   uniSweetAlert,
   Vcl.Imaging.pngimage,
-  uniImage;
+  uniImage,
+  uniEdit;
 
 type
   TMainForm = class(TUniForm)
@@ -33,11 +34,13 @@ type
     AccessTokeniButton: TUniButton;
     ValidateTokenButton: TUniButton;
     UserInfoButton: TUniButton;
-    UniMemo1: TUniMemo;
     UniStatusBar1: TUniStatusBar;
     LogoutButton: TUniButton;
     UniSweetAlert: TUniSweetAlert;
     UniImage1: TUniImage;
+    UniMemo1: TUniMemo;
+    UniContainerPanel3: TUniContainerPanel;
+    ExpectedAUDEdit: TUniEdit;
     procedure UniFormCreate(Sender: TObject);
     procedure AccessTokeniButtonClick(Sender: TObject);
     procedure ValidateTokenButtonClick(Sender: TObject);
@@ -92,11 +95,16 @@ procedure TMainForm.ValidateTokenButtonClick(Sender: TObject);
 var
   LJWTValidator: IIAM4DJWTValidator;
   LClaims: TJSONObject;
+  LExpectedAud: string;
 begin
   UniMemo1.Lines.Clear;
   UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessToken);
-  LJWTValidator := TIAM4DJWTValidator.Create(UniMainModule.IAMClient.Issuer, 'api-server', svmAllowSelfSigned);
+  LExpectedAud := Trim(ExpectedAUDEdit.Text);
+  LJWTValidator := TIAM4DJWTValidator.Create(UniMainModule.IAMClient.Issuer, LExpectedAud, svmAllowSelfSigned);
   try
+    if LExpectedAud.IsEmpty then
+      (LJWTValidator as IIAM4DJWTValidatorConfigurable).AudienceValidationEnabled := False;
+
     if LJWTValidator.ValidateToken(UniMemo1.Lines.Text, LClaims) then
     begin
       try

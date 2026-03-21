@@ -170,10 +170,8 @@ begin
         'OAuth context is not valid. Authorization flow may have expired or not been started.');
 
     if not SecureStringEquals(AReceivedState, LContext.State) then
-      raise EIAM4DCallbackHandlerException.CreateFmt(
-        'State mismatch in OAuth2 callback. Expected: %s, Received: %s. ' +
-        'This could indicate a CSRF attack or session mix-up.',
-        [LContext.State, AReceivedState]);
+      raise EIAM4DCallbackHandlerException.Create(
+        'State mismatch in OAuth2 callback. This could indicate a CSRF attack or session mix-up.');
   finally
     FLock.Release;
   end;

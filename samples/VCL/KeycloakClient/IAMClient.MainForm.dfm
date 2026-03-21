@@ -2,8 +2,8 @@ object MainForm: TMainForm
   Left = 0
   Top = 0
   Caption = 'Keycloak client test'
-  ClientHeight = 571
-  ClientWidth = 974
+  ClientHeight = 650
+  ClientWidth = 970
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -18,13 +18,13 @@ object MainForm: TMainForm
     AlignWithMargins = True
     Left = 8
     Top = 8
-    Width = 958
-    Height = 555
+    Width = 954
+    Height = 634
     Margins.Left = 8
     Margins.Top = 8
     Margins.Right = 8
     Margins.Bottom = 8
-    ActivePage = CCTabSheet
+    ActivePage = PKCETabSheet
     Align = alClient
     TabHeight = 38
     TabOrder = 0
@@ -34,7 +34,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 87
-        Width = 944
+        Width = 940
         Height = 2
         Align = alTop
         Shape = bsTopLine
@@ -45,8 +45,8 @@ object MainForm: TMainForm
       object Bevel2: TBevel
         AlignWithMargins = True
         Left = 3
-        Top = 137
-        Width = 944
+        Top = 173
+        Width = 940
         Height = 2
         Align = alTop
         Shape = bsTopLine
@@ -57,8 +57,8 @@ object MainForm: TMainForm
       object Bevel3: TBevel
         AlignWithMargins = True
         Left = 3
-        Top = 173
-        Width = 944
+        Top = 123
+        Width = 940
         Height = 2
         Align = alTop
         Shape = bsTopLine
@@ -70,7 +70,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 3
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -81,16 +81,16 @@ object MainForm: TMainForm
           AlignWithMargins = True
           Left = 3
           Top = 3
-          Width = 120
+          Width = 140
           Height = 16
           Align = alLeft
           AutoSize = False
           Caption = 'Keycloak base url'
         end
         object PKCEBaseURLEdit: TEdit
-          Left = 126
+          Left = 146
           Top = 0
-          Width = 818
+          Width = 794
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -102,7 +102,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 31
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -113,16 +113,16 @@ object MainForm: TMainForm
           AlignWithMargins = True
           Left = 3
           Top = 3
-          Width = 120
+          Width = 140
           Height = 16
           Align = alLeft
           AutoSize = False
           Caption = 'Realm'
         end
         object PKCERealmEdit: TEdit
-          Left = 126
+          Left = 146
           Top = 0
-          Width = 818
+          Width = 794
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -134,7 +134,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 59
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -145,16 +145,16 @@ object MainForm: TMainForm
           AlignWithMargins = True
           Left = 3
           Top = 3
-          Width = 120
+          Width = 140
           Height = 16
           Align = alLeft
           AutoSize = False
           Caption = 'Client'
         end
         object PKCEClientEdit: TEdit
-          Left = 126
+          Left = 146
           Top = 0
-          Width = 818
+          Width = 794
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -165,8 +165,8 @@ object MainForm: TMainForm
       object Panel2: TPanel
         AlignWithMargins = True
         Left = 8
-        Top = 92
-        Width = 934
+        Top = 128
+        Width = 930
         Height = 42
         Margins.Left = 8
         Margins.Top = 0
@@ -179,7 +179,7 @@ object MainForm: TMainForm
         TabOrder = 3
         object LoginButton: TButton
           AlignWithMargins = True
-          Left = 367
+          Left = 363
           Top = 3
           Width = 100
           Height = 36
@@ -189,7 +189,7 @@ object MainForm: TMainForm
         end
         object UserInfoButton: TButton
           AlignWithMargins = True
-          Left = 831
+          Left = 827
           Top = 3
           Width = 100
           Height = 36
@@ -199,7 +199,7 @@ object MainForm: TMainForm
         end
         object Button1: TButton
           AlignWithMargins = True
-          Left = 473
+          Left = 469
           Top = 3
           Width = 100
           Height = 36
@@ -209,7 +209,7 @@ object MainForm: TMainForm
         end
         object VerifyJWTButton: TButton
           AlignWithMargins = True
-          Left = 725
+          Left = 721
           Top = 3
           Width = 100
           Height = 36
@@ -219,7 +219,7 @@ object MainForm: TMainForm
         end
         object Button3: TButton
           AlignWithMargins = True
-          Left = 579
+          Left = 575
           Top = 3
           Width = 140
           Height = 36
@@ -238,8 +238,8 @@ object MainForm: TMainForm
       object Panel6: TPanel
         AlignWithMargins = True
         Left = 3
-        Top = 145
-        Width = 944
+        Top = 181
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -250,16 +250,16 @@ object MainForm: TMainForm
           AlignWithMargins = True
           Left = 3
           Top = 3
-          Width = 120
+          Width = 140
           Height = 16
           Align = alLeft
           AutoSize = False
           Caption = 'Login URL'
         end
         object LoginURLEdit: TEdit
-          Left = 126
+          Left = 146
           Top = 0
-          Width = 818
+          Width = 794
           Height = 22
           Align = alClient
           ReadOnly = True
@@ -270,9 +270,9 @@ object MainForm: TMainForm
       object PKCEMemo: TMemo
         AlignWithMargins = True
         Left = 3
-        Top = 181
-        Width = 944
-        Height = 323
+        Top = 209
+        Width = 940
+        Height = 374
         Align = alClient
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -284,6 +284,40 @@ object MainForm: TMainForm
         ScrollBars = ssVertical
         TabOrder = 5
       end
+      object Panel14: TPanel
+        AlignWithMargins = True
+        Left = 3
+        Top = 95
+        Width = 940
+        Height = 22
+        Align = alTop
+        BevelOuter = bvNone
+        Caption = 'Panel1'
+        ShowCaption = False
+        TabOrder = 6
+        object Label1: TLabel
+          AlignWithMargins = True
+          Left = 3
+          Top = 3
+          Width = 140
+          Height = 16
+          Align = alLeft
+          AutoSize = False
+          Caption = 'Expected Audience (aud)'
+        end
+        object AUDEdit: TEdit
+          Left = 146
+          Top = 0
+          Width = 794
+          Height = 22
+          Align = alClient
+          TabOrder = 0
+          TextHint = 
+            'Enter the aud claim. Leave blank only to disable audience valida' +
+            'tion for testing or legacy systems'
+          ExplicitHeight = 23
+        end
+      end
     end
     object UserManagementTabSheet: TTabSheet
       Caption = '.:: User management ::.'
@@ -292,7 +326,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 8
         Top = 42
-        Width = 934
+        Width = 930
         Height = 42
         Margins.Left = 8
         Margins.Top = 0
@@ -369,8 +403,8 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 129
-        Width = 944
-        Height = 375
+        Width = 940
+        Height = 454
         Align = alClient
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -386,7 +420,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 8
         Top = 0
-        Width = 934
+        Width = 930
         Height = 42
         Margins.Left = 8
         Margins.Top = 0
@@ -463,7 +497,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 8
         Top = 84
-        Width = 934
+        Width = 930
         Height = 42
         Margins.Left = 8
         Margins.Top = 0
@@ -534,7 +568,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 115
-        Width = 944
+        Width = 940
         Height = 2
         Align = alTop
         Shape = bsTopLine
@@ -546,7 +580,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 165
-        Width = 944
+        Width = 940
         Height = 2
         Align = alTop
         Shape = bsTopLine
@@ -558,8 +592,8 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 173
-        Width = 944
-        Height = 331
+        Width = 940
+        Height = 410
         Align = alClient
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -575,7 +609,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 3
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -595,7 +629,7 @@ object MainForm: TMainForm
         object CCBaseURLEdit: TEdit
           Left = 126
           Top = 0
-          Width = 818
+          Width = 814
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -607,7 +641,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 8
         Top = 120
-        Width = 934
+        Width = 930
         Height = 42
         Margins.Left = 8
         Margins.Top = 0
@@ -620,7 +654,7 @@ object MainForm: TMainForm
         TabOrder = 2
         object Button2: TButton
           AlignWithMargins = True
-          Left = 473
+          Left = 469
           Top = 3
           Width = 100
           Height = 36
@@ -630,7 +664,7 @@ object MainForm: TMainForm
         end
         object Button5: TButton
           AlignWithMargins = True
-          Left = 579
+          Left = 575
           Top = 3
           Width = 100
           Height = 36
@@ -640,7 +674,7 @@ object MainForm: TMainForm
         end
         object Button6: TButton
           AlignWithMargins = True
-          Left = 831
+          Left = 827
           Top = 3
           Width = 100
           Height = 36
@@ -650,7 +684,7 @@ object MainForm: TMainForm
         end
         object Button7: TButton
           AlignWithMargins = True
-          Left = 685
+          Left = 681
           Top = 3
           Width = 140
           Height = 36
@@ -670,7 +704,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 31
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -690,7 +724,7 @@ object MainForm: TMainForm
         object CCRealmEdit: TEdit
           Left = 126
           Top = 0
-          Width = 818
+          Width = 814
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -702,7 +736,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 59
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -722,7 +756,7 @@ object MainForm: TMainForm
         object CCClientEdit: TEdit
           Left = 126
           Top = 0
-          Width = 818
+          Width = 814
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -734,7 +768,7 @@ object MainForm: TMainForm
         AlignWithMargins = True
         Left = 3
         Top = 87
-        Width = 944
+        Width = 940
         Height = 22
         Align = alTop
         BevelOuter = bvNone
@@ -754,7 +788,7 @@ object MainForm: TMainForm
         object CCClientSecretEdit: TEdit
           Left = 126
           Top = 0
-          Width = 818
+          Width = 814
           Height = 22
           Align = alClient
           TabOrder = 0
@@ -765,8 +799,8 @@ object MainForm: TMainForm
     end
   end
   object ActionList1: TActionList
-    Left = 32
-    Top = 504
+    Left = 24
+    Top = 592
     object LogoutAction: TAction
       Category = 'PKCE'
       Caption = 'Logout'

@@ -123,7 +123,7 @@ type
 
 implementation
 
-{$IFDEF IAM4D_TMS}
+{$IFDEF IAM4D_CRYPTO_TMS}
 
 { TIAM4DECDSAp256 }
 
@@ -181,11 +181,18 @@ begin
 end;
 
 function TIAM4DTMSCryptoProvider.NormalizeModulus(const AModulus: TBytes): TBytes;
+const
+  MAX_MODULUS_BYTES = 1024; // 8192-bit RSA key maximum
 var
   LLen: Integer;
   LTargetLen: Integer;
 begin
   LLen := Length(AModulus);
+
+  if (LLen = 0) or (LLen > MAX_MODULUS_BYTES + 1) then
+    raise EIAM4DCryptoNotSupportedException.Create(
+      Format('RSA modulus size %d bytes is outside supported range (1..%d)',
+        [LLen, MAX_MODULUS_BYTES]), GetProviderName);
 
   // RSA modulus should be exactly 128, 256, 384, 512, or 1024 bytes
   // If it has an extra leading zero byte (common in ASN.1 encoding), remove it
@@ -248,29 +255,23 @@ function TIAM4DTMSCryptoProvider.ComputeHash(const AData: TBytes;
   AHashAlg: TIAM4DHashAlgorithm): TBytes;
 var
   LHashSHA2: THashSHA2;
+  LVersion: THashSHA2.TSHA2Version;
 begin
   case AHashAlg of
-    haSHA256:
-    begin
-      LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-      LHashSHA2.Update(AData[0], Length(AData));
-      Result := LHashSHA2.HashAsBytes;
-    end;
-    haSHA384:
-    begin
-      LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA384);
-      LHashSHA2.Update(AData[0], Length(AData));
-      Result := LHashSHA2.HashAsBytes;
-    end;
-    haSHA512:
-    begin
-      LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA512);
-      LHashSHA2.Update(AData[0], Length(AData));
-      Result := LHashSHA2.HashAsBytes;
-    end;
+    haSHA256: LVersion := THashSHA2.TSHA2Version.SHA256;
+    haSHA384: LVersion := THashSHA2.TSHA2Version.SHA384;
+    haSHA512: LVersion := THashSHA2.TSHA2Version.SHA512;
   else
-    SetLength(Result, 0);
+    raise EIAM4DCryptoNotSupportedException.Create(
+      Format('Hash algorithm %d not supported', [Ord(AHashAlg)]), GetProviderName);
   end;
+
+  LHashSHA2 := THashSHA2.Create(LVersion);
+
+  if Length(AData) > 0 then
+    LHashSHA2.Update(AData, Length(AData));
+
+  Result := LHashSHA2.HashAsBytes;
 end;
 
 function TIAM4DTMSCryptoProvider.MGF1(const ASeed: TBytes; AMaskLen: Integer;
@@ -480,6 +481,12 @@ begin
 
       Result := SecureEquals(AExpectedEM, LActualEM);
     except
+      on E: EOutOfMemory do
+        raise;
+      on E: EAccessViolation do
+        raise;
+      on E: EStackOverflow do
+        raise;
       on E: Exception do
         Exit;
     end;
@@ -560,6 +567,12 @@ begin
 
       Result := EMSA_PSS_Verify(AMessage, LEM, LModBits - 1, AHashAlg, ASaltLen);
     except
+      on E: EOutOfMemory do
+        raise;
+      on E: EAccessViolation do
+        raise;
+      on E: EStackOverflow do
+        raise;
       on E: Exception do
         Exit;
     end;

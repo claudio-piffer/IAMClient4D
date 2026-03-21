@@ -27,7 +27,18 @@ interface
 
 uses
   System.SysUtils,
+  System.Hash,
   IAMClient4D.Exceptions;
+
+/// <summary>
+/// Computes HMAC-SHA256 of data with given key
+/// </summary>
+function HMAC_SHA256(const Key, Data: TBytes): TBytes;
+
+/// <summary>
+/// Converts UInt64 to 8-byte big-endian representation
+/// </summary>
+function UInt64ToBigEndian8(const V: UInt64): TBytes;
 
 type
   /// <summary>
@@ -48,18 +59,36 @@ type
 
 implementation
 
-{TCryptoUtils}
-
 uses
   CSPRNG,
   CSPRNG.Interfaces;
 
+function HMAC_SHA256(const Key, Data: TBytes): TBytes;
+begin
+  Result := THashSHA2.GetHMACAsBytes(Data, Key, THashSHA2.TSHA2Version.SHA256);
+end;
+
+function UInt64ToBigEndian8(const V: UInt64): TBytes;
+begin
+  SetLength(Result, 8);
+  Result[0] := Byte(V shr 56);
+  Result[1] := Byte(V shr 48);
+  Result[2] := Byte(V shr 40);
+  Result[3] := Byte(V shr 32);
+  Result[4] := Byte(V shr 24);
+  Result[5] := Byte(V shr 16);
+  Result[6] := Byte(V shr 8);
+  Result[7] := Byte(V);
+end;
+
+{ TIAM4DCryptoUtils }
+
 class function TIAM4DCryptoUtils.GenerateSecureRandomBytes(const ACount: Integer): TBytes;
 begin
-  SetLength(Result, ACount);
   if ACount <= 0 then
     raise EIAM4DCryptoUtilsException.Create('Count must be a value > 0');
 
+  SetLength(Result, ACount);
   var LCSPRNGProvider: ICSPRNGProvider := GetCSPRNGProvider;
   Result := LCSPRNGProvider.GetBytes(ACount);
 end;

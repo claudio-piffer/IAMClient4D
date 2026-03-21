@@ -203,12 +203,12 @@ type
     function ToJSON: TJSONObject;
 
     /// <summary>
-    /// Checks if this is a realm-level role (ClientID is empty).
+    /// Checks if this is a realm-level role (ContainerID is empty).
     /// </summary>
     function IsRealmRole: Boolean;
 
     /// <summary>
-    /// Checks if this is a client-level role (ClientID is not empty).
+    /// Checks if this is a client-level role (ContainerID is not empty).
     /// </summary>
     function IsClientRole: Boolean;
 
@@ -235,9 +235,9 @@ type
     class function CreateRealmRole(const AName: string; const ADescription: string = ''): TIAM4DRole; static;
 
     /// <summary>
-    /// Creates a new client role with specified name and client info.
+    /// Creates a new client role with specified name and client context.
     /// </summary>
-    class function CreateClientRole(const AName: string; const AClientID: string; const AClientName: string; const ADescription: string = ''): TIAM4DRole; static;
+    class function CreateClientRole(const AName: string; const AContainerID: string; const AClientID: string; const ADescription: string = ''): TIAM4DRole; static;
 
     /// <summary>
     /// Returns a new role record with updated description.
@@ -245,7 +245,7 @@ type
     function WithDescription(const ADescription: string): TIAM4DRole;
 
     /// <summary>
-    /// Returns a formatted display name (includes client name for client roles).
+    /// Returns a formatted display name (includes client identifier for client roles).
     /// </summary>
     function DisplayName: string;
   end;
@@ -371,9 +371,14 @@ type
     function FilterByClientRole: TArray<TIAM4DRole>;
 
     /// <summary>
-    /// Filters roles by client ID.
+    /// Filters roles by logical Keycloak clientId.
     /// </summary>
     function FilterByClientID(const AClientID: string): TArray<TIAM4DRole>;
+
+    /// <summary>
+    /// Filters roles by internal Keycloak container UUID.
+    /// </summary>
+    function FilterByContainerID(const AContainerID: string): TArray<TIAM4DRole>;
 
     /// <summary>
     /// Checks if array contains a role with specified name.
@@ -1077,8 +1082,8 @@ begin
     if ClientID <> '' then
       Result.AddPair('clientId', ClientID);
 
-    if ClientName <> '' then
-      Result.AddPair('containerId', ClientID);
+    if ContainerID <> '' then
+      Result.AddPair('containerId', ContainerID);
   except
     Result.Free;
     raise;
@@ -1087,12 +1092,12 @@ end;
 
 function TIAM4DRoleHelper.IsRealmRole: Boolean;
 begin
-  Result := ClientID = '';
+  Result := ContainerID = '';
 end;
 
 function TIAM4DRoleHelper.IsClientRole: Boolean;
 begin
-  Result := ClientID <> '';
+  Result := ContainerID <> '';
 end;
 
 function TIAM4DRoleHelper.Equals(const AOther: TIAM4DRole): Boolean;
@@ -1102,7 +1107,7 @@ end;
 
 function TIAM4DRoleHelper.SameAs(const AOther: TIAM4DRole): Boolean;
 begin
-  Result := SameText(Name, AOther.Name) and SameText(ClientID, AOther.ClientID);
+  Result := SameText(Name, AOther.Name) and SameText(ContainerID, AOther.ContainerID);
 end;
 
 function TIAM4DRoleHelper.Clone: TIAM4DRole;
@@ -1116,18 +1121,18 @@ begin
   Result.Name := AName;
   Result.Description := ADescription;
   Result.Composite := False;
+  Result.ContainerID := '';
   Result.ClientID := '';
-  Result.ClientName := '';
 end;
 
-class function TIAM4DRoleHelper.CreateClientRole(const AName: string; const AClientID: string; const AClientName: string; const ADescription: string): TIAM4DRole;
+class function TIAM4DRoleHelper.CreateClientRole(const AName: string; const AContainerID: string; const AClientID: string; const ADescription: string): TIAM4DRole;
 begin
   Result := Default(TIAM4DRole);
   Result.Name := AName;
   Result.Description := ADescription;
   Result.Composite := False;
+  Result.ContainerID := AContainerID;
   Result.ClientID := AClientID;
-  Result.ClientName := AClientName;
 end;
 
 function TIAM4DRoleHelper.WithDescription(const ADescription: string): TIAM4DRole;
@@ -1139,7 +1144,12 @@ end;
 function TIAM4DRoleHelper.DisplayName: string;
 begin
   if IsClientRole then
-    Result := Format('%s (%s)', [Name, ClientName])
+  begin
+    if ClientID <> '' then
+      Result := Format('%s (%s)', [Name, ClientID])
+    else
+      Result := Format('%s (%s)', [Name, ContainerID]);
+  end
   else
     Result := Name;
 end;
@@ -1385,6 +1395,25 @@ begin
   try
     for LRole in Self do
       if SameText(LRole.ClientID, AClientID) then
+        LList.Add(LRole);
+
+    Result := LList.ToArray;
+  finally
+    LList.Free;
+  end;
+end;
+
+function TIAM4DRoleArrayHelper.FilterByContainerID(
+  const AContainerID: string
+  ): TArray<TIAM4DRole>;
+var
+  LList: TList<TIAM4DRole>;
+  LRole: TIAM4DRole;
+begin
+  LList := TList<TIAM4DRole>.Create;
+  try
+    for LRole in Self do
+      if SameText(LRole.ContainerID, AContainerID) then
         LList.Add(LRole);
 
     Result := LList.ToArray;

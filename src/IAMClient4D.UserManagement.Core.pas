@@ -229,8 +229,9 @@ type
   /// Keycloak role representation.
   /// </summary>
   /// <remarks>
-  /// For client roles, ClientID and ClientName identify the owning client.
-  /// For realm roles, ClientID and ClientName remain empty.
+  /// For client roles, ContainerID stores the internal Keycloak client UUID and
+  /// ClientID stores the logical Keycloak clientId.
+  /// For realm roles, both ContainerID and ClientID remain empty.
   /// This allows the library to automatically route role assignments to the correct endpoint.
   /// </remarks>
   TIAM4DRole = record
@@ -239,8 +240,8 @@ type
     FName: string;
     FDescription: string;
     FComposite: Boolean;
+    FContainerID: string;
     FClientID: string;
-    FClientName: string;
   public
     property ID: string read FID write FID;
     property Name: string read FName write FName;
@@ -248,14 +249,14 @@ type
     property Composite: Boolean read FComposite write FComposite;
 
     /// <summary>
-    /// Client UUID for client roles (empty for realm roles).
+    /// Internal Keycloak client UUID for client roles (empty for realm roles).
     /// </summary>
-    property ClientID: string read FClientID write FClientID;
+    property ContainerID: string read FContainerID write FContainerID;
 
     /// <summary>
-    /// Client name for client roles (empty for realm roles).
+    /// Logical Keycloak clientId for client roles (empty for realm roles).
     /// </summary>
-    property ClientName: string read FClientName write FClientName;
+    property ClientID: string read FClientID write FClientID;
   end;
 
   /// <summary>
@@ -787,8 +788,8 @@ type
     procedure RemoveRolesFromUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
     procedure AssignRoleByName(const AUserID: string; const ARoleName: string);
     procedure RemoveRoleByName(const AUserID: string; const ARoleName: string);
-    procedure AssignClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
-    procedure RemoveClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
+    procedure AssignClientRoleByClientID(const AUserID: string; const AClientID: string; const ARoleName: string);
+    procedure RemoveClientRoleByClientID(const AUserID: string; const AClientID: string; const ARoleName: string);
 
     // ========================================================================
     // Group Management
@@ -859,20 +860,20 @@ type
     // Client Role Management
     // ========================================================================
 
-    function GetClientRolesByName(const AClientName: string): TArray<TIAM4DRole>;
-    function GetUserClientRolesByName(const AUserID: string; const AClientName: string): TArray<TIAM4DRole>;
+    function GetClientRolesByClientID(const AClientID: string): TArray<TIAM4DRole>;
+    function GetUserClientRolesByClientID(const AUserID: string; const AClientID: string): TArray<TIAM4DRole>;
     procedure AssignClientRolesToUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
     function AssignClientRolesToUsers(const ARoleAssignments: TArray<TIAM4DRoleAssignment>;
       const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
-    procedure RemoveClientRolesFromUserByName(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>);
-    function HasClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string): Boolean;
+    procedure RemoveClientRolesFromUserByClientID(const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>);
+    function HasClientRoleByClientID(const AUserID: string; const AClientID: string; const ARoleName: string): Boolean;
 
     // ========================================================================
     // Realm Client Management
     // ========================================================================
 
     function GetClients: TIAM4DRealmClientArray; overload;
-    function GetClients(const AClientName: string): TIAM4DRealmClient; overload;
+    function GetClientByClientID(const AClientID: string): TIAM4DRealmClient;
   end;
 
   /// <summary>
@@ -1189,32 +1190,32 @@ type
     function RemoveRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
 
     /// <summary>
-    /// Assigns a single client role to a user by client and role names (convenience method).
+    /// Assigns a single client role to a user by client identifier and role name (convenience method).
     /// </summary>
     /// <param name="AUserID">The user ID</param>
-    /// <param name="AClientName">The client name (e.g., "my-app")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "my-app")</param>
     /// <param name="ARoleName">The client role name to assign</param>
     /// <returns>Promise completing when role is assigned</returns>
     /// <remarks>
     /// Convenience wrapper around AssignClientRolesToUserAsync.
-    /// Looks up client by name, then looks up role, then assigns it.
+    /// Looks up the client by clientId, then looks up the role, then assigns it.
     /// Raises exception if client or role name is not found.
     /// </remarks>
-    function AssignClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
+    function AssignClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 
     /// <summary>
-    /// Removes a single client role from a user by client and role names (convenience method).
+    /// Removes a single client role from a user by client identifier and role name (convenience method).
     /// </summary>
     /// <param name="AUserID">The user ID</param>
-    /// <param name="AClientName">The client name (e.g., "my-app")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "my-app")</param>
     /// <param name="ARoleName">The client role name to remove</param>
     /// <returns>Promise completing when role is removed</returns>
     /// <remarks>
-    /// Convenience wrapper around RemoveClientRolesFromUserByNameAsync.
-    /// Looks up client by name, then looks up role, then removes it.
+    /// Convenience wrapper around RemoveClientRolesFromUserByClientIDAsync.
+    /// Looks up the client by clientId, then looks up the role, then removes it.
     /// Raises exception if client or role name is not found.
     /// </remarks>
-    function RemoveClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
+    function RemoveClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 
     // ========================================================================
     // Group Management
@@ -1458,51 +1459,53 @@ type
     // ========================================================================
 
     /// <summary>
-    /// Retrieves all roles available for a specific client using the client name.
+    /// Retrieves all roles available for a specific client using the client identifier.
     /// </summary>
-    /// <param name="AClientName">The client name (e.g., "my-app")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "my-app")</param>
     /// <returns>Promise resolving to array of client roles</returns>
     /// <remarks>
-    /// The client name is resolved to client ID internally via GetClientIDByNameAsync.
-    /// Raises exception if client name is not found.
+    /// The clientId is resolved to the internal client UUID before calling the Admin API.
+    /// Raises exception if the client is not found.
     /// </remarks>
-    function GetClientRolesByNameAsync(const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+    function GetClientRolesByClientIDAsync(const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 
     /// <summary>
-    /// Retrieves all client roles assigned to a specific user using the client name.
+    /// Retrieves all client roles assigned to a specific user using the client identifier.
     /// </summary>
     /// <param name="AUserID">The user ID</param>
-    /// <param name="AClientName">The client name (e.g., "my-app")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "my-app")</param>
     /// <returns>Promise resolving to array of user's client roles</returns>
     /// <remarks>
-    /// The client name is resolved to client ID internally via GetClientIDByNameAsync.
-    /// Raises exception if client name is not found.
+    /// The clientId is resolved to the internal client UUID before calling the Admin API.
+    /// Returned roles include both ContainerID and ClientID for subsequent role operations.
+    /// Raises exception if the client is not found.
     /// </remarks>
-    function GetUserClientRolesByNameAsync(const AUserID: string; const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+    function GetUserClientRolesByClientIDAsync(const AUserID: string; const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 
     /// <summary>
     /// Assigns one or more client roles to a user (automatically extracts client from roles).
     /// </summary>
     /// <param name="AUserID">The user ID</param>
-    /// <param name="ARoles">Array of client roles to assign (with ClientID/ClientName populated)</param>
+    /// <param name="ARoles">Array of client roles to assign (with ContainerID/ClientID populated)</param>
     /// <returns>Promise completing when roles are assigned</returns>
     /// <remarks>
-    /// RECOMMENDED METHOD: Use this instead of AssignClientRolesToUserByNameAsync.
-    /// Eliminates client name duplication - roles already contain ClientID and ClientName.
-    /// Raises exception if any role is missing ClientID or ClientName.
+    /// RECOMMENDED METHOD: Use this instead of the clientId-based convenience helpers
+    /// when you already have fully populated TIAM4DRole values.
+    /// Eliminates client identifier duplication because roles already contain ContainerID and ClientID.
+    /// Raises exception if any role is missing ContainerID or ClientID.
     /// </remarks>
     function AssignClientRolesToUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 
     /// <summary>
     /// Assigns client roles to multiple users in a single batch operation.
-    /// Automatically routes to correct client based on roles' ClientID/ClientName.
+    /// Automatically routes to the correct client based on roles' ContainerID/ClientID.
     /// </summary>
-    /// <param name="ARoleAssignments">Array of role assignment operations (UserID + Roles with ClientID/ClientName populated)</param>
+    /// <param name="ARoleAssignments">Array of role assignment operations (UserID + Roles with ContainerID/ClientID populated)</param>
     /// <returns>Promise resolving to array of operation results (success/failure per user)</returns>
     /// <remarks>
-    /// <para>Eliminates client name duplication - roles already contain ClientID and ClientName.
+    /// <para>Eliminates client identifier duplication because roles already contain ContainerID and ClientID.
     /// Automatically groups assignments by client if roles from different clients are provided.
-    /// Raises exception if any role is missing ClientID or ClientName.</para>
+    /// Raises exception if any role is missing ContainerID or ClientID.</para>
     ///
     /// <para><b>Batch behavior:</b> All role assignments are processed sequentially in a single
     /// background task. Each assignment is independent - failures don't stop subsequent operations.</para>
@@ -1513,30 +1516,30 @@ type
     function AssignClientRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 
     /// <summary>
-    /// Removes one or more client roles from a user using the client name.
+    /// Removes one or more client roles from a user using the client identifier.
     /// </summary>
     /// <param name="AUserID">The user ID</param>
-    /// <param name="AClientName">The client name (e.g., "my-app")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "my-app")</param>
     /// <param name="ARoles">Array of client roles to remove</param>
     /// <returns>Promise completing when roles are removed</returns>
     /// <remarks>
-    /// The client name is resolved to client ID internally via GetClientIDByNameAsync.
-    /// Raises exception if client name is not found.
+    /// The clientId is resolved to the internal client UUID before calling the Admin API.
+    /// Raises exception if the client is not found.
     /// </remarks>
-    function RemoveClientRolesFromUserByNameAsync(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+    function RemoveClientRolesFromUserByClientIDAsync(const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 
     /// <summary>
-    /// Checks if a user has a specific client role assigned using the client name.
+    /// Checks if a user has a specific client role assigned using the client identifier.
     /// </summary>
     /// <param name="AUserID">The user ID</param>
-    /// <param name="AClientName">The client name (e.g., "my-app")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "my-app")</param>
     /// <param name="ARoleName">The client role name to check</param>
     /// <returns>Promise resolving to True if user has the client role</returns>
     /// <remarks>
-    /// The client name is resolved to client ID internally via GetClientIDByNameAsync.
-    /// Raises exception if client name is not found.
+    /// The clientId is resolved to the internal client UUID before calling the Admin API.
+    /// Raises exception if the client is not found.
     /// </remarks>
-    function HasClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncPromise<Boolean>;
+    function HasClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncPromise<Boolean>;
 
     // ========================================================================
     // Realm Client Management
@@ -1554,16 +1557,16 @@ type
     function GetClientsAsync: IAsyncPromise<TIAM4DRealmClientArray>; overload;
 
     /// <summary>
-    /// Retrieves a specific client application by name with all its roles.
+    /// Retrieves a specific client application by client identifier with all its roles.
     /// </summary>
-    /// <param name="AClientName">The client name (e.g., "realm-management", "account")</param>
+    /// <param name="AClientID">The Keycloak clientId (e.g., "realm-management", "account")</param>
     /// <returns>Promise resolving to the client with all its roles</returns>
     /// <remarks>
-    /// Returns a single client matching the specified name.
+    /// Returns a single client matching the specified clientId.
     /// The client includes all its associated roles.
-    /// Raises exception if client is not found.
+    /// Raises exception if the client is not found.
     /// </remarks>
-    function GetClientsAsync(const AClientName: string): IAsyncPromise<TIAM4DRealmClient>; overload;
+    function GetClientByClientIDAsync(const AClientID: string): IAsyncPromise<TIAM4DRealmClient>;
   end;
 
 implementation

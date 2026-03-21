@@ -172,7 +172,6 @@ procedure TIAM4DLocalCallbackHandler.HandleServerCallback(
   AData: string);
 var
   LCode, LState: string;
-  LException: Exception;
 begin
   if AResponseType <> crtCheckResponseIAM then
     Exit;
@@ -190,12 +189,14 @@ begin
         begin
           DoStop;
 
-          LException := Exception(AcquireExceptionObject);
-
-          if Assigned(FOnError) then
-            FOnError(LException)
-          else
-            LException.Free;
+          try
+            if Assigned(FOnError) then
+              FOnError(E);
+          except
+            // Callback exceptions are intentionally caught to prevent
+            // authorization flow disruption. The OAuth flow must complete
+            // regardless of callback handler errors.
+          end;
 
           NotifyAuthorizationError(E);
         end;
@@ -236,9 +237,8 @@ begin
       [MAX_STATE_LENGTH]);
 
   if not SecureStringEquals(AReceivedState, LContext.State) then
-    raise EIAM4DCallbackHandlerException.CreateFmt(
-      'State mismatch in OAuth2 callback. Expected: %s, Received: %s',
-      [LContext.State, AReceivedState]);
+    raise EIAM4DCallbackHandlerException.Create(
+      'State mismatch in OAuth2 callback. Possible CSRF attack or session mix-up.');
 end;
 
 procedure TIAM4DLocalCallbackHandler.SetOnCodeReceived(const ACallback: TProc<string, string>);

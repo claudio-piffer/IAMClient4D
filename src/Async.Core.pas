@@ -1913,30 +1913,27 @@ begin
     var
       LAttempt: Integer;
       LDelay: Cardinal;
-      LExceptionMessage: string;
-      LExceptionClass: string;
-      LHadException: Boolean;
       LMultiplier: Cardinal;
     begin
-      LHadException := False;
-      LExceptionMessage := '';
-      LExceptionClass := '';
-
       for LAttempt := 0 to AMaxRetries do
       begin
+        if AController.IsCancellationRequested then
+          raise EAsyncCancelException.Create;
+
         try
           Result := ATask(AController);
 
           Exit;
         except
+          on E: EAsyncCancelException do
+            raise;
           on E: Exception do
           begin
-            LExceptionClass := E.ClassName;
-            LExceptionMessage := E.Message;
-            LHadException := True;
+            if AController.IsCancellationRequested then
+              raise EAsyncCancelException.Create;
 
             if LAttempt >= AMaxRetries then
-              Break;
+              raise;
 
             case ABackoffStrategy of
               TBackoffStrategy.Fixed:
@@ -1975,6 +1972,9 @@ begin
             if LDelay > AMaxDelay then
               LDelay := AMaxDelay;
 
+            if AController.IsCancellationRequested then
+              raise EAsyncCancelException.Create;
+
             Sleep(LDelay);
 
             if AController.IsCancellationRequested then
@@ -1983,13 +1983,7 @@ begin
         end;
       end;
 
-      if LHadException then
-      begin
-        raise EAsyncException.Create(LExceptionClass + ': ' + LExceptionMessage +
-          ' (failed after ' + IntToStr(AMaxRetries + 1) + ' attempts)');
-      end
-      else
-        raise EAsyncException.Create('Task failed after ' + IntToStr(AMaxRetries + 1) + ' attempts');
+      raise EAsyncException.Create('Task execution exited retry loop unexpectedly');
     end);
 end;
 

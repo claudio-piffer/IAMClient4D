@@ -60,12 +60,12 @@ type
   /// JWT validator implementation for token signature and claims validation.
   /// </summary>
   /// <remarks>
-  /// Validates signature and claims (exp/nbf/iss/aud). Uses TIAM4DJWKSProvider for
+  /// Validates signature and claims (exp/nbf/iss and optionally aud). Uses TIAM4DJWKSProvider for
   /// thread-safe JWKS handling with auto-discovery, caching, and key rotation support.
   /// Security hardening: Algorithm allow-list, optional typ='JWT' check, configurable clock skew.
   /// Thread-safety: All operations are thread-safe via internal JWKS provider.
   /// </remarks>
-  TIAM4DJWTValidator = class(TInterfacedObject, IIAM4DJWTValidator)
+  TIAM4DJWTValidator = class(TInterfacedObject, IIAM4DJWTValidator, IIAM4DJWTValidatorConfigurable)
   private
   const
     /// <summary>Maximum allowed clock skew in seconds (5 minutes)</summary>
@@ -83,6 +83,7 @@ type
   private
     FExpectedIssuer: string;
     FExpectedAudience: string;
+    FAudienceValidationEnabled: Boolean;
     FExpectedAzp: string;
     FRequireAzpWhenMultipleAud: Boolean;
     FClockSkewSeconds: Integer;
@@ -176,6 +177,11 @@ type
     function GetExpectedAudience: string;
 
     /// <summary>
+    /// Returns whether audience validation is enabled.
+    /// </summary>
+    function GetAudienceValidationEnabled: Boolean;
+
+    /// <summary>
     /// Returns expected authorized party for validation.
     /// </summary>
     function GetExpectedAzp: string;
@@ -244,7 +250,11 @@ type
     /// <summary>Sets expected Client ID in azp claim (empty string = not validated).</summary>
     procedure SetExpectedAzp(const AValue: string);
 
+    /// <summary>Enables/disables audience (aud) validation (default: enabled).</summary>
+    procedure SetAudienceValidationEnabled(const AValue: Boolean);
+
     /// <summary>Requires azp claim when aud contains multiple audiences (default: True, per OIDC specification).</summary>
+    /// <remarks>Ignored when audience validation is disabled.</remarks>
     procedure SetRequireAzpWhenMultipleAud(const AValue: Boolean);
 
     /// <summary>
@@ -348,6 +358,7 @@ begin
 
   FExpectedIssuer := AExpectedIssuer;
   FExpectedAudience := AExpectedAudience;
+  FAudienceValidationEnabled := True;
   FExpectedAzp := '';
   FRequireAzpWhenMultipleAud := True;
   FClockSkewSeconds := 5;
@@ -467,6 +478,11 @@ begin
   Result := FExpectedAudience;
 end;
 
+function TIAM4DJWTValidator.GetAudienceValidationEnabled: Boolean;
+begin
+  Result := FAudienceValidationEnabled;
+end;
+
 function TIAM4DJWTValidator.GetExpectedIssuer: string;
 begin
   Result := FExpectedIssuer;
@@ -543,38 +559,41 @@ begin
   if not SecureCompareIssuer(LIssuer, LExpected) then
     raise EIAM4DSecurityValidationException.CreateFmt('Invalid issuer. Expected "%s", got "%s".', [LExpected, LIssuer]);
 
-  LAudienceValue := Claims.GetValue<TJSONValue>('aud', nil);
-  if not Assigned(LAudienceValue) then
-    raise EIAM4DSecurityValidationException.Create('Missing audience claim (aud).');
-
-  if LAudienceValue is TJSONString then
+  if FAudienceValidationEnabled then
   begin
-    LAudienceString := (LAudienceValue as TJSONString).Value;
-    if LAudienceString.Trim.IsEmpty then
-      raise EIAM4DSecurityValidationException.Create('Audience claim (aud) is empty.');
+    LAudienceValue := Claims.GetValue<TJSONValue>('aud', nil);
+    if not Assigned(LAudienceValue) then
+      raise EIAM4DSecurityValidationException.Create('Missing audience claim (aud).');
 
-    if not SecureCompareAudience(LAudienceString, ExpectedAudience) then
-      raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience. Expected "%s", got "%s".', [ExpectedAudience, LAudienceString]);
-  end
-  else if LAudienceValue is TJSONArray then
-  begin
-    LIsMultipleAud := True;
-    LAudienceArray := LAudienceValue as TJSONArray;
-    LFound := False;
-
-    for LItem in LAudienceArray do
+    if LAudienceValue is TJSONString then
     begin
-      if (LItem <> nil) and (LItem is TJSONString) then
+      LAudienceString := (LAudienceValue as TJSONString).Value;
+      if LAudienceString.Trim.IsEmpty then
+        raise EIAM4DSecurityValidationException.Create('Audience claim (aud) is empty.');
+
+      if not SecureCompareAudience(LAudienceString, ExpectedAudience) then
+        raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience. Expected "%s", got "%s".', [ExpectedAudience, LAudienceString]);
+    end
+    else if LAudienceValue is TJSONArray then
+    begin
+      LIsMultipleAud := True;
+      LAudienceArray := LAudienceValue as TJSONArray;
+      LFound := False;
+
+      for LItem in LAudienceArray do
       begin
-        if SecureCompareAudience((LItem as TJSONString).Value, ExpectedAudience) then
-          LFound := True;
+        if (LItem <> nil) and (LItem is TJSONString) then
+        begin
+          if SecureCompareAudience((LItem as TJSONString).Value, ExpectedAudience) then
+            LFound := True;
+        end;
       end;
-    end;
-    if not LFound then
-      raise EIAM4DSecurityValidationException.CreateFmt('Audience "%s" not found in audience array.', [ExpectedAudience]);
-  end
-  else
-    raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience claim format: expected string or array, got %s.', [LAudienceValue.ClassName]);
+      if not LFound then
+        raise EIAM4DSecurityValidationException.CreateFmt('Audience "%s" not found in audience array.', [ExpectedAudience]);
+    end
+    else
+      raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience claim format: expected string or array, got %s.', [LAudienceValue.ClassName]);
+  end;
 
   LAzp := Claims.GetValue<string>('azp', '');
 
@@ -587,7 +606,7 @@ begin
       raise EIAM4DSecurityValidationException.CreateFmt(
         'Invalid authorized party. Expected "%s", got "%s".', [FExpectedAzp, LAzp]);
   end
-  else
+  else if FAudienceValidationEnabled then
   begin
     if LIsMultipleAud and FRequireAzpWhenMultipleAud then
     begin
@@ -670,7 +689,7 @@ var
   LHeaderBytes, LPayloadBytes, LSignatureBytes: TBytes;
   LHeaderJSON: TJSONObject;
   LPublicKeyJWK: TJSONObject;
-  LKid, LAlg, LIssuer, LTyp: string;
+  LKid, LAlg, LIssuer, LTyp, LLookupIssuer, LExpectedIssuer, LJti: string;
   LMustFreePublicKey: Boolean;
 begin
   Result := False;
@@ -682,6 +701,26 @@ begin
   // Try cache lookup first - avoids full validation if token was previously validated
   if TryGetCachedToken(AToken, AClaims) then
   begin
+    if FJtiValidationEnabled then
+    begin
+      LJti := AClaims.GetValue<string>('jti', '');
+      if LJti.Trim.IsEmpty then
+      begin
+        AClaims.Free;
+        AClaims := nil;
+        raise EIAM4DSecurityValidationException.Create('Missing JWT ID (jti) claim - required when jti validation is enabled.');
+      end;
+
+      if IsJtiAlreadyUsed(LJti) then
+      begin
+        AClaims.Free;
+        AClaims := nil;
+        raise EIAM4DSecurityValidationException.CreateFmt('Token replay detected: jti "%s" has already been used.', [LJti]);
+      end;
+
+      AddJtiToCache(LJti);
+    end;
+
     Result := True;
     Exit;
   end;
@@ -741,13 +780,24 @@ begin
         raise EIAM4DSecurityValidationException.Create('JWT payload missing issuer (iss) claim - required for JWKS auto-discovery.');
 
       LIssuer := NormalizeIssuer(LIssuer);
+      LLookupIssuer := LIssuer;
 
-      LPublicKeyJWK := FJWKSProvider.GetPublicKey(LIssuer, LKid);
+      if not FExpectedIssuer.Trim.IsEmpty then
+      begin
+        LExpectedIssuer := NormalizeIssuer(FExpectedIssuer);
+        if not SecureCompareIssuer(LIssuer, LExpectedIssuer) then
+          raise EIAM4DSecurityValidationException.CreateFmt('Invalid issuer. Expected "%s", got "%s".', [LExpectedIssuer, LIssuer]);
+
+        // Pin discovery/key lookup to the configured issuer to avoid outbound fetches for untrusted iss values.
+        LLookupIssuer := LExpectedIssuer;
+      end;
+
+      LPublicKeyJWK := FJWKSProvider.GetPublicKey(LLookupIssuer, LKid);
       LMustFreePublicKey := True;
 
       if not Assigned(LPublicKeyJWK) then
         raise EIAM4DSecurityValidationException.CreateFmt(
-          'Public key not found via JWKS provider for issuer "%s" and kid "%s"', [LIssuer, LKid]);
+          'Public key not found via JWKS provider for issuer "%s" and kid "%s"', [LLookupIssuer, LKid]);
 
       var ASigningInput := LHeaderB64 + '.' + LPayloadB64;
       if not InternalVerifySignature(ASigningInput, LSignatureBytes, LPublicKeyJWK, LAlg) then
@@ -803,6 +853,11 @@ end;
 procedure TIAM4DJWTValidator.SetExpectedAzp(const AValue: string);
 begin
   FExpectedAzp := AValue;
+end;
+
+procedure TIAM4DJWTValidator.SetAudienceValidationEnabled(const AValue: Boolean);
+begin
+  FAudienceValidationEnabled := AValue;
 end;
 
 procedure TIAM4DJWTValidator.SetRequireAzpWhenMultipleAud(const AValue: Boolean);

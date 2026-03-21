@@ -199,7 +199,10 @@ var
   LIsIAMCallback: Boolean;
   LReceivedCode: string;
   LReceivedState: string;
+  LCallback: TProc< TIAM4DCallbackResponseType, string >;
 begin
+  LCallback := FCallback;
+
   if ARequestInfo.Document = '/favicon.ico' then
   begin
     AResponseInfo.ResponseNo := 204;
@@ -230,10 +233,10 @@ begin
 
       if (LReceivedCode <> '') and (LReceivedState <> '') then
       begin
-        if Assigned(FCallback) then
+        if Assigned(LCallback) then
         begin
           try
-            FCallback(crtCheckResponseIAM, LFullURL);
+            LCallback(crtCheckResponseIAM, LFullURL);
 
             AResponseInfo.ContentType := 'text/html';
             AResponseInfo.ContentText := GetHtmlAuthSuccessPage;
@@ -241,7 +244,8 @@ begin
           except
             on E: Exception do
             begin
-              FCallback(crtOther, E.Message);
+              if Assigned(LCallback) then
+                LCallback(crtOther, E.Message);
               AResponseInfo.ResponseNo := 400;
               AResponseInfo.ContentText := GetHtmlAuthErrorPage(HTMLEscape(E.Message));
               AResponseInfo.ContentType := 'text/html';
@@ -262,15 +266,16 @@ begin
         var LErrorDesc: string := ARequestInfo.Params.Values['error_description'];
         var LErrorHtml: string := GetHtmlAuthErrorPage(
           Format('%s<br><br>%s', [HTMLEscape(LErrorCode), HTMLEscape(LErrorDesc)]));
-        if Assigned(FCallback) then
-          FCallback(crtOther, LErrorCode + ': ' + LErrorDesc);
+        if Assigned(LCallback) then
+          LCallback(crtOther, LErrorCode + ': ' + LErrorDesc);
         AResponseInfo.ResponseNo := 400;
         AResponseInfo.ContentType := 'text/html';
         AResponseInfo.ContentText := LErrorHtml;
       end
       else
       begin
-        FCallback(crtOther, FPageTexts.NotIamCallbackBody);
+        if Assigned(LCallback) then
+          LCallback(crtOther, FPageTexts.NotIamCallbackBody);
         AResponseInfo.ResponseNo := 200;
         AResponseInfo.ContentText := GetHtmlNotIAMCallbackPage;
         AResponseInfo.ContentType := 'text/html';
@@ -278,14 +283,16 @@ begin
     end
     else if ARequestInfo.Document = '/' then
     begin
-      FCallback(crtOther, FPageTexts.AppListeningBody);
+      if Assigned(LCallback) then
+        LCallback(crtOther, FPageTexts.AppListeningBody);
       AResponseInfo.ResponseNo := 200;
       AResponseInfo.ContentText := GetHtmlAppListeningPage;
       AResponseInfo.ContentType := 'text/html';
     end
     else
     begin
-      FCallback(crtOther, FPageTexts.NotFoundBody);
+      if Assigned(LCallback) then
+        LCallback(crtOther, FPageTexts.NotFoundBody);
       AResponseInfo.ResponseNo := 404;
       AResponseInfo.ContentText := GetHtmlNotFoundPage;
       AResponseInfo.ContentType := 'text/html';

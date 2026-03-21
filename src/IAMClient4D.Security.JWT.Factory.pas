@@ -45,6 +45,7 @@ type
   /// - With provider type: CreateValidator(issuer, audience, cpLockBox3)
   /// - With custom provider: CreateValidator(issuer, audience, myProvider)
   /// - With JWKS provider: CreateValidator(issuer, audience, jwksProvider)
+  /// - Advanced options: use IIAM4DJWTValidatorConfigurable to disable aud validation or tune azp rules
   ///
   /// Thread-safety: Each call creates a new validator instance.
   /// </remarks>

@@ -1,4 +1,4 @@
-{
+﻿{
   ---------------------------------------------------------------------------
   Unit Name  : IAMClient4D.Storage.AESMemoryTokenStorage.pas
   Project    : IAMClient4D
@@ -21,15 +21,6 @@
   ---------------------------------------------------------------------------
 }
 
-/// <summary>
-/// AES-encrypted in-memory token storage with pluggable crypto providers.
-/// </summary>
-/// <remarks>
-/// Supports multiple encryption backends via IIAM4DStorageCryptoProvider:
-/// - LockBox3 (default): AES-256-CBC + HMAC-SHA256
-/// - TMS: AES-256-GCM (requires IAM4D_TMS define)
-/// - Custom: User-provided provider implementation
-/// </remarks>
 unit IAMClient4D.Storage.AESMemoryTokenStorage;
 
 interface
@@ -38,10 +29,11 @@ uses
   System.SysUtils,
   System.Classes,
   System.JSON,
+  System.DateUtils,
   System.SyncObjs,
   IAMClient4D.Storage.Core,
-  IAMClient4D.Storage.Crypto.Interfaces,
   IAMClient4D.Core,
+  IAMClient4D.Crypto.AES256_CBC_HMAC_LB,
   IAMClient4D.Common.JSONUtils;
 
 const
@@ -61,41 +53,28 @@ const
 
 type
   /// <summary>
-  /// AES-encrypted in-memory token storage with pluggable crypto providers.
+  /// AES-256-CBC encrypted in-memory token storage with HMAC authentication.
   /// </summary>
   /// <remarks>
-  /// <para>
-  /// <b>Encryption:</b> Delegated to IIAM4DStorageCryptoProvider implementation.
-  /// Default provider uses AES-256-CBC with HMAC-SHA256 (LockBox3).
-  /// TMS provider uses AES-256-GCM when available.
-  /// </para>
-  /// <para>
-  /// <b>AAD:</b> Additional authenticated data included in authentication but not encrypted.
-  /// </para>
-  /// <para>
-  /// <b>Frame format:</b> 4-byte length prefix + encrypted JSON payload.
-  /// </para>
-  /// <para>
-  /// <b>Versioning:</b> 2-byte header (major.minor) for future compatibility.
-  /// </para>
-  /// <para>
-  /// <b>Security:</b> Secure wiping of sensitive data on clear/destroy.
-  /// </para>
-  /// <para>
-  /// <b>Memory only:</b> Tokens stored encrypted in memory, never written to disk.
-  /// </para>
-  /// <para>
-  /// <b>Thread-safety:</b> Thread-safe using TLightweightMREW (multiple readers, single writer).
-  /// </para>
-  /// <para>
-  /// <b>Max size:</b> 10 MB encrypted frame limit to prevent memory exhaustion.
-  /// </para>
+  /// Encryption: AES-256-CBC with HMAC-SHA256 for authenticated encryption.
+  /// Key derivation: Splits 32-byte key into encryption and MAC keys via DeriveFromRawKey32.
+  /// AAD: Additional authenticated data included in HMAC calculation.
+  /// Frame format: 4-byte length prefix + encrypted JSON payload + 32-byte HMAC tag.
+  /// Versioning: 2-byte header (major.minor) for future compatibility.
+  /// Security: Secure wiping of sensitive data on clear/destroy (zeros + 0xFF + zeros).
+  /// HMAC verification: Constant-time comparison to prevent timing attacks.
+  /// Memory only: Tokens stored encrypted in memory, never written to disk.
+  /// Thread-safety: Thread-safe using TLightweightMREW (multiple readers, single writer).
+  /// Max size: 10 MB encrypted frame limit to prevent memory exhaustion.
   /// </remarks>
   TIAM4DAESMemoryTokenStorageRawKey32 = class(TInterfacedObject, IIAM4DTokenStorage)
   private
     FEncryptedBlob: TBytes;
-    FCryptoProvider: IIAM4DStorageCryptoProvider;
+
+    FKEnc: TBytes;
+    FKMak: TBytes;
     FAAD: TBytes;
+    FAES: TLB_AES256CBC;
 
     FHasTokens: Boolean;
     FAccessTokenExpiry: TDateTime;
@@ -106,6 +85,8 @@ type
     function TokenRecordToBytes(const ATokens: TIAM4DTokens): TBytes;
     function BytesToTokenRecord(const ABytes: TBytes): TIAM4DTokens;
     procedure SecureWipe(var A: TBytes);
+    procedure ClearTokensUnlocked;
+    function BuildTag(const CipherWithSeed: TBytes): TBytes;
 
     function BuildFrame(const Payload: TBytes): TBytes;
     function ParseFrame(const Frame: TBytes): TBytes;
@@ -136,38 +117,9 @@ type
     function IsRefreshTokenValid: Boolean;
   public
     /// <summary>
-    /// Creates AES-encrypted memory storage with 32-byte key using default LockBox3 provider.
+    /// Creates AES-encrypted memory storage with 32-byte key and AAAD.
     /// </summary>
-    /// <param name="AKey32">32-byte master encryption key</param>
-    /// <param name="AAAD">Additional authenticated data (included in auth, not encrypted)</param>
-    /// <param name="ATokenExpiryBufferSeconds">Buffer time before token expiry (default: 30s)</param>
-    /// <remarks>
-    /// This constructor maintains backward compatibility with existing code.
-    /// Uses AES-256-CBC + HMAC-SHA256 (LockBox3) for encryption.
-    /// </remarks>
-    constructor Create(const AKey32, AAAD: TBytes;
-      const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS); overload;
-
-    /// <summary>
-    /// Creates AES-encrypted memory storage with custom crypto provider.
-    /// </summary>
-    /// <param name="ACryptoProvider">Crypto provider instance (LockBox3, TMS, or custom)</param>
-    /// <param name="AAAD">Additional authenticated data (included in auth, not encrypted)</param>
-    /// <param name="ATokenExpiryBufferSeconds">Buffer time before token expiry (default: 30s)</param>
-    /// <remarks>
-    /// Use TIAM4DStorageCryptoProviderFactory.CreateProvider to create provider instances:
-    /// <code>
-    /// // Default LockBox3 (AES-256-CBC + HMAC-SHA256)
-    /// LProvider := TIAM4DStorageCryptoProviderFactory.CreateProvider(LKey32, scpLockBox3);
-    ///
-    /// // TMS (AES-256-GCM) - requires IAM4D_TMS define
-    /// LProvider := TIAM4DStorageCryptoProviderFactory.CreateProvider(LKey32, scpTMS);
-    /// </code>
-    /// </remarks>
-    constructor Create(const ACryptoProvider: IIAM4DStorageCryptoProvider;
-      const AAAD: TBytes;
-      const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS); overload;
-
+    constructor Create(const AKey32, AAAD: TBytes; const ATokenExpiryBufferSeconds: Integer = IAM4D_TOKEN_EXPIRATION_BUFFER_SECONDS);
     /// <summary>
     /// Destroys storage and securely wipes all sensitive data.
     /// </summary>
@@ -178,37 +130,40 @@ implementation
 
 uses
   System.Hash,
-  System.DateUtils,
   IAMClient4D.Common.Constants,
-  IAMClient4D.Common.SecureMemory,
-  IAMClient4D.Storage.Crypto.Factory,
+  IAMClient4D.Common.CryptoUtils,
   IAMClient4D.Exceptions;
 
-constructor TIAM4DAESMemoryTokenStorageRawKey32.Create(const AKey32, AAAD: TBytes;
-  const ATokenExpiryBufferSeconds: Integer);
+function ConstTimeEquals(const A, B: TBytes): Boolean;
+var
+  LIndex: Integer;
+  LDiff: Byte;
 begin
-  // Backward compatible constructor: create default LockBox3 provider
-  Create(
-    TIAM4DStorageCryptoProviderFactory.CreateProvider(AKey32, scpLockBox3),
-    AAAD,
-    ATokenExpiryBufferSeconds);
+  if Length(A) <> Length(B) then
+    Exit(False);
+  LDiff := 0;
+  for LIndex := 0 to High(A) do
+    LDiff := LDiff or (A[LIndex] xor B[LIndex]);
+  Result := (LDiff = 0);
 end;
 
-constructor TIAM4DAESMemoryTokenStorageRawKey32.Create(
-  const ACryptoProvider: IIAM4DStorageCryptoProvider;
-  const AAAD: TBytes;
-  const ATokenExpiryBufferSeconds: Integer);
+constructor TIAM4DAESMemoryTokenStorageRawKey32.Create(const AKey32, AAAD: TBytes; const ATokenExpiryBufferSeconds: Integer);
+var
+  LKenc, LKmac: TBytes;
 begin
   inherited Create;
-
-  if ACryptoProvider = nil then
-    raise EIAM4DStorageException.Create('Crypto provider cannot be nil');
+  if Length(AKey32) <> 32 then
+    raise EIAM4DStorageException.Create('Raw key must be 32 bytes.');
 
   if ATokenExpiryBufferSeconds < 0 then
     raise EIAM4DStorageException.Create('Token expiry buffer cannot be negative.');
 
-  FCryptoProvider := ACryptoProvider;
+  DeriveFromRawKey32(AKey32, LKenc, LKmac);
+  FKEnc := LKenc;
+  FKMak := LKmac;
   FAAD := Copy(AAAD);
+
+  FAES := TLB_AES256CBC.Create(FKEnc);
 
   SetLength(FEncryptedBlob, 0);
   FHasTokens := False;
@@ -221,9 +176,11 @@ destructor TIAM4DAESMemoryTokenStorageRawKey32.Destroy;
 begin
   FLock.BeginWrite;
   try
-    SecureWipe(FEncryptedBlob);
+    ClearTokensUnlocked;
+    SecureWipe(FKEnc);
+    SecureWipe(FKMak);
     SecureWipe(FAAD);
-    FCryptoProvider := nil;
+    FreeAndNil(FAES);
   finally
     FLock.EndWrite;
   end;
@@ -232,8 +189,30 @@ begin
 end;
 
 procedure TIAM4DAESMemoryTokenStorageRawKey32.SecureWipe(var A: TBytes);
+var
+  LIndex: Integer;
+  LP: PByte;
 begin
-  SecureZero(A);
+  if Length(A) > 0 then
+  begin
+    LP := @A[0];
+    for LIndex := 0 to Length(A) - 1 do
+    begin
+      LP^ := 0;
+      Inc(LP);
+    end;
+    FillChar(A[0], Length(A), $FF);
+    FillChar(A[0], Length(A), 0);
+    SetLength(A, 0);
+  end;
+end;
+
+procedure TIAM4DAESMemoryTokenStorageRawKey32.ClearTokensUnlocked;
+begin
+  SecureWipe(FEncryptedBlob);
+  FHasTokens := False;
+  FAccessTokenExpiry := 0;
+  FRefreshTokenExpiry := 0;
 end;
 
 function TIAM4DAESMemoryTokenStorageRawKey32.TokenRecordToBytes(const ATokens: TIAM4DTokens): TBytes;
@@ -264,6 +243,28 @@ begin
   finally
     LJSONObj.Free;
   end;
+end;
+
+function TIAM4DAESMemoryTokenStorageRawKey32.BuildTag(const CipherWithSeed: TBytes): TBytes;
+var
+  LLenAAD, LMacData: TBytes;
+  LOffs: Integer;
+begin
+  LLenAAD := UInt64ToBigEndian8(Length(FAAD));
+  SetLength(LMacData, Length(FAAD) + Length(CipherWithSeed) + 8);
+  LOffs := 0;
+  if Length(FAAD) > 0 then
+  begin
+    Move(FAAD[0], LMacData[LOffs], Length(FAAD));
+    Inc(LOffs, Length(FAAD));
+  end;
+  if Length(CipherWithSeed) > 0 then
+  begin
+    Move(CipherWithSeed[0], LMacData[LOffs], Length(CipherWithSeed));
+    Inc(LOffs, Length(CipherWithSeed));
+  end;
+  Move(LLenAAD[0], LMacData[LOffs], 8);
+  Result := HMAC_SHA256(FKMak, LMacData);
 end;
 
 function TIAM4DAESMemoryTokenStorageRawKey32.BuildFrame(const Payload: TBytes): TBytes;
@@ -304,21 +305,22 @@ end;
 
 procedure TIAM4DAESMemoryTokenStorageRawKey32.SaveTokens(const Tokens: TIAM4DTokens);
 var
-  LPlain, LFramed, LEncrypted, LOutBlob: TBytes;
+  LPlain, LFramed, LCiph, LTag, LOutBlob: TBytes;
 begin
   FLock.BeginWrite;
   try
     try
       LPlain := TokenRecordToBytes(Tokens);
       LFramed := BuildFrame(LPlain);
+      LCiph := FAES.Encrypt(LFramed);
+      LTag := BuildTag(LCiph);
 
-      LEncrypted := FCryptoProvider.Encrypt(LFramed, FAAD);
-
-      SetLength(LOutBlob, 2 + Length(LEncrypted));
+      SetLength(LOutBlob, 2 + Length(LCiph) + 32);
       LOutBlob[0] := BLOB_FORMAT_VERSION_MAJOR;
       LOutBlob[1] := BLOB_FORMAT_VERSION_MINOR;
-      if Length(LEncrypted) > 0 then
-        Move(LEncrypted[0], LOutBlob[2], Length(LEncrypted));
+      if Length(LCiph) > 0 then
+        Move(LCiph[0], LOutBlob[2], Length(LCiph));
+      Move(LTag[0], LOutBlob[2 + Length(LCiph)], 32);
 
       SecureWipe(FEncryptedBlob);
       FEncryptedBlob := LOutBlob;
@@ -329,9 +331,8 @@ begin
     except
       on E: Exception do
       begin
-        ClearTokens;
-        raise EIAM4DStorageException.CreateFmt('Failed to save tokens (%s): %s',
-          [FCryptoProvider.GetProviderName, E.Message]);
+        ClearTokensUnlocked;
+        raise EIAM4DStorageException.CreateFmt('Failed to save tokens (RawKey32): %s', [E.Message]);
       end;
     end;
   finally
@@ -341,21 +342,18 @@ end;
 
 function TIAM4DAESMemoryTokenStorageRawKey32.LoadTokens: TIAM4DTokens;
 var
-  LEncrypted, LPlainFramed, LPlain: TBytes;
+  LCLen: Integer;
+  LCiph, LTag, LTagCalc, LPlainFramed, LPlain: TBytes;
   LVerMajor, LVerMinor: Byte;
-  LNeedsClear: Boolean;
-  LExceptionMsg: string;
 begin
-  LNeedsClear := False;
-  LExceptionMsg := '';
-
-  FLock.BeginRead;
+  // Write lock required: ClearTokensUnlocked may be called on HMAC verification failure
+  FLock.BeginWrite;
   try
     FillChar(Result, SizeOf(Result), 0);
     if not FHasTokens then
       Exit;
 
-    if Length(FEncryptedBlob) < 2 then
+    if Length(FEncryptedBlob) < 34 then
       raise EIAM4DStorageException.Create('Corrupted blob (too short).');
 
     LVerMajor := FEncryptedBlob[0];
@@ -366,42 +364,33 @@ begin
         'Unsupported blob format version %d.%d (expected %d.x)',
         [LVerMajor, LVerMinor, BLOB_FORMAT_VERSION_MAJOR]);
 
-    SetLength(LEncrypted, Length(FEncryptedBlob) - 2);
-    if Length(LEncrypted) > 0 then
-      Move(FEncryptedBlob[2], LEncrypted[0], Length(LEncrypted));
+    LCLen := Length(FEncryptedBlob) - 34;
+    SetLength(LCiph, LCLen);
+    if LCLen > 0 then
+      Move(FEncryptedBlob[2], LCiph[0], LCLen);
+    SetLength(LTag, 32);
+    Move(FEncryptedBlob[2 + LCLen], LTag[0], 32);
+
+    LTagCalc := BuildTag(LCiph);
+    if not ConstTimeEquals(LTag, LTagCalc) then
+    begin
+      ClearTokensUnlocked;
+      raise EIAM4DStorageException.Create('Authentication failed (HMAC).');
+    end;
 
     try
-      LPlainFramed := FCryptoProvider.Decrypt(LEncrypted, FAAD);
+      LPlainFramed := FAES.Decrypt(LCiph);
       LPlain := ParseFrame(LPlainFramed);
       Result := BytesToTokenRecord(LPlain);
     except
-      on E: EIAM4DStorageDecryptionException do
-      begin
-        LNeedsClear := True;
-        LExceptionMsg := Format('Authentication failed (%s): %s',
-          [FCryptoProvider.GetProviderName, E.Message]);
-      end;
-      on E: EIAM4DStorageCryptoException do
-      begin
-        LNeedsClear := True;
-        LExceptionMsg := Format('Decryption failed (%s): %s',
-          [FCryptoProvider.GetProviderName, E.Message]);
-      end;
       on E: Exception do
       begin
-        LNeedsClear := True;
-        LExceptionMsg := Format('Failed to load tokens (%s): %s',
-          [FCryptoProvider.GetProviderName, E.Message]);
+        ClearTokensUnlocked;
+        raise EIAM4DStorageException.CreateFmt('Failed to load tokens (RawKey32): %s', [E.Message]);
       end;
     end;
   finally
-    FLock.EndRead;
-  end;
-
-  if LNeedsClear then
-  begin
-    ClearTokens;
-    raise EIAM4DStorageException.Create(LExceptionMsg);
+    FLock.EndWrite;
   end;
 end;
 
@@ -409,10 +398,7 @@ procedure TIAM4DAESMemoryTokenStorageRawKey32.ClearTokens;
 begin
   FLock.BeginWrite;
   try
-    SecureWipe(FEncryptedBlob);
-    FHasTokens := False;
-    FAccessTokenExpiry := 0;
-    FRefreshTokenExpiry := 0;
+    ClearTokensUnlocked;
   finally
     FLock.EndWrite;
   end;
@@ -431,13 +417,11 @@ end;
 function TIAM4DAESMemoryTokenStorageRawKey32.IsAccessTokenValid: Boolean;
 var
   LBufferDays: Double;
-  LNowUTC: TDateTime;
 begin
   FLock.BeginRead;
   try
     LBufferDays := FTokenExpiryBufferSeconds / IAM4D_SECOND_PER_DAY;
-    LNowUTC := TTimeZone.Local.ToUniversalTime(Now);
-    Result := FHasTokens and (LNowUTC < (FAccessTokenExpiry - LBufferDays));
+    Result := FHasTokens and (TTimeZone.Local.ToUniversalTime(Now) < (FAccessTokenExpiry - LBufferDays));
   finally
     FLock.EndRead;
   end;
@@ -446,13 +430,11 @@ end;
 function TIAM4DAESMemoryTokenStorageRawKey32.IsRefreshTokenValid: Boolean;
 var
   LBufferDays: Double;
-  LNowUTC: TDateTime;
 begin
   FLock.BeginRead;
   try
     LBufferDays := FTokenExpiryBufferSeconds / IAM4D_SECOND_PER_DAY;
-    LNowUTC := TTimeZone.Local.ToUniversalTime(Now);
-    Result := FHasTokens and (LNowUTC < (FRefreshTokenExpiry - LBufferDays));
+    Result := FHasTokens and (TTimeZone.Local.ToUniversalTime(Now) < (FRefreshTokenExpiry - LBufferDays));
   finally
     FLock.EndRead;
   end;

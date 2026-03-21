@@ -160,6 +160,40 @@ type
     property ExpectedAzp: string read GetExpectedAzp;
   end;
 
+  /// <summary>
+  /// Optional advanced configuration interface for JWT validators.
+  /// </summary>
+  /// <remarks>
+  /// This interface is intentionally separate from IIAM4DJWTValidator to avoid
+  /// breaking third-party validator implementations that only support the base
+  /// validation contract.
+  /// </remarks>
+  IIAM4DJWTValidatorConfigurable = interface
+    ['{55D1470D-8BFF-4B94-B76B-615F69048CC7}']
+    /// <summary>
+    /// Returns whether audience (aud) validation is enabled.
+    /// </summary>
+    function GetAudienceValidationEnabled: Boolean;
+
+    /// <summary>
+    /// Enables/disables audience (aud) validation.
+    /// </summary>
+    procedure SetAudienceValidationEnabled(const AValue: Boolean);
+
+    /// <summary>
+    /// Sets expected Client ID in azp claim (empty string = not validated).
+    /// </summary>
+    procedure SetExpectedAzp(const AValue: string);
+
+    /// <summary>
+    /// Requires azp claim when aud contains multiple audiences (default: True, per OIDC specification).
+    /// Ignored when audience validation is disabled.
+    /// </summary>
+    procedure SetRequireAzpWhenMultipleAud(const AValue: Boolean);
+
+    property AudienceValidationEnabled: Boolean read GetAudienceValidationEnabled write SetAudienceValidationEnabled;
+  end;
+
 implementation
 
 end.

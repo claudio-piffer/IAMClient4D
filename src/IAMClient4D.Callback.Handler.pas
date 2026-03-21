@@ -275,7 +275,9 @@ begin
     try
       FOnAuthorizationComplete(ATokens);
     except
-      // ignore
+      // Callback exceptions are intentionally caught to prevent
+      // authorization flow disruption. The OAuth flow must complete
+      // regardless of callback handler errors.
     end;
   end;
 end;
@@ -287,7 +289,9 @@ begin
     try
       FOnAuthorizationError(AException);
     except
-      // ignore
+      // Callback exceptions are intentionally caught to prevent
+      // authorization flow disruption. The OAuth flow must complete
+      // regardless of callback handler errors.
     end;
   end;
 end;

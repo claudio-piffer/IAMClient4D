@@ -110,6 +110,7 @@ type
     procedure AddScopesIfMissing(const AScopes: TArray<string>);
     /// <exception cref="EIAM4DException">Raised when response status is not 200 or 201</exception>
     procedure EnsureResponseHTTP200OrFail(const AResponse: IHTTPResponse; const AContext: string);
+    procedure ClearAuthorizationContext;
     procedure ClearTokens;
     function RequestClientCredentialsToken: TIAM4DTokens;
 
@@ -118,7 +119,6 @@ type
     procedure InitializeOAuthContextInternal;
     function CompleteAuthorizationFlowInternal(const ACode, AState: string): TIAM4DTokens;
     function IsValidStateFormat(const AState: string): Boolean;
-    function ConstantTimeEquals(const A, B: string): Boolean;
 
     procedure ConfigureInternal(const AConfig: TIAM4DClientConfig);
     function GetAccessTokenInternal: string;
@@ -283,10 +283,23 @@ end;
 procedure TIAM4DKeycloakClient.ClearTokens;
 begin
   FTokenStorage.ClearTokens;
+  ClearAuthorizationContext;
+end;
+
+procedure TIAM4DKeycloakClient.ClearAuthorizationContext;
+var
+  LContext: TIAM4DOAuthContext;
+begin
   SecureZeroString(FState);
   SecureZeroString(FNonce);
   SecureZeroString(FPKCEVerifier);
   SecureZeroString(FPKCEChallenge);
+
+  if Assigned(FCallbackHandler) then
+  begin
+    LContext.Clear;
+    FCallbackHandler.SetOAuthContext(LContext);
+  end;
 end;
 
 procedure TIAM4DKeycloakClient.ConfigureInternal(const AConfig: TIAM4DClientConfig);
@@ -480,24 +493,6 @@ begin
   Result := True;
 end;
 
-function TIAM4DKeycloakClient.ConstantTimeEquals(const A, B: string): Boolean;
-var
-  I: Integer;
-  LDiff: Integer;
-  LMinLength: Integer;
-begin
-  LDiff := Length(A) xor Length(B);
-
-  LMinLength := Length(A);
-  if Length(B) < LMinLength then
-    LMinLength := Length(B);
-
-  for I := 1 to LMinLength do
-    LDiff := LDiff or (Ord(A[I]) xor Ord(B[I]));
-
-  Result := (LDiff = 0);
-end;
-
 function TIAM4DKeycloakClient.CompleteAuthorizationFlowInternal(const ACode, AState: string): TIAM4DTokens;
 var
   LContext: TIAM4DOAuthContext;
@@ -522,8 +517,9 @@ begin
     raise EIAM4DStateMismatchException.Create(
       'State parameter has invalid format - possible tampering detected.');
 
-  if not ConstantTimeEquals(AState, LContext.State) then
-    raise EIAM4DStateMismatchException.Create(LContext.State, AState);
+  if not SecureStringEquals(AState, LContext.State) then
+    raise EIAM4DStateMismatchException.Create(
+      'State mismatch in OAuth2 callback. Possible CSRF attack or session mix-up.');
 
   FPKCEVerifier := LContext.PKCEVerifier;
   FNonce := LContext.Nonce;
@@ -631,8 +627,6 @@ begin
 
   LParams := TStringList.Create;
   try
-    LParams.Delimiter := '&';
-    LParams.QuoteChar := #0;
     LParams.AddPair(IAM4D_OAUTH2_PARAM_CLIENT_ID, FKeycloakConfig.ClientID);
     LParams.AddPair(IAM4D_OAUTH2_PARAM_REDIRECT_URI, GetRedirectURI);
     LParams.AddPair(IAM4D_OAUTH2_PARAM_RESPONSE_TYPE, IAM4D_OAUTH2_RESPONSE_TYPE_CODE);
@@ -649,7 +643,7 @@ begin
       LParams.AddPair(IAM4D_OAUTH2_PARAM_CODE_CHALLENGE_METHOD, IAM4D_OAUTH2_CODE_CHALLENGE_METHOD_S256);
     end;
 
-    Result := FWellKnownEndPoints.AuthorizationEndpoint + '?' + LParams.DelimitedText;
+    Result := FWellKnownEndPoints.AuthorizationEndpoint + '?' + EncodeFormParams(LParams);
   finally
     LParams.Free;
   end;
@@ -659,6 +653,7 @@ function TIAM4DKeycloakClient.StartAuthorizationFlowAsync: IAsyncPromise<string>
 var
   LOperation: IAsyncOperation<string>;
   LAuthURL: string;
+  LAuthScheme: string;
   LLocalHandler: TIAM4DLocalCallbackHandler;
 begin
   if FKeycloakConfig.GrantType <> gtAuthorizationCode then
@@ -739,11 +734,33 @@ begin
       end;
     end);
 
-  FCallbackHandler.Start;
+  try
+    FCallbackHandler.Start;
 
-  LAuthURL := GenerateAuthURL();
-  if not TIAM4DPlatformUtils.OpenURL(LAuthURL) then
-    raise EIAM4DException.CreateFmt('Failed to open browser for authorization URL: %s', [LAuthURL]);
+    LAuthURL := GenerateAuthURL();
+    if (not TIAM4DPlatformUtils.TryGetURIScheme(LAuthURL, LAuthScheme)) or
+       (not (SameText(LAuthScheme, 'http') or SameText(LAuthScheme, 'https'))) then
+      raise EIAM4DException.CreateFmt('Authorization URL must use HTTP(S): %s', [LAuthURL]);
+
+    if not TIAM4DPlatformUtils.OpenURL(LAuthURL) then
+      raise EIAM4DException.CreateFmt('Failed to open browser for authorization URL: %s', [LAuthURL]);
+  except
+    on E: Exception do
+    begin
+      FAuthCompletionLock.Acquire;
+      try
+        FreeAndNil(FAuthCompletionSource);
+      finally
+        FAuthCompletionLock.Release;
+      end;
+
+      if Assigned(FCallbackHandler) and FCallbackHandler.IsListening then
+        FCallbackHandler.Stop;
+
+      ClearAuthorizationContext;
+      raise;
+    end;
+  end;
 
   Result := TAsyncCore.New<string>(
     function(const AOperation: IAsyncOperation): string
@@ -783,15 +800,13 @@ begin
 
   LParams := TStringList.Create;
   try
-    LParams.Delimiter := '&';
-    LParams.QuoteChar := #0;
     LParams.AddPair(IAM4D_OAUTH2_PARAM_CLIENT_ID, FKeycloakConfig.ClientID);
     if not LTokens.IDToken.Trim.IsEmpty then
       LParams.AddPair(IAM4D_OAUTH2_PARAM_ID_TOKEN_HINT, LTokens.IDToken);
 
     if not (APostLogoutRedirectURI.Trim.IsEmpty) then
       LParams.AddPair(IAM4D_OAUTH2_PARAM_POST_LOGOUT_REDIRECT_URI, APostLogoutRedirectURI);
-    Result := FWellKnownEndPoints.EndSessionEndpoint + '?' + LParams.DelimitedText;
+    Result := FWellKnownEndPoints.EndSessionEndpoint + '?' + EncodeFormParams(LParams);
   finally
     LParams.Free;
   end;
@@ -936,9 +951,13 @@ begin
 
   LResponse := ExecuteCallHTTP<IHTTPResponse>(
     function(AClient: THTTPClient): IHTTPResponse
+    var
+      LHeaders: TNetHeaders;
     begin
-      AClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := Format('%s %s', [IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER, LAccessToken]);
-      Result := AClient.Get(FWellKnownEndPoints.UserInfoEndpoint);
+      SetLength(LHeaders, 1);
+      LHeaders[0].Name := IAM4D_HTTP_HEADER_AUTHORIZATION;
+      LHeaders[0].Value := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LAccessToken;
+      Result := AClient.Get(FWellKnownEndPoints.UserInfoEndpoint, nil, LHeaders);
     end);
 
   EnsureResponseHTTP200OrFail(LResponse, 'User info');
@@ -1028,6 +1047,7 @@ var
   LContent: TStringStream;
   LResponse: IHTTPResponse;
   LEncoded: string;
+  LOriginalContentType: string;
 begin
   LEncoded := EncodeFormParams(AParams);
 
@@ -1036,8 +1056,13 @@ begin
     LResponse := ExecuteCallHTTP<IHTTPResponse>(
       function(AClient: THTTPClient): IHTTPResponse
       begin
-        AClient.ContentType := IAM4D_CONTENT_TYPE_FORM_URLENCODED;
-        Result := AClient.Post(FWellKnownEndPoints.TokenEndpoint, LContent);
+        LOriginalContentType := AClient.ContentType;
+        try
+          AClient.ContentType := IAM4D_CONTENT_TYPE_FORM_URLENCODED;
+          Result := AClient.Post(FWellKnownEndPoints.TokenEndpoint, LContent);
+        finally
+          AClient.ContentType := LOriginalContentType;
+        end;
       end);
 
     EnsureResponseHTTP200OrFail(LResponse, 'Token endpoint');
@@ -1126,7 +1151,7 @@ begin
 
     // Use constant-time comparison for consistency with other security checks
     if not SecureStringEquals(LNonceValue, FNonce) then
-      raise EIAM4DException.CreateFmt('Nonce mismatch in ID Token. Expected: %s, Found: %s', [FNonce, LNonceValue]);
+      raise EIAM4DException.Create('Nonce mismatch in ID Token. Possible replay attack or session mix-up.');
   finally
     LJSONValue.Free;
   end;
@@ -1162,6 +1187,8 @@ begin
 
   if Assigned(FCallbackHandler) and FCallbackHandler.IsListening then
     FCallbackHandler.Stop;
+
+  ClearAuthorizationContext;
 end;
 
 end.

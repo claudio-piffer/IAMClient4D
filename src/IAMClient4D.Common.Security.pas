@@ -306,7 +306,9 @@ var
   LMessage: string;
 begin
   Result := False;
+  LReason := crrNone;
   LMessage := '';
+  LNow := Now;
 
   FLock.Enter;
   try
@@ -319,30 +321,28 @@ begin
           begin
             LReason := crrEmptySubject;
             LMessage := 'Certificate subject is empty';
-            DoOnCertificateValidation(Certificate, False, LReason, LMessage);
-            Exit(False);
           end;
-
-          LNow := Now;
-          if Certificate.Start > LNow then
+          if LMessage.IsEmpty then
           begin
-            LReason := crrNotYetValid;
-            LMessage := Format('Certificate not yet valid (starts: %s, now: %s)',
-              [DateTimeToStr(Certificate.Start), DateTimeToStr(LNow)]);
-            DoOnCertificateValidation(Certificate, False, LReason, LMessage);
-            Exit(False);
+            if Certificate.Start > LNow then
+            begin
+              LReason := crrNotYetValid;
+              LMessage := Format('Certificate not yet valid (starts: %s, now: %s)',
+                [DateTimeToStr(Certificate.Start), DateTimeToStr(LNow)]);
+            end;
           end;
 
-          if Certificate.Expiry < LNow then
+          if LMessage.IsEmpty then
           begin
-            LReason := crrExpired;
-            LMessage := Format('Certificate expired (expiry: %s, now: %s)',
-              [DateTimeToStr(Certificate.Expiry), DateTimeToStr(LNow)]);
-            DoOnCertificateValidation(Certificate, False, LReason, LMessage);
-            Exit(False);
+            if Certificate.Expiry < LNow then
+            begin
+              LReason := crrExpired;
+              LMessage := Format('Certificate expired (expiry: %s, now: %s)',
+                [DateTimeToStr(Certificate.Expiry), DateTimeToStr(LNow)]);
+            end;
           end;
 
-          if FPinnedPublicKeyHashes.Count > 0 then
+          if LMessage.IsEmpty and (FPinnedPublicKeyHashes.Count > 0) then
           begin
             LCertHash := CalculatePublicKeyHash(Certificate.PublicKey);
 
@@ -351,15 +351,15 @@ begin
               LReason := crrPublicKeyPinningFailed;
               LMessage := Format('Public key pinning failed (hash: %s, %d pins configured)',
                 [LCertHash, FPinnedPublicKeyHashes.Count]);
-              DoOnCertificateValidation(Certificate, False, LReason, LMessage);
-              Exit(False);
             end;
           end;
 
-          Result := True;
-          LReason := crrNone;
-          LMessage := 'Certificate accepted (svmAllowSelfSigned)';
-          DoOnCertificateValidation(Certificate, True, LReason, LMessage);
+          if LMessage.IsEmpty then
+          begin
+            Result := True;
+            LReason := crrNone;
+            LMessage := 'Certificate accepted (svmAllowSelfSigned)';
+          end;
         end;
 
       svmStrict:
@@ -367,12 +367,14 @@ begin
           Result := False;
           LReason := crrStrictModeBypass;
           LMessage := 'ValidateCertificate called in svmStrict mode (should not happen)';
-          DoOnCertificateValidation(Certificate, False, LReason, LMessage);
         end;
     end;
   finally
     FLock.Leave;
   end;
+
+  DoOnCertificateValidation(Certificate, Result, LReason, LMessage);
 end;
 
 end.
+

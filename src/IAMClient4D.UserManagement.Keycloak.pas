@@ -147,7 +147,7 @@ type
     function UserToJSON(const AUser: TIAM4DUser; const AIncludeCredentials: Boolean = False): TJSONObject;
     function JSONToUser(const AJSON: TJSONObject): TIAM4DUser;
     function JSONToRole(const AJSON: TJSONObject): TIAM4DRole; overload;
-    function JSONToRole(const AJSON: TJSONObject; const AClientID: string; const AClientName: string): TIAM4DRole; overload;
+    function JSONToRole(const AJSON: TJSONObject; const AContainerID: string; const AClientID: string): TIAM4DRole; overload;
     function JSONToGroup(const AJSON: TJSONObject): TIAM4DGroup;
     function JSONToFederatedIdentity(const AJSON: TJSONObject): TIAM4DFederatedIdentity;
     function JSONToUserSession(const AJSON: TJSONObject): TIAM4DUserSession;
@@ -156,6 +156,8 @@ type
 
     function ParseAttributesFromJSON(const AJSON: TJSONObject): TArray<TIAM4DUserAttribute>;
     procedure AddAttributesToJSON(const ATargetJSON: TJSONObject; const AAttributes: TArray<TIAM4DUserAttribute>);
+    function FindGroupByPath(const AGroups: TJSONArray; const AGroupPath: string; out AFoundGroup: TJSONObject): Boolean; overload;
+    function FindGroupByPath(const AGroupObj: TJSONObject; const AGroupPath: string; out AFoundGroup: TJSONObject): Boolean; overload;
 
     /// <summary>
     /// Helper: Executes HTTP request with JSON body and validates response.
@@ -211,9 +213,9 @@ type
     // ========================================================================
 
     /// <summary>
-    /// Internal: Retrieves client ID by client name via GET /admin/realms/{realm}/clients?clientId={name}.
+    /// Internal: Retrieves the internal Keycloak client UUID by logical clientId.
     /// </summary>
-    function GetClientIDByName(const AHTTPClient: THTTPClient; const AClientName: string): string;
+    function GetClientUUIDByClientID(const AHTTPClient: THTTPClient; const AClientID: string): string;
 
     /// <summary>
     /// Internal: Retrieves group ID by group path via GET /admin/realms/{realm}/groups (filtered by path).
@@ -221,32 +223,32 @@ type
     function GetGroupIDByPath(const AHTTPClient: THTTPClient; const AGroupPath: string): string;
 
     /// <summary>
-    /// Internal: Retrieves all client roles via GET /admin/realms/{realm}/clients/{clientId}/roles.
+    /// Internal: Retrieves all client roles via GET /admin/realms/{realm}/clients/{id}/roles.
     /// </summary>
     /// <remarks>
-    /// Populates ClientID and ClientName in returned roles for automatic routing in assignment methods.
+    /// Populates ContainerID and ClientID in returned roles for automatic routing in assignment methods.
     /// </remarks>
-    function GetClientRoles(const AHTTPClient: THTTPClient; const AClientID: string; const AClientName: string = ''): TArray<TIAM4DRole>;
+    function GetClientRoles(const AHTTPClient: THTTPClient; const AContainerID: string; const AClientID: string = ''): TArray<TIAM4DRole>;
 
     /// <summary>
-    /// Internal: Retrieves client roles assigned to user via GET /admin/realms/{realm}/users/{id}/role-mappings/clients/{clientId}.
+    /// Internal: Retrieves client roles assigned to user via GET /admin/realms/{realm}/users/{id}/role-mappings/clients/{id}.
     /// </summary>
-    function GetUserClientRoles(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string): TArray<TIAM4DRole>;
+    function GetUserClientRoles(const AHTTPClient: THTTPClient; const AUserID: string; const AContainerID: string; const AClientID: string = ''): TArray<TIAM4DRole>;
 
     /// <summary>
     /// Internal: Assigns client roles to user via POST to role-mappings endpoint.
     /// </summary>
-    procedure AssignClientRolesToUser(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>); overload;
+    procedure AssignClientRolesToUser(const AHTTPClient: THTTPClient; const AUserID: string; const AContainerID: string; const ARoles: TArray<TIAM4DRole>); overload;
 
     /// <summary>
     /// Internal: Removes client roles from user via DELETE to role-mappings endpoint.
     /// </summary>
-    procedure RemoveClientRolesFromUser(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>);
+    procedure RemoveClientRolesFromUser(const AHTTPClient: THTTPClient; const AUserID: string; const AContainerID: string; const ARoles: TArray<TIAM4DRole>);
 
     /// <summary>
     /// Internal: Checks if user has a specific client role.
     /// </summary>
-    function HasClientRole(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string; const ARoleName: string): Boolean;
+    function HasClientRole(const AHTTPClient: THTTPClient; const AUserID: string; const AContainerID: string; const ARoleName: string): Boolean;
 
     /// <summary>
     /// Internal: Adds user to group via PUT to groups endpoint.
@@ -290,8 +292,8 @@ type
     procedure RemoveRolesFromUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>);
     procedure AssignRoleByName(const AUserID: string; const ARoleName: string);
     procedure RemoveRoleByName(const AUserID: string; const ARoleName: string);
-    procedure AssignClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
-    procedure RemoveClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string);
+    procedure AssignClientRoleByClientID(const AUserID: string; const AClientID: string; const ARoleName: string);
+    procedure RemoveClientRoleByClientID(const AUserID: string; const AClientID: string; const ARoleName: string);
     function GetGroups: TArray<TIAM4DGroup>;
     function GetUserGroups(const AUserID: string): TArray<TIAM4DGroup>;
     procedure AddUserToGroupByPath(const AUserID: string; const AGroupPath: string);
@@ -317,14 +319,14 @@ type
     function TryGetGroupByPath(const APath: string): TIAM4DGroupTryResult;
     function IsMemberOfGroup(const AUserID: string; const AGroupPath: string): Boolean;
     function GetUsersInGroupByPath(const AGroupPath: string; const AFirstResult: Integer = 0; const AMaxResults: Integer = 100): TArray<TIAM4DUser>;
-    function GetClientRolesByName(const AClientName: string): TArray<TIAM4DRole>;
-    function GetUserClientRolesByName(const AUserID: string; const AClientName: string): TArray<TIAM4DRole>;
+    function GetClientRolesByClientID(const AClientID: string): TArray<TIAM4DRole>;
+    function GetUserClientRolesByClientID(const AUserID: string; const AClientID: string): TArray<TIAM4DRole>;
     procedure AssignClientRolesToUser(const AUserID: string; const ARoles: TArray<TIAM4DRole>); overload;
     function AssignClientRolesToUsers(const ARoleAssignments: TArray<TIAM4DRoleAssignment>; const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
-    procedure RemoveClientRolesFromUserByName(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>);
-    function HasClientRoleByName(const AUserID: string; const AClientName: string; const ARoleName: string): Boolean;
+    procedure RemoveClientRolesFromUserByClientID(const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>);
+    function HasClientRoleByClientID(const AUserID: string; const AClientID: string; const ARoleName: string): Boolean;
     function GetClients: TIAM4DRealmClientArray; overload;
-    function GetClients(const AClientName: string): TIAM4DRealmClient; overload;
+    function GetClientByClientID(const AClientID: string): TIAM4DRealmClient;
     // Internal helper
     procedure SetUserEnabledState(const AUserID: string; const AEnabled: Boolean);
 
@@ -687,18 +689,18 @@ begin
   Result.Name := AJSON.GetValue<string>('name', '');
   Result.Description := AJSON.GetValue<string>('description', '');
   Result.Composite := AJSON.GetValue<Boolean>('composite', False);
+  Result.ContainerID := '';
   Result.ClientID := '';
-  Result.ClientName := '';
 end;
 
-function TIAM4DKeycloakUserManager.JSONToRole(const AJSON: TJSONObject; const AClientID: string; const AClientName: string): TIAM4DRole;
+function TIAM4DKeycloakUserManager.JSONToRole(const AJSON: TJSONObject; const AContainerID: string; const AClientID: string): TIAM4DRole;
 begin
   Result.ID := AJSON.GetValue<string>('id', '');
   Result.Name := AJSON.GetValue<string>('name', '');
   Result.Description := AJSON.GetValue<string>('description', '');
   Result.Composite := AJSON.GetValue<Boolean>('composite', False);
+  Result.ContainerID := AContainerID;
   Result.ClientID := AClientID;
-  Result.ClientName := AClientName;
 end;
 
 function TIAM4DKeycloakUserManager.JSONToGroup(const AJSON: TJSONObject): TIAM4DGroup;
@@ -796,6 +798,51 @@ begin
     LAttributesJSON.Free;
     raise;
   end;
+end;
+
+function TIAM4DKeycloakUserManager.FindGroupByPath(
+  const AGroups: TJSONArray;
+  const AGroupPath: string;
+  out AFoundGroup: TJSONObject): Boolean;
+begin
+  AFoundGroup := nil;
+  Result := False;
+
+  if not Assigned(AGroups) then
+    Exit;
+
+  for var LIndex := 0 to AGroups.Count - 1 do
+  begin
+    if not (AGroups.Items[LIndex] is TJSONObject) then
+      Continue;
+
+    if FindGroupByPath(AGroups.Items[LIndex] as TJSONObject, AGroupPath, AFoundGroup) then
+      Exit(True);
+  end;
+end;
+
+function TIAM4DKeycloakUserManager.FindGroupByPath(
+  const AGroupObj: TJSONObject;
+  const AGroupPath: string;
+  out AFoundGroup: TJSONObject): Boolean;
+var
+  LSubGroups: TJSONValue;
+begin
+  AFoundGroup := nil;
+  Result := False;
+
+  if not Assigned(AGroupObj) then
+    Exit;
+
+  if SameText(AGroupObj.GetValue<string>('path', ''), AGroupPath) then
+  begin
+    AFoundGroup := AGroupObj;
+    Exit(True);
+  end;
+
+  LSubGroups := AGroupObj.Values['subGroups'];
+  if LSubGroups is TJSONArray then
+    Result := FindGroupByPath(TJSONArray(LSubGroups), AGroupPath, AFoundGroup);
 end;
 
 function TIAM4DKeycloakUserManager.RoleToJSON(const ARole: TIAM4DRole): TJSONObject;
@@ -1298,10 +1345,15 @@ begin
     function(AHTTPClient: THTTPClient): Integer
     var
       LResponse: IHTTPResponse;
+      LCountText: string;
     begin
       LResponse := AHTTPClient.Get(GetUsersURL + '/count');
       EnsureResponseSuccess(LResponse, 'Get users count');
-      Result := StrToIntDef(LResponse.ContentAsString, 0);
+      LCountText := LResponse.ContentAsString.Trim;
+      if not TryStrToInt(LCountText, Result) then
+        raise EIAM4DException.CreateFmt(
+          'Get users count failed: invalid numeric response "%s"',
+          [LResponse.ContentAsString]);
     end);
 end;
 
@@ -1658,16 +1710,16 @@ begin
   RemoveRolesFromUser(AUserID, [LRole]);
 end;
 
-procedure TIAM4DKeycloakUserManager.AssignClientRoleByName(
+procedure TIAM4DKeycloakUserManager.AssignClientRoleByClientID(
   const AUserID: string;
-  const AClientName: string;
+  const AClientID: string;
   const ARoleName: string);
 var
   LClientRoles: TArray<TIAM4DRole>;
   LRole: TIAM4DRole;
   LFound: Boolean;
 begin
-  LClientRoles := GetClientRolesByName(AClientName);
+  LClientRoles := GetClientRolesByClientID(AClientID);
 
   LFound := False;
   for LRole in LClientRoles do
@@ -1680,21 +1732,21 @@ begin
   end;
 
   if not LFound then
-    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientName]);
+    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientID]);
 
   AssignClientRolesToUser(AUserID, [LRole]);
 end;
 
-procedure TIAM4DKeycloakUserManager.RemoveClientRoleByName(
+procedure TIAM4DKeycloakUserManager.RemoveClientRoleByClientID(
   const AUserID: string;
-  const AClientName: string;
+  const AClientID: string;
   const ARoleName: string);
 var
   LClientRoles: TArray<TIAM4DRole>;
   LRole: TIAM4DRole;
   LFound: Boolean;
 begin
-  LClientRoles := GetClientRolesByName(AClientName);
+  LClientRoles := GetClientRolesByClientID(AClientID);
 
   LFound := False;
   for LRole in LClientRoles do
@@ -1707,9 +1759,9 @@ begin
   end;
 
   if not LFound then
-    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientName]);
+    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientID]);
 
-  RemoveClientRolesFromUserByName(AUserID, AClientName, [LRole]);
+  RemoveClientRolesFromUserByClientID(AUserID, AClientID, [LRole]);
 end;
 
 function TIAM4DKeycloakUserManager.GetGroups: TArray<TIAM4DGroup>;
@@ -2471,30 +2523,17 @@ begin
     var
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
-      LGroupPath: string;
+      LGroupObj: TJSONObject;
     begin
       LResponse := AHTTPClient.Get(LURL);
       EnsureResponseSuccess(LResponse, 'Get groups for path search');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        Result.ID := IAM4D_EMPTY_USER_ID;
-
-        for var LIndex := 0 to LJSONArray.Count - 1 do
-        begin
-          if LJSONArray.Items[LIndex] is TJSONObject then
-          begin
-            LGroupPath := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('path', IAM4D_EMPTY_USER_ID);
-            if SameText(LGroupPath, APath) then
-            begin
-              Result := JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject);
-              Break;
-            end;
-          end;
-        end;
-
-        if Result.ID = IAM4D_EMPTY_USER_ID then
+        if not FindGroupByPath(LJSONArray, APath, LGroupObj) then
           raise EIAM4DGroupNotFoundException.Create(APath);
+
+        Result := JSONToGroup(LGroupObj);
       finally
         LJSONArray.Free;
       end;
@@ -2519,25 +2558,17 @@ begin
     var
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
-      LGroupPath: string;
+      LGroupObj: TJSONObject;
     begin
       LResponse := AHTTPClient.Get(LURL);
       EnsureResponseSuccess(LResponse, 'Try get group by path');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
-        for var LIndex := 0 to LJSONArray.Count - 1 do
+        if FindGroupByPath(LJSONArray, APath, LGroupObj) then
         begin
-          if LJSONArray.Items[LIndex] is TJSONObject then
-          begin
-            LGroupPath := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('path', IAM4D_EMPTY_USER_ID);
-            if SameText(LGroupPath, APath) then
-            begin
-              LResult.Found := True;
-              LResult.Group := JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject);
-              Break;
-            end;
-          end;
+          LResult.Found := True;
+          LResult.Group := JSONToGroup(LGroupObj);
         end;
       finally
         LJSONArray.Free;
@@ -2614,16 +2645,16 @@ begin
   end;
 end;
 
-function TIAM4DKeycloakUserManager.GetClientRoles(const AHTTPClient: THTTPClient; const AClientID: string; const AClientName: string = ''): TArray<TIAM4DRole>;
+function TIAM4DKeycloakUserManager.GetClientRoles(const AHTTPClient: THTTPClient; const AContainerID: string; const AClientID: string = ''): TArray<TIAM4DRole>;
 var
   LResponse: IHTTPResponse;
   LURL: string;
   LJSONArray: TJSONArray;
   LRolesList: TList<TIAM4DRole>;
 begin
-  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
+  TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
-  LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(AClientID) + '/roles';
+  LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(AContainerID) + '/roles';
 
   LResponse := AHTTPClient.Get(LURL);
   EnsureResponseSuccess(LResponse, 'Get client roles');
@@ -2634,7 +2665,7 @@ begin
     try
       for var LIndex := 0 to LJSONArray.Count - 1 do
         if LJSONArray.Items[LIndex] is TJSONObject then
-          LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject, AClientID, AClientName));
+          LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject, AContainerID, AClientID));
       Result := LRolesList.ToArray;
     finally
       LRolesList.Free;
@@ -2644,7 +2675,7 @@ begin
   end;
 end;
 
-function TIAM4DKeycloakUserManager.GetUserClientRoles(const AHTTPClient: THTTPClient; const AUserID: string; const AClientID: string): TArray<TIAM4DRole>;
+function TIAM4DKeycloakUserManager.GetUserClientRoles(const AHTTPClient: THTTPClient; const AUserID: string; const AContainerID: string; const AClientID: string = ''): TArray<TIAM4DRole>;
 var
   LResponse: IHTTPResponse;
   LURL: string;
@@ -2653,9 +2684,9 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateUserID(AUserID);
 
-  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
+  TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
-  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AClientID);
+  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AContainerID);
 
   LResponse := AHTTPClient.Get(LURL);
   EnsureResponseSuccess(LResponse, 'Get user client roles');
@@ -2666,7 +2697,7 @@ begin
     try
       for var LIndex := 0 to LJSONArray.Count - 1 do
         if LJSONArray.Items[LIndex] is TJSONObject then
-          LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject));
+          LRolesList.Add(JSONToRole(LJSONArray.Items[LIndex] as TJSONObject, AContainerID, AClientID));
       Result := LRolesList.ToArray;
     finally
       LRolesList.Free;
@@ -2679,7 +2710,7 @@ end;
 procedure TIAM4DKeycloakUserManager.AssignClientRolesToUser(
   const AHTTPClient: THTTPClient;
   const AUserID: string;
-  const AClientID: string;
+  const AContainerID: string;
   const ARoles: TArray<TIAM4DRole>);
 var
   LRolesArray: TJSONArray;
@@ -2688,11 +2719,11 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateUserID(AUserID);
 
-  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
+  TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
-  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AClientID);
+  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AContainerID);
 
   LRolesArray := TJSONArray.Create;
   try
@@ -2708,7 +2739,7 @@ end;
 procedure TIAM4DKeycloakUserManager.RemoveClientRolesFromUser(
   const AHTTPClient: THTTPClient;
   const AUserID: string;
-  const AClientID: string;
+  const AContainerID: string;
   const ARoles: TArray<TIAM4DRole>);
 var
   LRolesArray: TJSONArray;
@@ -2717,11 +2748,11 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateUserID(AUserID);
 
-  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
+  TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
-  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AClientID);
+  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AContainerID);
 
   LRolesArray := TJSONArray.Create;
   try
@@ -2737,7 +2768,7 @@ end;
 function TIAM4DKeycloakUserManager.HasClientRole(
   const AHTTPClient: THTTPClient;
   const AUserID: string;
-  const AClientID: string;
+  const AContainerID: string;
   const ARoleName: string): Boolean;
 var
   LRoles: TArray<TIAM4DRole>;
@@ -2745,11 +2776,11 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateUserID(AUserID);
 
-  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
+  TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
   TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
 
-  LRoles := GetUserClientRoles(AHTTPClient, AUserID, AClientID);
+  LRoles := GetUserClientRoles(AHTTPClient, AUserID, AContainerID);
 
   for LRole in LRoles do
     if SameText(LRole.Name, ARoleName) then
@@ -2758,19 +2789,19 @@ begin
   Result := False;
 end;
 
-function TIAM4DKeycloakUserManager.GetClientIDByName(const AHTTPClient: THTTPClient; const AClientName: string): string;
+function TIAM4DKeycloakUserManager.GetClientUUIDByClientID(const AHTTPClient: THTTPClient; const AClientID: string): string;
 var
   LResponse: IHTTPResponse;
   LURL: string;
   LJSONArray: TJSONArray;
   LClientObj: TJSONObject;
 begin
-  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
-  LURL := GetAdminURL + '/clients?clientId=' + TNetEncoding.URL.Encode(AClientName);
+  LURL := GetAdminURL + '/clients?clientId=' + TNetEncoding.URL.Encode(AClientID);
 
   LResponse := AHTTPClient.Get(LURL);
-  EnsureResponseSuccess(LResponse, 'Get client by name');
+  EnsureResponseSuccess(LResponse, 'Get client by clientId');
 
   LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'clients array response');
   try
@@ -2792,7 +2823,6 @@ var
   LURL: string;
   LJSONArray: TJSONArray;
   LGroupObj: TJSONObject;
-  LPath: string;
 begin
   TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
 
@@ -2805,62 +2835,51 @@ begin
   try
     Result := '';
 
-    for var LIndex := 0 to LJSONArray.Count - 1 do
-    begin
-      if LJSONArray.Items[LIndex] is TJSONObject then
-      begin
-        LGroupObj := LJSONArray.Items[LIndex] as TJSONObject;
-        LPath := LGroupObj.GetValue<string>('path', '');
-        if SameText(LPath, AGroupPath) then
-        begin
-          Result := LGroupObj.GetValue<string>('id', '');
-          Exit;
-        end;
-      end;
-    end;
+    if FindGroupByPath(LJSONArray, AGroupPath, LGroupObj) then
+      Result := LGroupObj.GetValue<string>('id', '');
   finally
     LJSONArray.Free;
   end;
 end;
 
-function TIAM4DKeycloakUserManager.GetClientRolesByName(const AClientName: string): TArray<TIAM4DRole>;
+function TIAM4DKeycloakUserManager.GetClientRolesByClientID(const AClientID: string): TArray<TIAM4DRole>;
 begin
-  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
   Result := ExecuteWithAuth < TArray<TIAM4DRole> > (
     function(AHTTPClient: THTTPClient): TArray<TIAM4DRole>
     var
-      LClientID: string;
+      LClientUUID: string;
     begin
-      LClientID := GetClientIDByName(AHTTPClient, AClientName);
+      LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
-      if LClientID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
+      if LClientUUID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
 
-      Result := GetClientRoles(AHTTPClient, LClientID, AClientName);
+      Result := GetClientRoles(AHTTPClient, LClientUUID, AClientID);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetUserClientRolesByName(
+function TIAM4DKeycloakUserManager.GetUserClientRolesByClientID(
   const AUserID: string;
-  const AClientName: string): TArray<TIAM4DRole>;
+  const AClientID: string): TArray<TIAM4DRole>;
 begin
   if AUserID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
 
-  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
   Result := ExecuteWithAuth < TArray<TIAM4DRole> > (
     function(AHTTPClient: THTTPClient): TArray<TIAM4DRole>
     var
-      LClientID: string;
+      LClientUUID: string;
     begin
-      LClientID := GetClientIDByName(AHTTPClient, AClientName);
+      LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
-      if LClientID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
+      if LClientUUID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
 
-      Result := GetUserClientRoles(AHTTPClient, AUserID, LClientID);
+      Result := GetUserClientRoles(AHTTPClient, AUserID, LClientUUID, AClientID);
     end);
 end;
 
@@ -2868,24 +2887,24 @@ procedure TIAM4DKeycloakUserManager.AssignClientRolesToUser(
   const AUserID: string;
   const ARoles: TArray<TIAM4DRole>);
 var
-  LClientID: string;
+  LContainerID: string;
 begin
   if AUserID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
-  if (Length(ARoles) > 0) and (ARoles[0].ClientID.IsEmpty or ARoles[0].ClientName.IsEmpty) then
+  if (Length(ARoles) > 0) and (ARoles[0].ContainerID.IsEmpty or ARoles[0].ClientID.IsEmpty) then
     raise EIAM4DInvalidConfigurationException.CreateFmt(
-      'Role "%s" is missing ClientID or ClientName. Use GetClientRolesByName to retrieve roles with complete client information.',
+      'Role "%s" is missing ContainerID or ClientID. Use GetClientRolesByClientID to retrieve roles with complete client information.',
       [ARoles[0].Name]);
 
-  LClientID := ARoles[0].ClientID;
+  LContainerID := ARoles[0].ContainerID;
 
   ExecuteWithAuthVoid(
     procedure(AHTTPClient: THTTPClient)
     begin
-      AssignClientRolesToUser(AHTTPClient, AUserID, LClientID, ARoles);
+      AssignClientRolesToUser(AHTTPClient, AUserID, LContainerID, ARoles);
     end);
 end;
 
@@ -2903,7 +2922,7 @@ begin
     procedure(AHTTPClient: THTTPClient)
     var
       LIdx: Integer;
-      LClientID: string;
+      LContainerID: string;
       LAssignment: TIAM4DRoleAssignment;
     begin
       for LIdx := 0 to High(ARoleAssignments) do
@@ -2930,15 +2949,15 @@ begin
           Continue;
         end;
 
-        if LAssignment.Roles[0].ClientID.IsEmpty or LAssignment.Roles[0].ClientName.IsEmpty then
+        if LAssignment.Roles[0].ContainerID.IsEmpty or LAssignment.Roles[0].ClientID.IsEmpty then
         begin
-          LResults[LIdx].ErrorMessage := Format('Role "%s" is missing ClientID or ClientName', [LAssignment.Roles[0].Name]);
+          LResults[LIdx].ErrorMessage := Format('Role "%s" is missing ContainerID or ClientID', [LAssignment.Roles[0].Name]);
           Continue;
         end;
 
         try
-          LClientID := LAssignment.Roles[0].ClientID;
-          AssignClientRolesToUser(AHTTPClient, LAssignment.UserID, LClientID, LAssignment.Roles);
+          LContainerID := LAssignment.Roles[0].ContainerID;
+          AssignClientRolesToUser(AHTTPClient, LAssignment.UserID, LContainerID, LAssignment.Roles);
           LResults[LIdx].Success := True;
         except
           on E: Exception do
@@ -2954,41 +2973,41 @@ begin
   Result := LResults;
 end;
 
-procedure TIAM4DKeycloakUserManager.RemoveClientRolesFromUserByName(
+procedure TIAM4DKeycloakUserManager.RemoveClientRolesFromUserByClientID(
   const AUserID: string;
-  const AClientName: string;
+  const AClientID: string;
   const ARoles: TArray<TIAM4DRole>);
 begin
   if AUserID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
 
-  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
   ExecuteWithAuthVoid(
     procedure(AHTTPClient: THTTPClient)
     var
-      LClientID: string;
+      LClientUUID: string;
     begin
-      LClientID := GetClientIDByName(AHTTPClient, AClientName);
+      LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
-      if LClientID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
+      if LClientUUID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
 
-      RemoveClientRolesFromUser(AHTTPClient, AUserID, LClientID, ARoles);
+      RemoveClientRolesFromUser(AHTTPClient, AUserID, LClientUUID, ARoles);
     end);
 end;
 
-function TIAM4DKeycloakUserManager.HasClientRoleByName(
+function TIAM4DKeycloakUserManager.HasClientRoleByClientID(
   const AUserID: string;
-  const AClientName: string;
+  const AClientID: string;
   const ARoleName: string): Boolean;
 begin
   if AUserID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
 
-  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
   if ARoleName.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('RoleName cannot be empty');
@@ -2996,14 +3015,14 @@ begin
   Result := ExecuteWithAuth<Boolean>(
     function(AHTTPClient: THTTPClient): Boolean
     var
-      LClientID: string;
+      LClientUUID: string;
     begin
-      LClientID := GetClientIDByName(AHTTPClient, AClientName);
+      LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
-      if LClientID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
+      if LClientUUID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
 
-      Result := HasClientRole(AHTTPClient, AUserID, LClientID, ARoleName);
+      Result := HasClientRole(AHTTPClient, AUserID, LClientUUID, ARoleName);
     end);
 end;
 
@@ -3035,13 +3054,8 @@ begin
             if LJSONArray.Items[LIdx] is TJSONObject then
             begin
               LClient := JSONToRealmClient(LJSONArray.Items[LIdx] as TJSONObject);
-
-              try
-                LRoles := GetClientRoles(AHTTPClient, LClient.ID, LClient.ClientID);
-                LClient.Roles := LRoles;
-              except
-                LClient.Roles := nil;
-              end;
+              LRoles := GetClientRoles(AHTTPClient, LClient.ID, LClient.ClientID);
+              LClient.Roles := LRoles;
 
               LClientsList.Add(LClient);
             end;
@@ -3057,38 +3071,33 @@ begin
     end);
 end;
 
-function TIAM4DKeycloakUserManager.GetClients(const AClientName: string): TIAM4DRealmClient;
+function TIAM4DKeycloakUserManager.GetClientByClientID(const AClientID: string): TIAM4DRealmClient;
 begin
-  TIAM4DUserManagementValidator.ValidateClientName(AClientName);
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
 
   Result := ExecuteWithAuth<TIAM4DRealmClient>(
     function(AHTTPClient: THTTPClient): TIAM4DRealmClient
     var
       LJSONValue: TJSONValue;
-      LClientID: string;
+      LClientUUID: string;
       LResponse: IHTTPResponse;
       LURL: string;
       LRoles: TArray<TIAM4DRole>;
     begin
-      LClientID := GetClientIDByName(AHTTPClient, AClientName);
+      LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
-      if LClientID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientName]);
+      if LClientUUID.IsEmpty then
+        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
 
-      LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(LClientID);
+      LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(LClientUUID);
       LResponse := AHTTPClient.Get(LURL);
       EnsureResponseSuccess(LResponse, 'Get client details');
 
       LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'client response');
       try
         Result := JSONToRealmClient(LJSONValue as TJSONObject);
-
-        try
-          LRoles := GetClientRoles(AHTTPClient, LClientID, AClientName);
-          Result.Roles := LRoles;
-        except
-          Result.Roles := nil;
-        end;
+        LRoles := GetClientRoles(AHTTPClient, LClientUUID, AClientID);
+        Result.Roles := LRoles;
       finally
         LJSONValue.Free;
       end;

@@ -70,16 +70,16 @@ type
     class procedure ValidatePassword(const APassword: string); static;
 
     /// <summary>
-    /// Validates that ClientName is not empty.
-    /// </summary>
-    /// <exception cref="EIAM4DInvalidConfigurationException">ClientName is empty</exception>
-    class procedure ValidateClientName(const AClientName: string); static; inline;
-
-    /// <summary>
-    /// Validates that ClientID is not empty.
+    /// Validates that the logical Keycloak clientId is not empty.
     /// </summary>
     /// <exception cref="EIAM4DInvalidConfigurationException">ClientID is empty</exception>
     class procedure ValidateClientID(const AClientID: string); static; inline;
+
+    /// <summary>
+    /// Validates that the internal Keycloak container UUID is not empty.
+    /// </summary>
+    /// <exception cref="EIAM4DInvalidConfigurationException">ContainerID is empty</exception>
+    class procedure ValidateContainerID(const AContainerID: string); static; inline;
 
     /// <summary>
     /// Validates that GroupPath is not empty.
@@ -174,16 +174,16 @@ begin
       Format('Password cannot exceed %d characters (potential DoS attack)', [IAM4D_MAX_PASSWORD_LENGTH]));
 end;
 
-class procedure TIAM4DUserManagementValidator.ValidateClientName(const AClientName: string);
-begin
-  if AClientName.IsEmpty then
-    raise EIAM4DInvalidConfigurationException.Create('ClientName cannot be empty');
-end;
-
 class procedure TIAM4DUserManagementValidator.ValidateClientID(const AClientID: string);
 begin
   if AClientID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('ClientID cannot be empty');
+end;
+
+class procedure TIAM4DUserManagementValidator.ValidateContainerID(const AContainerID: string);
+begin
+  if AContainerID.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('ContainerID cannot be empty');
 end;
 
 class procedure TIAM4DUserManagementValidator.ValidateGroupPath(const AGroupPath: string);

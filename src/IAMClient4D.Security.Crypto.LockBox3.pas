@@ -129,29 +129,23 @@ function TIAM4DLockBox3CryptoProvider.ComputeHash(const AData: TBytes;
   AHashAlg: TIAM4DHashAlgorithm): TBytes;
 var
   LHashSHA2: THashSHA2;
+  LVersion: THashSHA2.TSHA2Version;
 begin
   case AHashAlg of
-    haSHA256:
-    begin
-      LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-      LHashSHA2.Update(AData[0], Length(AData));
-      Result := LHashSHA2.HashAsBytes;
-    end;
-    haSHA384:
-    begin
-      LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA384);
-      LHashSHA2.Update(AData[0], Length(AData));
-      Result := LHashSHA2.HashAsBytes;
-    end;
-    haSHA512:
-    begin
-      LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA512);
-      LHashSHA2.Update(AData[0], Length(AData));
-      Result := LHashSHA2.HashAsBytes;
-    end;
+    haSHA256: LVersion := THashSHA2.TSHA2Version.SHA256;
+    haSHA384: LVersion := THashSHA2.TSHA2Version.SHA384;
+    haSHA512: LVersion := THashSHA2.TSHA2Version.SHA512;
   else
-    SetLength(Result, 0);
+    raise EIAM4DCryptoNotSupportedException.Create(
+      Format('Hash algorithm %d not supported', [Ord(AHashAlg)]), GetProviderName);
   end;
+
+  LHashSHA2 := THashSHA2.Create(LVersion);
+
+  if Length(AData) > 0 then
+    LHashSHA2.Update(AData, Length(AData));
+
+  Result := LHashSHA2.HashAsBytes;
 end;
 
 function TIAM4DLockBox3CryptoProvider.ECDSAVerify(const AHash, AR, AS_, AX, AY: TBytes;

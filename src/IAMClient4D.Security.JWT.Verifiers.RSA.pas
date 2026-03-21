@@ -164,27 +164,23 @@ end;
 function TRSAJWTSignatureVerifier.ComputeHash(const AMessage: TBytes; const AAlg: string): TBytes;
 var
   LHashSHA2: THashSHA2;
+  LVersion: THashSHA2.TSHA2Version;
 begin
   if SameText(AAlg, 'RS256') then
-  begin
-    LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-    LHashSHA2.Update(AMessage[0], Length(AMessage));
-    Result := LHashSHA2.HashAsBytes;
-  end
+    LVersion := THashSHA2.TSHA2Version.SHA256
   else if SameText(AAlg, 'RS384') then
-  begin
-    LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA384);
-    LHashSHA2.Update(AMessage[0], Length(AMessage));
-    Result := LHashSHA2.HashAsBytes;
-  end
+    LVersion := THashSHA2.TSHA2Version.SHA384
   else if SameText(AAlg, 'RS512') then
-  begin
-    LHashSHA2 := THashSHA2.Create(THashSHA2.TSHA2Version.SHA512);
-    LHashSHA2.Update(AMessage[0], Length(AMessage));
-    Result := LHashSHA2.HashAsBytes;
-  end
+    LVersion := THashSHA2.TSHA2Version.SHA512
   else
     raise EIAM4DSecurityValidationException.CreateFmt('Unsupported RSA algorithm: %s', [AAlg]);
+
+  LHashSHA2 := THashSHA2.Create(LVersion);
+
+  if Length(AMessage) > 0 then
+    LHashSHA2.Update(AMessage, Length(AMessage));
+
+  Result := LHashSHA2.HashAsBytes;
 end;
 
 function TRSAJWTSignatureVerifier.GetDigestInfoPrefix(const AAlg: string): TBytes;

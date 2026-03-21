@@ -119,7 +119,7 @@ type
 
 implementation
 
-{$IFDEF IAM4D_TMS}
+{$IFDEF IAM4D_CRYPTO_TMS}
 uses
   AESModes,
   IAMClient4D.Common.SecureMemory,

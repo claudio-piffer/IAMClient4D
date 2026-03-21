@@ -38,7 +38,12 @@ type
   TIAM4DPlatformUtils = class
   public
     /// <summary>
-    /// Opens URL in default system browser
+    /// Extracts URI scheme if present and syntactically valid
+    /// </summary>
+    class function TryGetURIScheme(const AURL: string; out AScheme: string): Boolean;
+
+    /// <summary>
+    /// Opens URI using the default system handler
     /// </summary>
     class function OpenURL(const AURL: string): Boolean;
   end;
@@ -76,6 +81,42 @@ uses
   {$ENDIF}
   ;
 
+{$IFDEF POSIX}
+function QuoteShellArgPosix(const AValue: string): string;
+begin
+  Result := '''' + StringReplace(AValue, '''', '''"''"''', [rfReplaceAll]) + '''';
+end;
+{$ENDIF}
+
+class function TIAM4DPlatformUtils.TryGetURIScheme(const AURL: string; out AScheme: string): Boolean;
+var
+  LColonPos: Integer;
+  I: Integer;
+begin
+  Result := False;
+  AScheme := '';
+
+  LColonPos := Pos(':', AURL);
+  if LColonPos <= 1 then
+    Exit;
+
+  AScheme := AURL.Substring(0, LColonPos - 1).ToLower;
+  if not CharInSet(AScheme[1], ['a'..'z']) then
+  begin
+    AScheme := '';
+    Exit;
+  end;
+
+  for I := 1 to Length(AScheme) do
+    if not CharInSet(AScheme[I], ['a'..'z', '0'..'9', '+', '-', '.']) then
+    begin
+      AScheme := '';
+      Exit;
+    end;
+
+  Result := True;
+end;
+
 class function TIAM4DPlatformUtils.OpenURL(const AURL: string): Boolean;
 {$IFDEF MSWINDOWS}
 var
@@ -98,10 +139,20 @@ var
 var
   LIntent: JIntent;
 {$ENDIF}
+var
+  LScheme: string;
 begin
   Result := False;
 
   if AURL.Trim.IsEmpty then
+    Exit;
+
+  if not TIAM4DPlatformUtils.TryGetURIScheme(AURL, LScheme) then
+    Exit;
+
+  if (LScheme = 'file') or
+     (LScheme = 'javascript') or
+     (LScheme = 'data') then
     Exit;
 
   try
@@ -112,7 +163,7 @@ begin
 
     {$IFDEF MACOS}
     {$IFNDEF IOS}
-    LCommand := 'open "' + AURL + '"';
+    LCommand := 'open ' + QuoteShellArgPosix(AURL);
     Result := system(PAnsiChar(AnsiString(LCommand))) = 0;
     {$ELSE}
     LNSUrl := TNSUrl.Wrap(TNSUrl.OCClass.URLWithString(StrToNSStr(AURL)));
@@ -128,7 +179,7 @@ begin
     {$ENDIF}
 
     {$IFDEF LINUX}
-    LCommand := 'xdg-open "' + AURL + '"';
+    LCommand := 'xdg-open ' + QuoteShellArgPosix(AURL);
     Result := system(PAnsiChar(AnsiString(LCommand))) = 0;
     {$ENDIF}
 

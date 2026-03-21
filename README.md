@@ -733,6 +733,10 @@ begin
 end;
 ```
 
+**Desktop flow note**:
+- `StartAuthorizationFlowAsync` launches the authorization request only for `http` / `https` URLs.
+- URI opening is delegated to `TIAM4DPlatformUtils.OpenURL`, which uses the default system handler and rejects dangerous schemes such as `file:`, `javascript:`, and `data:`.
+
 ### 3. REST API - JWT Validation (DMVCFramework)
 
 ```pascal
@@ -1217,6 +1221,14 @@ Cross-cutting utilities used by Core and other modules.
 - **`PKCEGenerator`**: Generates `code_verifier` and `code_challenge` (SHA-256) for RFC 7636
 - **`OAuth2URLParser`**: Robust callback URL parsing, extraction of `code`, `state`, OAuth2 error handling
 
+#### Platform / URI Utilities
+
+- **`TIAM4DPlatformUtils.TryGetURIScheme`**: Extracts a syntactically valid URI scheme without depending on Delphi-version-specific `TURI` members
+- **`TIAM4DPlatformUtils.OpenURL`**: Opens a URI using the default system handler
+  - Intended for `http:`, `https:`, `mailto:`, and application-specific custom schemes
+  - Rejects `file:`, `javascript:`, and `data:` as a defense-in-depth safety check
+  - Returns `False` instead of raising on invalid or unsupported input
+
 #### JSON, Error Handling, Secure Memory
 
 - **`JSONUtils`**: Type-safe wrapper for JSON reading/writing
@@ -1341,10 +1353,12 @@ Complete JWT validation pipeline with rigorous checks compliant with RFC 7519 (J
   - Uniquely identifies user/entity
 
 - ✅ **`aud` (Audience)**:
-  - Verifies mandatory presence
+  - Enabled by default
+  - Verifies mandatory presence when enabled
   - Supports both single string and array
   - Verifies expected audience is present in array
   - Format validation (string or array)
+  - Can be disabled explicitly for legacy/non-standard JWT access tokens
 
 - ✅ **`exp` (Expiration Time)**:
   - Verifies mandatory presence
@@ -1420,6 +1434,8 @@ Complete JWT validation pipeline with rigorous checks compliant with RFC 7519 (J
 ```
 
 > 🔒 **Security Note**: IAMClient4D implements **all checks** recommended by RFC 7519 (JWT), RFC 7515 (JWS), and RFC 7523 (OAuth2 JWT Bearer), plus security best practices like `alg=none` blocking, algorithm allow-list, and `azp` validation for OIDC multi-audience.
+>
+> Audience (`aud`) validation is **enabled by default** and should normally stay enabled, especially for **OIDC ID Tokens** and standard resource-server validation of JWT access tokens. Disable it only for well-understood legacy/custom token profiles where `aud` is not usable.
 
 #### JWKS Provider
 
@@ -1531,7 +1547,7 @@ When TMS Cryptography Pack is enabled (`{$DEFINE IAM4D_TMS}` in `IAMClient4D.Con
 **`TIAM4DSSLValidationMode`**:
 
 - `svmStrict`: Production mode, full certificate validation
-- `svmSelfSigned`: Development mode, accepts self-signed certificates
+- `svmAllowSelfSigned`: Development mode, accepts self-signed certificates with basic validity checks and optional public-key pinning
 
 **`IIAM4DSSLCertificateValidator`**:
 
@@ -1542,6 +1558,8 @@ Custom validator interface for advanced scenarios:
 - Enterprise CA validation
 
 **Integration**: `TIAM4DHTTPClientSSLHelper` connects validators to `THTTPClient.OnValidateServerCertificate`
+
+`OnCertificateValidation` is intended for logging, telemetry, or diagnostics after the internal validation decision has been made.
 
 ---
 
@@ -1653,8 +1671,14 @@ Role representation:
 **Properties**:
 - `ID`, `Name`, `Description`
 - `IsRealmRole`, `IsClientRole`
-- `ClientID`: For client roles
+- `ContainerID`: Internal Keycloak client UUID for client roles
+- `ClientID`: Logical Keycloak `clientId` for client roles
 - `Composite`: If role is composite
+
+**2.1.0 Migration Note**:
+- `TIAM4DRole.ClientName` has been removed
+- `TIAM4DRole.ContainerID` must be used for the internal Keycloak client UUID
+- `TIAM4DRole.ClientID` now explicitly means the logical Keycloak `clientId`
 
 **`TIAM4DRealmClient`**:
 
@@ -1704,7 +1728,9 @@ Powerful array manipulation:
 
 **Role Helpers**:
 - `FilterByRealmRole`
-- `FilterByClientRole(ClientID)`
+- `FilterByClientRole`
+- `FilterByClientID(ClientID)`
+- `FilterByContainerID(ContainerID)`
 - `TryGetByName(...)`
 
 **Client Helpers**:
@@ -1717,6 +1743,11 @@ Powerful array manipulation:
 **`TIAM4DKeycloakUserManager`**:
 
 Main Admin API client.
+
+**2.1.0 Breaking Change Note**:
+- Client-specific helper methods were renamed from `*ByName` to `*ByClientID`
+- Single-client fetch was renamed from `GetClients(const AClientName)` to `GetClientByClientID`
+- This is a public API rename in the User Management area and requires source updates if you used the old names
 
 **Authentication**:
 - `IKeycloakAuthProvider` interface
@@ -1856,13 +1887,27 @@ function GetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUs
 function TryGetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUserTryResult>;
 ```
 
-**Role Assignment by Name**:
+**Role Assignment Helpers**:
 ```pascal
 function AssignRoleByNameAsync(const AUserID, ARoleName: string): IAsyncVoidPromise;
 function RemoveRoleByNameAsync(const AUserID, ARoleName: string): IAsyncVoidPromise;
-function AssignClientRoleByNameAsync(const AUserID, AClientName, ARoleName: string): IAsyncVoidPromise;
-function RemoveClientRoleByNameAsync(const AUserID, AClientName, ARoleName: string): IAsyncVoidPromise;
+function AssignClientRoleByClientIDAsync(const AUserID, AClientID, ARoleName: string): IAsyncVoidPromise;
+function RemoveClientRoleByClientIDAsync(const AUserID, AClientID, ARoleName: string): IAsyncVoidPromise;
+function GetClientRolesByClientIDAsync(const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
+function GetUserClientRolesByClientIDAsync(const AUserID, AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
+function HasClientRoleByClientIDAsync(const AUserID, AClientID, ARoleName: string): IAsyncPromise<Boolean>;
+function GetClientByClientIDAsync(const AClientID: string): IAsyncPromise<TIAM4DRealmClient>;
 ```
+
+**Migration Summary**:
+- `AssignClientRoleByNameAsync` -> `AssignClientRoleByClientIDAsync`
+- `RemoveClientRoleByNameAsync` -> `RemoveClientRoleByClientIDAsync`
+- `GetClientRolesByNameAsync` -> `GetClientRolesByClientIDAsync`
+- `GetUserClientRolesByNameAsync` -> `GetUserClientRolesByClientIDAsync`
+- `RemoveClientRolesFromUserByNameAsync` -> `RemoveClientRolesFromUserByClientIDAsync`
+- `HasClientRoleByNameAsync` -> `HasClientRoleByClientIDAsync`
+- `GetClientsAsync(const AClientName)` -> `GetClientByClientIDAsync`
+- Sync methods follow the same rename pattern
 
 **Example - Simplified API**:
 ```pascal
@@ -1894,10 +1939,14 @@ function AddUserToGroupByPathAsync(const AUserID, AGroupPath: string): IAsyncVoi
 function RemoveUserFromGroupByPathAsync(const AUserID, AGroupPath: string): IAsyncVoidPromise;
 ```
 
+Path-based group APIs support nested Keycloak groups such as `'/sales/italy'`.
+
 **User Count**:
 ```pascal
 function GetUsersCountAsync: IAsyncPromise<Integer>;
 ```
+
+`GetUsersCount` / `GetUsersCountAsync` expect a numeric response body and raise if the server returns an invalid payload.
 
 #### Email Workflows
 
@@ -2082,6 +2131,26 @@ var
   LMiddleware.ClockSkewSeconds := 60;
 
   AddMiddleware(LMiddleware);
+```
+
+**Optional advanced setting**:
+
+```pascal
+var
+  LConfig: TIAM4DJWTMiddlewareConfig;
+begin
+  LConfig := TIAM4DJWTMiddlewareConfig.Create(
+    'https://keycloak.example.com/realms/iamclient4d',
+    'demo_public',
+    ''
+  );
+
+  // Disable only for legacy/custom JWT access tokens.
+  // Keep enabled for OIDC ID Tokens and normal API validation.
+  LConfig.AudienceValidationEnabled := False;
+
+  AddMiddleware(TIAM4DJWTMiddleware.Create(LConfig));
+end;
 ```
 
 #### Typed Claim DTOs
@@ -2408,6 +2477,11 @@ LOperation := TAsyncCore
 LOperation.Cancel;
 ```
 
+**Retry semantics**:
+- `TAsyncCore.RunWithRetry` retries regular failures using the configured backoff strategy.
+- `EAsyncCancelException` is propagated immediately and is not retried.
+- If the final attempt fails, the original exception is re-raised.
+
 **Wait for Completion**:
 ```pascal
 var LState := LOperation.WaitForCompletion(5000); // 5 second timeout
@@ -2607,11 +2681,7 @@ begin
                   ShowMessage(Format('Network error. Retrying in %d seconds...', [LDelay div 1000]));
 
                   // Use Async.Core for delayed retry
-                  TAsyncCore.NewVoid(
-                    procedure
-                    begin
-                      Sleep(LDelay);
-                    end)
+                  TAsyncCore.Delay(LDelay)
                     .OnSuccess(
                       procedure
                       begin

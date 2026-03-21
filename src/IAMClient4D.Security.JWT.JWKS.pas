@@ -206,20 +206,18 @@ uses
 
 class function TIAM4DJWKSProvider.GetInstance: IIAM4DJWKSProvider;
 begin
-  if not Assigned(FInstance) then
-  begin
-    if Assigned(FInstanceLock) then
-    begin
-      FInstanceLock.Enter;
-      try
-        if not Assigned(FInstance) then
-          FInstance := TIAM4DJWKSProvider.Create;
-      finally
-        FInstanceLock.Leave;
-      end;
-    end;
+  if not Assigned(FInstanceLock) then
+    raise EIAM4DSecurityValidationException.Create(
+      'JWKS singleton not initialized. Unit initialization section has not executed.');
+
+  FInstanceLock.Enter;
+  try
+    if not Assigned(FInstance) then
+      FInstance := TIAM4DJWKSProvider.Create;
+    Result := FInstance;
+  finally
+    FInstanceLock.Leave;
   end;
-  Result := FInstance;
 end;
 
 class procedure TIAM4DJWKSProvider.ReleaseInstance;
@@ -646,13 +644,13 @@ var
 begin
   LNormalizedIssuer := NormalizeIssuer(AIssuer);
 
+  if TryGetFromManualKeys(LNormalizedIssuer, AKeyId, Result) then
+    Exit;
+
   if IsKidNegCached(LNormalizedIssuer, AKeyId) then
     raise EIAM4DSecurityValidationException.CreateFmt(
       'Public key with kid "%s" recently not found for issuer "%s" (negative cache).',
       [AKeyId, LNormalizedIssuer]);
-
-  if TryGetFromManualKeys(LNormalizedIssuer, AKeyId, Result) then
-    Exit;
 
   if TryGetKeyFromCache(LNormalizedIssuer, AKeyId, Result) then
     Exit;
@@ -732,6 +730,9 @@ begin
         LEntry.Key.Free;
     end;
     FKeyCache.Clear;
+
+    if Assigned(FNegativeKidCache) then
+      FNegativeKidCache.Clear;
   finally
     FCacheLock.EndWrite;
   end;

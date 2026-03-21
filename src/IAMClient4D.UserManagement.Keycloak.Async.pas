@@ -117,8 +117,8 @@ type
     function RemoveRolesFromUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
     function AssignRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
     function RemoveRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
-    function AssignClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
-    function RemoveClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
+    function AssignClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
+    function RemoveClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 
     // ========================================================================
     // Group Management
@@ -180,14 +180,14 @@ type
     // ========================================================================
     // Client Role Management
     // ========================================================================
-    function GetClientRolesByNameAsync(const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
-    function GetUserClientRolesByNameAsync(const AUserID: string; const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+    function GetClientRolesByClientIDAsync(const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
+    function GetUserClientRolesByClientIDAsync(const AUserID: string; const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
     function AssignClientRolesToUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
     function AssignClientRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
-    function RemoveClientRolesFromUserByNameAsync(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
-    function HasClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncPromise<Boolean>;
+    function RemoveClientRolesFromUserByClientIDAsync(const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+    function HasClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncPromise<Boolean>;
     function GetClientsAsync: IAsyncPromise<TIAM4DRealmClientArray>; overload;
-    function GetClientsAsync(const AClientName: string): IAsyncPromise<TIAM4DRealmClient>; overload;
+    function GetClientByClientIDAsync(const AClientID: string): IAsyncPromise<TIAM4DRealmClient>;
   end;
 
 implementation
@@ -447,21 +447,21 @@ begin
     end);
 end;
 
-function TIAM4DKeycloakUserManagerAsync.AssignClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
+function TIAM4DKeycloakUserManagerAsync.AssignClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 begin
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.AssignClientRoleByName(AUserID, AClientName, ARoleName);
+      FSyncManager.AssignClientRoleByClientID(AUserID, AClientID, ARoleName);
     end);
 end;
 
-function TIAM4DKeycloakUserManagerAsync.RemoveClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncVoidPromise;
+function TIAM4DKeycloakUserManagerAsync.RemoveClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 begin
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveClientRoleByName(AUserID, AClientName, ARoleName);
+      FSyncManager.RemoveClientRoleByClientID(AUserID, AClientID, ARoleName);
     end);
 end;
 
@@ -726,21 +726,21 @@ end;
 // Client Role Management
 // ============================================================================
 
-function TIAM4DKeycloakUserManagerAsync.GetClientRolesByNameAsync(const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+function TIAM4DKeycloakUserManagerAsync.GetClientRolesByClientIDAsync(const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 begin
   Result := TAsyncCore.New < TArray<TIAM4DRole> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
     begin
-      Result := FSyncManager.GetClientRolesByName(AClientName);
+      Result := FSyncManager.GetClientRolesByClientID(AClientID);
     end);
 end;
 
-function TIAM4DKeycloakUserManagerAsync.GetUserClientRolesByNameAsync(const AUserID: string; const AClientName: string): IAsyncPromise<TArray<TIAM4DRole>>;
+function TIAM4DKeycloakUserManagerAsync.GetUserClientRolesByClientIDAsync(const AUserID: string; const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 begin
   Result := TAsyncCore.New < TArray<TIAM4DRole> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
     begin
-      Result := FSyncManager.GetUserClientRolesByName(AUserID, AClientName);
+      Result := FSyncManager.GetUserClientRolesByClientID(AUserID, AClientID);
     end);
 end;
 
@@ -762,21 +762,21 @@ begin
     end);
 end;
 
-function TIAM4DKeycloakUserManagerAsync.RemoveClientRolesFromUserByNameAsync(const AUserID: string; const AClientName: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
+function TIAM4DKeycloakUserManagerAsync.RemoveClientRolesFromUserByClientIDAsync(const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 begin
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveClientRolesFromUserByName(AUserID, AClientName, ARoles);
+      FSyncManager.RemoveClientRolesFromUserByClientID(AUserID, AClientID, ARoles);
     end);
 end;
 
-function TIAM4DKeycloakUserManagerAsync.HasClientRoleByNameAsync(const AUserID: string; const AClientName: string; const ARoleName: string): IAsyncPromise<Boolean>;
+function TIAM4DKeycloakUserManagerAsync.HasClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncPromise<Boolean>;
 begin
   Result := TAsyncCore.New<Boolean>(
     function(const AOperation: IAsyncOperation): Boolean
     begin
-      Result := FSyncManager.HasClientRoleByName(AUserID, AClientName, ARoleName);
+      Result := FSyncManager.HasClientRoleByClientID(AUserID, AClientID, ARoleName);
     end);
 end;
 
@@ -789,12 +789,12 @@ begin
     end);
 end;
 
-function TIAM4DKeycloakUserManagerAsync.GetClientsAsync(const AClientName: string): IAsyncPromise<TIAM4DRealmClient>;
+function TIAM4DKeycloakUserManagerAsync.GetClientByClientIDAsync(const AClientID: string): IAsyncPromise<TIAM4DRealmClient>;
 begin
   Result := TAsyncCore.New<TIAM4DRealmClient>(
     function(const AOperation: IAsyncOperation): TIAM4DRealmClient
     begin
-      Result := FSyncManager.GetClients(AClientName);
+      Result := FSyncManager.GetClientByClientID(AClientID);
     end);
 end;
 
