@@ -117,7 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed DMVC authentication error handling when `RawWebResponse` is not assigned
 
 - **OAuth / HTTP request correctness**
-  - Fixed malformed `Authorization: Bearer` header generation in UserInfo requests. Thank's to LACH Christophe
+  - Fixed malformed `Authorization: Bearer` header generation in UserInfo requests. **Thank's to LACH Christophe**
   - Fixed stale bearer headers leaking across shared `THTTPClient` requests
 
 - **User Management behavior**
