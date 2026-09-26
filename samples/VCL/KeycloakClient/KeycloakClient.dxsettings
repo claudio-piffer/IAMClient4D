@@ -95,3 +95,8 @@
 		</AzureOpenAi>
 	</AI>
 </Reports>
+<SplashForms>
+	<Version>1.0.0</Version>
+	<ShowSplashFormOnStartup>false</ShowSplashFormOnStartup>
+	<Data/>
+</SplashForms>
