@@ -414,6 +414,8 @@ The tests (console suites for Win32, Win64 and Linux64, one against a real Keycl
 
 **Contributing**: issues and pull requests are welcome. In an issue give the Delphi, Keycloak and platform versions, a minimal example and the logs without tokens or secrets. In a pull request follow the style of the code, document the public API with `///` comments, and add tests to the suite of the area (`tests/`).
 
+**Contributors**: Claudio Piffer (author); [Claude Code](https://claude.com/claude-code) by Anthropic, AI pair programmer for code and security reviews, tests, samples and documentation.
+
 **Roadmap 3.1**:
 
 - persistent session storage;
