@@ -60,7 +60,7 @@ Every network call has a synchronous and an asynchronous version; errors are typ
 | Linux 64 bit | tested (test suites, DMVC servers) |
 | Android 64 bit | tested on a device (FMX IdentityBrokering sample) |
 | Android 32 bit | compiles |
-| iOS | compiles; device test pending |
+| iOS | tested on a device |
 | macOS (ARM 64) | compiles only |
 
 ### Installation
