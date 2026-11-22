@@ -11,6 +11,7 @@ object MainForm: TMainForm
   Font.Name = 'Segoe UI'
   Font.Style = []
   Position = poScreenCenter
+  OnCloseQuery = FormCloseQuery
   OnCreate = FormCreate
   OnDestroy = FormDestroy
   TextHeight = 15
@@ -94,7 +95,7 @@ object MainForm: TMainForm
           Height = 22
           Align = alClient
           TabOrder = 0
-          Text = 'https://192.168.0.24:28443/auth'
+          Text = 'http://localhost:18180/auth'
           ExplicitHeight = 23
         end
       end
@@ -158,7 +159,7 @@ object MainForm: TMainForm
           Height = 22
           Align = alClient
           TabOrder = 0
-          Text = 'demo_public'
+          Text = 'iam4d-sample-app'
           ExplicitHeight = 23
         end
       end
@@ -179,13 +180,23 @@ object MainForm: TMainForm
         TabOrder = 3
         object LoginButton: TButton
           AlignWithMargins = True
-          Left = 363
+          Left = 151
           Top = 3
           Width = 100
           Height = 36
           Action = LoginAction
           Align = alRight
           TabOrder = 0
+        end
+        object CancelLoginButton: TButton
+          AlignWithMargins = True
+          Left = 257
+          Top = 3
+          Width = 100
+          Height = 36
+          Action = CancelLoginAction
+          Align = alRight
+          TabOrder = 5
         end
         object UserInfoButton: TButton
           AlignWithMargins = True
@@ -199,13 +210,23 @@ object MainForm: TMainForm
         end
         object Button1: TButton
           AlignWithMargins = True
-          Left = 469
+          Left = 363
           Top = 3
           Width = 100
           Height = 36
           Action = LogoutAction
           Align = alRight
           TabOrder = 2
+        end
+        object RevokeButton: TButton
+          AlignWithMargins = True
+          Left = 469
+          Top = 3
+          Width = 100
+          Height = 36
+          Action = RevokeAction
+          Align = alRight
+          TabOrder = 6
         end
         object VerifyJWTButton: TButton
           AlignWithMargins = True
@@ -316,6 +337,43 @@ object MainForm: TMainForm
             'Enter the aud claim. Leave blank only to disable audience valida' +
             'tion for testing or legacy systems'
           ExplicitHeight = 23
+        end
+      end
+      object IdPPanel: TPanel
+        AlignWithMargins = True
+        Left = 3
+        Top = 121
+        Width = 940
+        Height = 22
+        Align = alTop
+        BevelOuter = bvNone
+        Caption = 'Panel1'
+        ShowCaption = False
+        TabOrder = 7
+        object IdPLabel: TLabel
+          AlignWithMargins = True
+          Left = 3
+          Top = 3
+          Width = 140
+          Height = 16
+          Align = alLeft
+          AutoSize = False
+          Caption = 'Identity provider'
+        end
+        object IdPComboBox: TComboBox
+          Left = 146
+          Top = 0
+          Width = 794
+          Height = 23
+          Align = alClient
+          TabOrder = 0
+          TextHint =
+            'Alias of the Keycloak identity provider (kc_idp_hint). Leave bla' +
+            'nk for the Keycloak login page'
+          Items.Strings = (
+            'entra'
+            'cie'
+            'spid-poste')
         end
       end
     end
@@ -493,6 +551,55 @@ object MainForm: TMainForm
           TabOrder = 5
         end
       end
+      object IdPButtonsPanel: TPanel
+        AlignWithMargins = True
+        Left = 8
+        Top = 126
+        Width = 930
+        Height = 42
+        Margins.Left = 8
+        Margins.Top = 0
+        Margins.Right = 8
+        Margins.Bottom = 0
+        Align = alTop
+        BevelOuter = bvNone
+        Caption = 'Panel2'
+        ShowCaption = False
+        TabOrder = 4
+        object IdPListButton: TButton
+          AlignWithMargins = True
+          Left = 3
+          Top = 3
+          Width = 150
+          Height = 36
+          Action = IdPListAction
+          Align = alLeft
+          TabOrder = 0
+          WordWrap = True
+        end
+        object IdPSaveEntraButton: TButton
+          AlignWithMargins = True
+          Left = 159
+          Top = 3
+          Width = 150
+          Height = 36
+          Action = IdPSaveEntraAction
+          Align = alLeft
+          TabOrder = 1
+          WordWrap = True
+        end
+        object IdPDeleteButton: TButton
+          AlignWithMargins = True
+          Left = 315
+          Top = 3
+          Width = 150
+          Height = 36
+          Action = IdPDeleteAction
+          Align = alLeft
+          TabOrder = 2
+          WordWrap = True
+        end
+      end
       object Panel13: TPanel
         AlignWithMargins = True
         Left = 8
@@ -633,7 +740,7 @@ object MainForm: TMainForm
           Height = 22
           Align = alClient
           TabOrder = 0
-          Text = 'https://192.168.0.24:28443/auth'
+          Text = 'http://localhost:18180/auth'
           ExplicitHeight = 23
         end
       end
@@ -760,7 +867,7 @@ object MainForm: TMainForm
           Height = 22
           Align = alClient
           TabOrder = 0
-          Text = 'demo_private'
+          Text = 'iam4d-sample-service'
           ExplicitHeight = 23
         end
       end
@@ -792,13 +899,16 @@ object MainForm: TMainForm
           Height = 22
           Align = alClient
           TabOrder = 0
-          Text = 'bdgwQwFXP4x5X2dDv9BkgmKV3cqFe5Or'
+          TextHint =
+            'Client secret of iam4d-sample-service: iam4d-test-only-secret (D' +
+            'ocker/README.md)'
           ExplicitHeight = 23
         end
       end
     end
   end
   object ActionList1: TActionList
+    OnUpdate = ActionList1Update
     Left = 24
     Top = 592
     object LogoutAction: TAction
@@ -806,6 +916,13 @@ object MainForm: TMainForm
       Caption = 'Logout'
       OnExecute = LogoutActionExecute
       OnUpdate = LogoutActionUpdate
+    end
+    object RevokeAction: TAction
+      Category = 'PKCE'
+      Caption = 'Revoke'
+      Hint = 'Revoke the tokens of this client (RFC 7009)'
+      OnExecute = RevokeActionExecute
+      OnUpdate = RevokeActionUpdate
     end
     object UserInfoAction: TAction
       Category = 'PKCE'
@@ -824,6 +941,12 @@ object MainForm: TMainForm
       Caption = 'Login'
       OnExecute = LoginActionExecute
       OnUpdate = LoginActionUpdate
+    end
+    object CancelLoginAction: TAction
+      Category = 'PKCE'
+      Caption = 'Cancel login'
+      OnExecute = CancelLoginActionExecute
+      OnUpdate = CancelLoginActionUpdate
     end
     object AccessTokenAsyncAction: TAction
       Category = 'PKCE'
@@ -955,6 +1078,24 @@ object MainForm: TMainForm
       Caption = 'User federated'
       OnExecute = UserFederatedActionExecute
       OnUpdate = UserFederatedActionUpdate
+    end
+    object IdPListAction: TAction
+      Category = 'Identity Provider Samples'
+      Caption = 'Identity providers'
+      OnExecute = IdPListActionExecute
+      OnUpdate = IdPActionUpdate
+    end
+    object IdPSaveEntraAction: TAction
+      Category = 'Identity Provider Samples'
+      Caption = 'Save Entra ID provider...'
+      OnExecute = IdPSaveEntraActionExecute
+      OnUpdate = IdPActionUpdate
+    end
+    object IdPDeleteAction: TAction
+      Category = 'Identity Provider Samples'
+      Caption = 'Delete identity provider...'
+      OnExecute = IdPDeleteActionExecute
+      OnUpdate = IdPActionUpdate
     end
   end
 end

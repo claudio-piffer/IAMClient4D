@@ -133,7 +133,7 @@ type
     Roles: TArray<string>;
 
     /// <summary>
-    /// Scopes array normalized from 'scope' (OAuth2 standard).
+    /// Scopes array normalized from 'scope' (OAuth2 standard), or 'scp' (Microsoft Entra ID) without it.
     /// </summary>
     Scopes: TArray<string>;
 
@@ -162,27 +162,27 @@ type
     function IsNotYetValid: Boolean;
 
     /// <summary>
-    /// Checks if user has specific role (case-insensitive).
+    /// Checks if user has specific role (case-sensitive).
     /// </summary>
     function HasRole(const ARole: string): Boolean;
 
     /// <summary>
-    /// Checks if user has ANY of the specified roles (case-insensitive).
+    /// Checks if user has ANY of the specified roles (case-sensitive).
     /// </summary>
     function HasAnyRole(const ARoles: TArray<string>): Boolean;
 
     /// <summary>
-    /// Checks if user has ALL of the specified roles (case-insensitive).
+    /// Checks if user has ALL of the specified roles (case-sensitive).
     /// </summary>
     function HasAllRoles(const ARoles: TArray<string>): Boolean;
 
     /// <summary>
-    /// Checks if user has specific scope (case-insensitive).
+    /// Checks if user has specific scope (case-sensitive).
     /// </summary>
     function HasScope(const AScope: string): Boolean;
 
     /// <summary>
-    /// Checks if specific authentication method was used (case-insensitive).
+    /// Checks if specific authentication method was used (case-sensitive).
     /// Use RFC 8176 values: 'pwd', 'user', 'hwk', 'swk', 'otp', 'mfa', etc.
     /// </summary>
     function HasAuthMethod(const AMethod: string): Boolean;
@@ -299,9 +299,10 @@ begin
   LArray := JsonGetArray(Obj, Name);
   if not Assigned(LArray) then
     Exit;
-  SetLength(Result, LArray.Count);
+  // Strings only: null, numbers or objects in the array are not names
   for LIndex := 0 to LArray.Count - 1 do
-    Result[LIndex] := LArray.Items[LIndex].Value;
+    if LArray.Items[LIndex] is TJSONString then
+      Result := Result + [TJSONString(LArray.Items[LIndex]).Value];
 end;
 
 function JsonGetString(const Obj: TJSONObject; const Name: string; const Default: string = ''): string;
@@ -312,8 +313,9 @@ begin
   if not Assigned(Obj) then
     Exit;
   LValue := Obj.Values[Name];
-  if Assigned(LValue) then
-    Result := LValue.Value;
+  // A string claim only: TJSONNull.Value is 'null', a number would become its text
+  if LValue is TJSONString then
+    Result := TJSONString(LValue).Value;
 end;
 
 function JsonGetBoolean(const Obj: TJSONObject; const Name: string; const Default: Boolean = False): Boolean;
@@ -383,7 +385,7 @@ begin
   if ExpirationTime <= 0 then
     Exit(False);
 
-  LNowUTC := TTimeZone.Local.ToUniversalTime(Now);
+  LNowUTC := TDateTime.NowUTC;
   Result := LNowUTC > ExpirationTime;
 end;
 
@@ -394,7 +396,7 @@ begin
   if NotBeforeTime <= 0 then
     Exit(False);
 
-  LNowUTC := TTimeZone.Local.ToUniversalTime(Now);
+  LNowUTC := TDateTime.NowUTC;
   Result := LNowUTC < NotBeforeTime;
 end;
 
@@ -407,7 +409,7 @@ begin
 
   for LIndex := 0 to High(Roles) do
   begin
-    if CompareText(Roles[LIndex], ARole) = 0 then
+    if Roles[LIndex] = ARole then
       Exit(True);
   end;
 
@@ -425,7 +427,7 @@ begin
   begin
     for LIndexB := 0 to High(Roles) do
     begin
-      if CompareText(Roles[LIndexB], ARoles[LIndexA]) = 0 then
+      if Roles[LIndexB] = ARoles[LIndexA] then
         Exit(True);
     end;
   end;
@@ -450,7 +452,7 @@ begin
 
     for LIndexB := 0 to High(Roles) do
     begin
-      if CompareText(Roles[LIndexB], ARoles[LIndexA]) = 0 then
+      if Roles[LIndexB] = ARoles[LIndexA] then
       begin
         LFound := True;
         Break;
@@ -473,7 +475,7 @@ begin
 
   for LIndex := 0 to High(Scopes) do
   begin
-    if CompareText(Scopes[LIndex], AScope) = 0 then
+    if Scopes[LIndex] = AScope then
       Exit(True);
   end;
 
@@ -489,7 +491,7 @@ begin
 
   for LIndex := 0 to High(Amr) do
   begin
-    if CompareText(Amr[LIndex], AMethod) = 0 then
+    if Amr[LIndex] = AMethod then
       Exit(True);
   end;
 
@@ -509,7 +511,7 @@ begin
 
   for LMethod in Amr do
     for LPasskeyMethod in PASSKEY_AMR_VALUES do
-      if CompareText(LMethod, LPasskeyMethod) = 0 then
+      if LMethod = LPasskeyMethod then
         Exit(True);
 end;
 
@@ -635,15 +637,15 @@ begin
   LAudArr := JsonGetArray(Payload, 'aud');
   if Assigned(LAudArr) then
   begin
-    SetLength(Result.Audience, LAudArr.Count);
     for LIndex := 0 to LAudArr.Count - 1 do
-      Result.Audience[LIndex] := LAudArr.Items[LIndex].Value;
+      if LAudArr.Items[LIndex] is TJSONString then
+        Result.Audience := Result.Audience + [TJSONString(LAudArr.Items[LIndex]).Value];
   end
   else
   begin
     LAudVal := Payload.Values['aud'];
-    if Assigned(LAudVal) then
-      Result.Audience := TArray<string>.Create(LAudVal.Value);
+    if LAudVal is TJSONString then
+      Result.Audience := TArray<string>.Create(TJSONString(LAudVal).Value);
   end;
 
   Result.Roles := JsonGetArrayOfStrings(Payload, 'roles');
@@ -653,6 +655,16 @@ begin
     Result.Scopes := SplitScopes(LScopeStr)
   else
     Result.Scopes := JsonGetArrayOfStrings(Payload, 'scope');
+
+  // Microsoft Entra ID writes the delegated scopes in 'scp' (a string, space separated)
+  if Length(Result.Scopes) = 0 then
+  begin
+    LScopeStr := JsonGetString(Payload, 'scp');
+    if not LScopeStr.IsEmpty then
+      Result.Scopes := SplitScopes(LScopeStr)
+    else
+      Result.Scopes := JsonGetArrayOfStrings(Payload, 'scp');
+  end;
 
   Result.Amr := JsonGetArrayOfStrings(Payload, 'amr');
 end;
@@ -666,7 +678,7 @@ begin
 
   for LIndex := 0 to High(Roles) do
   begin
-    if CompareText(Roles[LIndex], ARole) = 0 then
+    if Roles[LIndex] = ARole then
       Exit(True);
   end;
 
@@ -684,7 +696,7 @@ begin
   begin
     for LindexB := 0 to High(Roles) do
     begin
-      if CompareText(Roles[LindexB], ARoles[LIndexA]) = 0 then
+      if Roles[LindexB] = ARoles[LIndexA] then
         Exit(True);
     end;
   end;
@@ -717,7 +729,7 @@ begin
 
   for LIndex := 0 to High(Roles) do
   begin
-    if CompareText(Roles[LIndex], ARole) = 0 then
+    if Roles[LIndex] = ARole then
       Exit(True);
   end;
 
@@ -735,7 +747,7 @@ begin
   begin
     for LIndexB := 0 to High(Roles) do
     begin
-      if CompareText(Roles[LIndexB], ARoles[LIndexA]) = 0 then
+      if Roles[LIndexB] = ARoles[LIndexA] then
         Exit(True);
     end;
   end;
@@ -775,7 +787,8 @@ begin
 
   for LIndex := 0 to High(ResourceAccess) do
   begin
-    if CompareText(ResourceAccess[LIndex].ClientID, AClientID) = 0 then
+    // Client IDs are case-sensitive in Keycloak
+    if ResourceAccess[LIndex].ClientID = AClientID then
       Exit(ResourceAccess[LIndex]);
   end;
 
@@ -792,7 +805,7 @@ begin
 
   for LIndex := 0 to High(Groups) do
   begin
-    if CompareText(Groups[LIndex], AGroup) = 0 then
+    if Groups[LIndex] = AGroup then
       Exit(True);
   end;
 
@@ -805,7 +818,7 @@ var
   LRole: string;
   LAccess: TIAM4DKeycloakClientAccess;
 begin
-  LRoleSet := TDictionary<string, Boolean>.Create(CaseInsensitiveComparer);
+  LRoleSet := TDictionary<string, Boolean>.Create;
   try
     for LRole in RealmAccess.Roles do
       if not LRoleSet.ContainsKey(LRole) then
@@ -828,7 +841,7 @@ var
   LRole: string;
   LClientAccess: TIAM4DKeycloakClientAccess;
 begin
-  LRoleSet := TDictionary<string, Boolean>.Create(CaseInsensitiveComparer);
+  LRoleSet := TDictionary<string, Boolean>.Create;
   try
     for LRole in RealmAccess.Roles do
       if not LRoleSet.ContainsKey(LRole) then
@@ -930,9 +943,10 @@ begin
   begin
     for LPair in LResObj do
     begin
-      LClientObj := LPair.JsonValue as TJSONObject;
-      if not Assigned(LClientObj) then
+      // A value that is not an object (string, null, array) is skipped: "as" would raise EInvalidCast
+      if not (LPair.JsonValue is TJSONObject) then
         Continue;
+      LClientObj := TJSONObject(LPair.JsonValue);
 
       LRoles := JsonGetArrayOfStrings(LClientObj, 'roles');
       if Length(LRoles) = 0 then

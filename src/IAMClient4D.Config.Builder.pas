@@ -44,9 +44,10 @@ type
   /// Fluent builder for IAM client configuration.
   /// </summary>
   /// <remarks>
-  /// Usage: Call ForAuthorizationCode() or ForClientCredentials() first to initialize.
-  /// Chain With* methods to configure options, then call Build/BuildAsync/BuildAndWait.
-  /// Default storage: AES-256-GCM with auto-generated key.
+  /// Usage: Call ForAuthorizationCode(), ForClientCredentials() or ForPassword() first to initialize.
+  /// Chain With* methods to configure options, then call Build or BuildAsync.
+  /// Default storage: AES-256 encrypted in memory with auto-generated key (AES-256-CBC + HMAC-SHA256
+  /// with LockBox3, the default provider; AES-256-GCM with TMS or TaurusTLS).
   /// </remarks>
   IIAM4DClientConfigBuilder = interface
     ['{436CC253-634B-452D-9471-B2EA31105C51}']
@@ -60,18 +61,33 @@ type
     /// <summary>
     /// Configures for Authorization Code flow
     /// </summary>
-    function ForAuthorizationCode(const ABaseURL, ARealm, AClientID: string): IIAM4DClientConfigBuilder;
+    /// <remarks>
+    /// AClientSecret: empty for a public client (recommended for desktop apps: PKCE protects the code).
+    /// </remarks>
+    function ForAuthorizationCode(const ABaseURL, ARealm, AClientID: string;
+      const AClientSecret: string = ''): IIAM4DClientConfigBuilder;
     /// <summary>
     /// Configures for Client Credentials flow
     /// </summary>
     function ForClientCredentials(const ABaseURL, ARealm, AClientID, AClientSecret: string): IIAM4DClientConfigBuilder;
+    /// <summary>
+    /// Configures for the Resource Owner Password Credentials flow (AuthenticatePassword)
+    /// </summary>
+    /// <remarks>
+    /// Keycloak: "Direct access grants" must be enabled on the client. AClientSecret: empty for a public client.
+    /// </remarks>
+    function ForPassword(const ABaseURL, ARealm, AClientID: string;
+      const AClientSecret: string = ''): IIAM4DClientConfigBuilder;
 
     /// <summary>
-    /// Uses AES-256-GCM encrypted storage with auto-generated key
+    /// Uses AES-256 encrypted in-memory storage with auto-generated key, through the compiled storage
+    /// crypto provider: AES-256-CBC + HMAC-SHA256 with LockBox3 (default), AES-256-GCM with TMS or TaurusTLS
     /// </summary>
     function WithIAMClient4DAESStorage: IIAM4DClientConfigBuilder; overload;
     /// <summary>
-    /// Uses AES-256-GCM encrypted storage with provided key
+    /// Uses AES-256 encrypted in-memory storage with the provided 32-byte key and optional AAD, through the
+    /// compiled storage crypto provider: AES-256-CBC + HMAC-SHA256 with LockBox3 (default), AES-256-GCM with
+    /// TMS or TaurusTLS
     /// </summary>
     function WithIAMClient4DAESStorage(const AKey32: TBytes; const AAAD: TBytes = nil): IIAM4DClientConfigBuilder; overload;
     /// <summary>
@@ -90,6 +106,16 @@ type
     function WithExternalCallback(const ACallbackURL: string): IIAM4DClientConfigBuilder;
 
     /// <summary>
+    /// Uses a redirect on a private-use URI scheme (RFC 8252 7.1) for Authorization Code flow in mobile apps
+    /// </summary>
+    /// <remarks>
+    /// e.g. com.example.app:/oauth2callback. The app passes the URL it receives to TIAM4DAppRedirect.HandleURL.
+    /// </remarks>
+    /// <exception cref="EInvalidOpException">Not an Authorization Code client</exception>
+    /// <exception cref="EArgumentException">Invalid redirect URI (see TIAM4DAppRedirectCallbackHandler.IsValidRedirectURI)</exception>
+    function WithAppRedirect(const ARedirectURI: string): IIAM4DClientConfigBuilder;
+
+    /// <summary>
     /// Enables strict SSL validation
     /// </summary>
     function WithStrictSSL: IIAM4DClientConfigBuilder;
@@ -98,13 +124,19 @@ type
     /// </summary>
     function WithAllowSelfSignedSSL: IIAM4DClientConfigBuilder;
     /// <summary>
-    /// Sets pinned public key hashes for certificate pinning
+    /// Sets pinned public key hashes for certificate pinning, checked in both SSL modes on every
+    /// request of the client (JWKS included): see TIAM4DSSLCertificateValidator for the hash.
+    /// Build raises ENotSupportedException on Linux
     /// </summary>
     function WithPinnedPublicKeys(const APublicKeyHashes: TArray<string>): IIAM4DClientConfigBuilder;
 
     /// <summary>
     /// Sets connection and response timeouts in milliseconds
     /// </summary>
+    /// <remarks>
+    /// AResponseTimeoutMs bounds each whole request of the client (discovery, token, user info, logout):
+    /// past it EIAM4DNetworkTimeoutException. Build waits for the discovery as long as it takes.
+    /// </remarks>
     function WithTimeouts(const AConnectionTimeoutMs, AResponseTimeoutMs: Integer): IIAM4DClientConfigBuilder;
 
     /// <summary>
@@ -118,6 +150,59 @@ type
     /// Example: WithAcrValues([IAM4D_ACR_PASSKEY]) to require passkey authentication.
     /// </summary>
     function WithAcrValues(const AValues: TArray<string>): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Logs in through the given Keycloak identity provider (kc_idp_hint): Keycloak skips its
+    /// login page and redirects to it. Example: WithIdentityProvider('entra').
+    /// StartAuthorizationFlowAsync(AIdpHint) overrides it for a single login
+    /// (IAM4D_IDP_HINT_NONE: Keycloak login page).
+    /// </summary>
+    function WithIdentityProvider(const AAlias: string): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Sends prompt in the authorization request. Example: WithPrompt(IAM4D_PROMPT_LOGIN) asks for
+    /// the credentials even when the browser has an active Keycloak session.
+    /// </summary>
+    function WithPrompt(const APrompt: string): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Sends max_age in the authorization request: seconds allowed since the last active
+    /// authentication; 0 forces a new one. The id_token then carries auth_time.
+    /// </summary>
+    function WithMaxAge(const ASeconds: Integer): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Sends kc_action in the authorization request: Keycloak runs that required action after the
+    /// login. Example: WithKeycloakAction(IAM4D_KC_ACTION_UPDATE_PASSWORD) shows the change-password
+    /// page. The outcome is IIAM4DClient.KeycloakActionStatus.
+    /// </summary>
+    function WithKeycloakAction(const AAction: string): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Fixed port of the local callback server (default 0: free port chosen by the system).
+    /// Needed when the client accepts only exact redirect URIs.
+    /// </summary>
+    function WithCallbackPort(const APort: Integer): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// What the app does when the browser redirects to the local callback server: aaNone (default),
+    /// aaFlash (taskbar button flashes) or aaForeground (window to the foreground). Windows only.
+    /// </summary>
+    function WithAppActivation(const AValue: TIAM4DAppActivation): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Host of the redirect URI of the local callback server: lrhLocalhost (default,
+    /// http://localhost:port/...) or lrhLoopbackIP (http://127.0.0.1:port/..., RFC 8252 8.3).
+    /// The redirect URI registered in Keycloak must use the same host.
+    /// </summary>
+    function WithLoopbackRedirectHost(const AValue: TIAM4DLoopbackRedirectHost): IIAM4DClientConfigBuilder;
+
+    /// <summary>
+    /// Accepts plain HTTP to a host other than the loopback for BaseURL and the external or app
+    /// redirect URL. Without it, Build refuses such a configuration: code, tokens and credentials
+    /// would travel in clear text. Test environments only (e.g. Keycloak on the LAN for a phone).
+    /// </summary>
+    function WithAllowInsecureHTTP(const AValue: Boolean = True): IIAM4DClientConfigBuilder;
 
     /// <summary>
     /// Builds and configures the client synchronously
@@ -145,15 +230,25 @@ type
     FStorageType: TIAM4DStorageType;
     FStorageKey32: TBytes;
     FStorageAAD: TBytes;
-    FStoragePassword: string;
     FCustomStorage: IIAM4DTokenStorage;
 
     FCallbackMode: TIAM4DCallbackMode;
 
     FPinnedPublicKeys: TArray<string>;
-    FAcrValues: TArray<string>;
 
     procedure EnsureConfigInitialized;
+    /// <summary>
+    /// Recreates FConfig with the given values, keeping grant type, client, secret, prompt,
+    /// max_age and callback port. ACR values and identity provider apply to Authorization Code only
+    /// </summary>
+    procedure RebuildConfig(
+      const AScopes: TArray<string>;
+      const ASSLValidationMode: TIAM4DSSLValidationMode;
+      const AConnectionTimeout, AResponseTimeout: Integer;
+      const AExternalCallbackURL: string;
+      const ATokenExpiryBufferSeconds: Integer;
+      const AAcrValues: TArray<string>;
+      const AIdpHint: string);
     function CreateStorage: IIAM4DTokenStorage;
     procedure ConfigureClientOrFail(const AClient: IIAM4DClient; const AConfig: TIAM4DClientConfig);
     procedure ValidateBeforeBuild;
@@ -166,11 +261,17 @@ type
     class function New: IIAM4DClientConfigBuilder;
 
     function ForAuthorizationCode(
-      const ABaseURL, ARealm, AClientID: string
+      const ABaseURL, ARealm, AClientID: string;
+      const AClientSecret: string = ''
       ): IIAM4DClientConfigBuilder;
 
     function ForClientCredentials(
       const ABaseURL, ARealm, AClientID, AClientSecret: string
+      ): IIAM4DClientConfigBuilder;
+
+    function ForPassword(
+      const ABaseURL, ARealm, AClientID: string;
+      const AClientSecret: string = ''
       ): IIAM4DClientConfigBuilder;
 
     function WithIAMClient4DAESStorage: IIAM4DClientConfigBuilder; overload;
@@ -182,6 +283,8 @@ type
     function WithScopes(const AScopes: TArray<string>): IIAM4DClientConfigBuilder;
 
     function WithExternalCallback(const ACallbackURL: string): IIAM4DClientConfigBuilder;
+
+    function WithAppRedirect(const ARedirectURI: string): IIAM4DClientConfigBuilder;
 
     function WithStrictSSL: IIAM4DClientConfigBuilder;
 
@@ -195,6 +298,22 @@ type
 
     function WithAcrValues(const AValues: TArray<string>): IIAM4DClientConfigBuilder;
 
+    function WithIdentityProvider(const AAlias: string): IIAM4DClientConfigBuilder;
+
+    function WithPrompt(const APrompt: string): IIAM4DClientConfigBuilder;
+
+    function WithMaxAge(const ASeconds: Integer): IIAM4DClientConfigBuilder;
+
+    function WithKeycloakAction(const AAction: string): IIAM4DClientConfigBuilder;
+
+    function WithCallbackPort(const APort: Integer): IIAM4DClientConfigBuilder;
+
+    function WithAppActivation(const AValue: TIAM4DAppActivation): IIAM4DClientConfigBuilder;
+
+    function WithLoopbackRedirectHost(const AValue: TIAM4DLoopbackRedirectHost): IIAM4DClientConfigBuilder;
+
+    function WithAllowInsecureHTTP(const AValue: Boolean = True): IIAM4DClientConfigBuilder;
+
     function BuildAsync: IAsyncPromise<IIAM4DClient>;
 
     function Build: IIAM4DClient;
@@ -206,6 +325,8 @@ implementation
 
 uses
   IAMClient4D.Common.CryptoUtils,
+  IAMClient4D.Common.SecureMemory,
+  IAMClient4D.Callback.Handler.AppRedirect,
   IAMClient4D.Keycloak,
   IAMClient4D.Storage.AESMemoryTokenStorage,
   IAMClient4D.Exceptions;
@@ -226,11 +347,9 @@ begin
   LBuilder.FStorageType := stIAMClient4DAES;
   LBuilder.FCallbackMode := cbmLocalServer;
   LBuilder.FCustomStorage := nil;
-  LBuilder.FStoragePassword := '';
   SetLength(LBuilder.FStorageKey32, 0);
   SetLength(LBuilder.FStorageAAD, 0);
   SetLength(LBuilder.FPinnedPublicKeys, 0);
-  SetLength(LBuilder.FAcrValues, 0);
   Result := LBuilder;
 end;
 
@@ -248,7 +367,6 @@ begin
     SetLength(FStorageAAD, 0);
   end;
 
-  FStoragePassword := '';
   FCustomStorage := nil;
 
   inherited;
@@ -258,16 +376,20 @@ procedure TIAM4DClientConfigBuilder.EnsureConfigInitialized;
 begin
   if not FConfigInitialized then
     raise EArgumentException.Create(
-      'Configuration not initialized. Call ForAuthorizationCode() or ForClientCredentials() first.');
+      'Configuration not initialized. Call ForAuthorizationCode(), ForClientCredentials() or ForPassword() first.');
 end;
 
 function TIAM4DClientConfigBuilder.ForAuthorizationCode(
-  const ABaseURL, ARealm, AClientID: string): IIAM4DClientConfigBuilder;
+  const ABaseURL, ARealm, AClientID: string;
+  const AClientSecret: string): IIAM4DClientConfigBuilder;
 begin
-  FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
+  FConfig := TIAM4DClientConfig.Create(
     ABaseURL,
     ARealm,
-    AClientID);
+    AClientID,
+    gtAuthorizationCode,
+    nil,
+    AClientSecret);
 
   FConfigInitialized := True;
   FCallbackMode := cbmLocalServer;
@@ -284,7 +406,83 @@ begin
     AClientSecret);
 
   FConfigInitialized := True;
+  FCallbackMode := cbmLocalServer;
   Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.ForPassword(
+  const ABaseURL, ARealm, AClientID: string;
+  const AClientSecret: string): IIAM4DClientConfigBuilder;
+begin
+  FConfig := TIAM4DClientConfig.CreateForPassword(
+    ABaseURL,
+    ARealm,
+    AClientID,
+    AClientSecret);
+
+  FConfigInitialized := True;
+  FCallbackMode := cbmLocalServer;
+  Result := Self;
+end;
+
+procedure TIAM4DClientConfigBuilder.RebuildConfig(
+  const AScopes: TArray<string>;
+  const ASSLValidationMode: TIAM4DSSLValidationMode;
+  const AConnectionTimeout, AResponseTimeout: Integer;
+  const AExternalCallbackURL: string;
+  const ATokenExpiryBufferSeconds: Integer;
+  const AAcrValues: TArray<string>;
+  const AIdpHint: string);
+var
+  LAcrValues: TArray<string>;
+  LIdpHint: string;
+  LPrompt: string;
+  LMaxAge: Integer;
+  LKeycloakAction: string;
+  LCallbackPort: Integer;
+  LAppActivation: TIAM4DAppActivation;
+  LLoopbackRedirectHost: TIAM4DLoopbackRedirectHost;
+  LAllowInsecureHTTP: Boolean;
+begin
+  // ACR values and identity provider need the authorization endpoint
+  if FConfig.GrantType = gtAuthorizationCode then
+  begin
+    LAcrValues := AAcrValues;
+    LIdpHint := AIdpHint;
+  end
+  else
+  begin
+    LAcrValues := nil;
+    LIdpHint := '';
+  end;
+  LPrompt := FConfig.Prompt;
+  LMaxAge := FConfig.MaxAge;
+  LKeycloakAction := FConfig.KeycloakAction;
+  LCallbackPort := FConfig.CallbackPort;
+  LAppActivation := FConfig.AppActivation;
+  LLoopbackRedirectHost := FConfig.LoopbackRedirectHost;
+  LAllowInsecureHTTP := FConfig.AllowInsecureHTTP;
+
+  FConfig := TIAM4DClientConfig.Create(
+    FConfig.BaseURL,
+    FConfig.Realm,
+    FConfig.ClientID,
+    FConfig.GrantType,
+    AScopes,
+    FConfig.ClientSecret,
+    ASSLValidationMode,
+    AConnectionTimeout,
+    AResponseTimeout,
+    AExternalCallbackURL,
+    ATokenExpiryBufferSeconds,
+    LAcrValues,
+    LIdpHint)
+    .WithAuthRequestOptions(LPrompt, LMaxAge)
+    .WithKeycloakAction(LKeycloakAction)
+    .WithCallbackPort(LCallbackPort)
+    .WithAppActivation(LAppActivation)
+    .WithLoopbackRedirectHost(LLoopbackRedirectHost)
+    .WithAllowInsecureHTTP(LAllowInsecureHTTP);
 end;
 
 function TIAM4DClientConfigBuilder.WithIAMClient4DAESStorage: IIAM4DClientConfigBuilder;
@@ -324,32 +522,15 @@ function TIAM4DClientConfigBuilder.WithScopes(const AScopes: TArray<string>): II
 begin
   EnsureConfigInitialized;
 
-  if FConfig.GrantType = gtAuthorizationCode then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      AScopes,
-      FConfig.SSLValidationMode,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout,
-      FConfig.ExternalCallbackURL,
-      FConfig.TokenExpiryBufferSeconds,
-      FAcrValues);
-  end
-  else if FConfig.GrantType = gtClientCredentials then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.ClientSecret,
-      AScopes,
-      FConfig.SSLValidationMode,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout);
-  end;
+  RebuildConfig(
+    AScopes,
+    FConfig.SSLValidationMode,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    FConfig.ExternalCallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FConfig.AcrValues,
+    FConfig.IdpHint);
 
   Result := Self;
 end;
@@ -366,17 +547,42 @@ begin
 
   FCallbackMode := cbmExternal;
 
-  FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-    FConfig.BaseURL,
-    FConfig.Realm,
-    FConfig.ClientID,
+  RebuildConfig(
     FConfig.Scopes,
     FConfig.SSLValidationMode,
     FConfig.ConnectionTimeout,
     FConfig.ResponseTimeout,
     ACallbackURL,
     FConfig.TokenExpiryBufferSeconds,
-    FAcrValues);
+    FConfig.AcrValues,
+    FConfig.IdpHint);
+
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithAppRedirect(const ARedirectURI: string): IIAM4DClientConfigBuilder;
+var
+  LError: string;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('App redirect is only for Authorization Code flow');
+
+  if not TIAM4DAppRedirectCallbackHandler.IsValidRedirectURI(ARedirectURI, LError) then
+    raise EArgumentException.Create(LError);
+
+  FCallbackMode := cbmAppRedirect;
+
+  RebuildConfig(
+    FConfig.Scopes,
+    FConfig.SSLValidationMode,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    ARedirectURI,
+    FConfig.TokenExpiryBufferSeconds,
+    FConfig.AcrValues,
+    FConfig.IdpHint);
 
   Result := Self;
 end;
@@ -385,32 +591,15 @@ function TIAM4DClientConfigBuilder.WithStrictSSL: IIAM4DClientConfigBuilder;
 begin
   EnsureConfigInitialized;
 
-  if FConfig.GrantType = gtAuthorizationCode then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.Scopes,
-      svmStrict,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout,
-      FConfig.ExternalCallbackURL,
-      FConfig.TokenExpiryBufferSeconds,
-      FAcrValues);
-  end
-  else if FConfig.GrantType = gtClientCredentials then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.ClientSecret,
-      FConfig.Scopes,
-      svmStrict,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout);
-  end;
+  RebuildConfig(
+    FConfig.Scopes,
+    svmStrict,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    FConfig.ExternalCallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FConfig.AcrValues,
+    FConfig.IdpHint);
 
   Result := Self;
 end;
@@ -419,32 +608,15 @@ function TIAM4DClientConfigBuilder.WithAllowSelfSignedSSL: IIAM4DClientConfigBui
 begin
   EnsureConfigInitialized;
 
-  if FConfig.GrantType = gtAuthorizationCode then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.Scopes,
-      svmAllowSelfSigned,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout,
-      FConfig.ExternalCallbackURL,
-      FConfig.TokenExpiryBufferSeconds,
-      FAcrValues);
-  end
-  else if FConfig.GrantType = gtClientCredentials then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.ClientSecret,
-      FConfig.Scopes,
-      svmAllowSelfSigned,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout);
-  end;
+  RebuildConfig(
+    FConfig.Scopes,
+    svmAllowSelfSigned,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    FConfig.ExternalCallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FConfig.AcrValues,
+    FConfig.IdpHint);
 
   Result := Self;
 end;
@@ -465,32 +637,15 @@ begin
   if AResponseTimeoutMs <= 0 then
     raise EArgumentOutOfRangeException.Create('Response timeout must be > 0');
 
-  if FConfig.GrantType = gtAuthorizationCode then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.Scopes,
-      FConfig.SSLValidationMode,
-      AConnectionTimeoutMs,
-      AResponseTimeoutMs,
-      FConfig.ExternalCallbackURL,
-      FConfig.TokenExpiryBufferSeconds,
-      FAcrValues);
-  end
-  else if FConfig.GrantType = gtClientCredentials then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.ClientSecret,
-      FConfig.Scopes,
-      FConfig.SSLValidationMode,
-      AConnectionTimeoutMs,
-      AResponseTimeoutMs);
-  end;
+  RebuildConfig(
+    FConfig.Scopes,
+    FConfig.SSLValidationMode,
+    AConnectionTimeoutMs,
+    AResponseTimeoutMs,
+    FConfig.ExternalCallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FConfig.AcrValues,
+    FConfig.IdpHint);
 
   Result := Self;
 end;
@@ -502,33 +657,15 @@ begin
   if ABufferSeconds < 0 then
     raise EArgumentOutOfRangeException.Create('Token expiry buffer cannot be negative');
 
-  if FConfig.GrantType = gtAuthorizationCode then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.Scopes,
-      FConfig.SSLValidationMode,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout,
-      FConfig.ExternalCallbackURL,
-      ABufferSeconds,
-      FAcrValues);
-  end
-  else if FConfig.GrantType = gtClientCredentials then
-  begin
-    FConfig := TIAM4DClientConfig.CreateForClientCredentials(
-      FConfig.BaseURL,
-      FConfig.Realm,
-      FConfig.ClientID,
-      FConfig.ClientSecret,
-      FConfig.Scopes,
-      FConfig.SSLValidationMode,
-      FConfig.ConnectionTimeout,
-      FConfig.ResponseTimeout,
-      ABufferSeconds);
-  end;
+  RebuildConfig(
+    FConfig.Scopes,
+    FConfig.SSLValidationMode,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    FConfig.ExternalCallbackURL,
+    ABufferSeconds,
+    FConfig.AcrValues,
+    FConfig.IdpHint);
 
   Result := Self;
 end;
@@ -540,21 +677,113 @@ begin
   if FConfig.GrantType <> gtAuthorizationCode then
     raise EInvalidOpException.Create('ACR values are only applicable for Authorization Code flow');
 
-  FAcrValues := Copy(AValues);
-
-  // Recreate config with new ACR values
-  FConfig := TIAM4DClientConfig.CreateForAuthorizationCode(
-    FConfig.BaseURL,
-    FConfig.Realm,
-    FConfig.ClientID,
+  RebuildConfig(
     FConfig.Scopes,
     FConfig.SSLValidationMode,
     FConfig.ConnectionTimeout,
     FConfig.ResponseTimeout,
     FConfig.ExternalCallbackURL,
     FConfig.TokenExpiryBufferSeconds,
-    FAcrValues);
+    AValues,
+    FConfig.IdpHint);
 
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithIdentityProvider(const AAlias: string): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('Identity provider hint is only applicable for Authorization Code flow');
+
+  RebuildConfig(
+    FConfig.Scopes,
+    FConfig.SSLValidationMode,
+    FConfig.ConnectionTimeout,
+    FConfig.ResponseTimeout,
+    FConfig.ExternalCallbackURL,
+    FConfig.TokenExpiryBufferSeconds,
+    FConfig.AcrValues,
+    AAlias.Trim);
+
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithPrompt(const APrompt: string): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('Prompt is only applicable for Authorization Code flow');
+
+  FConfig := FConfig.WithAuthRequestOptions(APrompt, FConfig.MaxAge);
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithMaxAge(const ASeconds: Integer): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('Max age is only applicable for Authorization Code flow');
+
+  if ASeconds < 0 then
+    raise EArgumentOutOfRangeException.Create('Max age cannot be negative');
+
+  FConfig := FConfig.WithAuthRequestOptions(FConfig.Prompt, ASeconds);
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithKeycloakAction(const AAction: string): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('Keycloak action is only applicable for Authorization Code flow');
+
+  FConfig := FConfig.WithKeycloakAction(AAction);
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithCallbackPort(const APort: Integer): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('Callback port is only applicable for Authorization Code flow');
+
+  FConfig := FConfig.WithCallbackPort(APort);
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithAppActivation(const AValue: TIAM4DAppActivation): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('App activation is only applicable for Authorization Code flow');
+
+  FConfig := FConfig.WithAppActivation(AValue);
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithLoopbackRedirectHost(
+  const AValue: TIAM4DLoopbackRedirectHost): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+
+  if FConfig.GrantType <> gtAuthorizationCode then
+    raise EInvalidOpException.Create('The loopback redirect host is only applicable for Authorization Code flow');
+
+  FConfig := FConfig.WithLoopbackRedirectHost(AValue);
+  Result := Self;
+end;
+
+function TIAM4DClientConfigBuilder.WithAllowInsecureHTTP(const AValue: Boolean): IIAM4DClientConfigBuilder;
+begin
+  EnsureConfigInitialized;
+  FConfig := FConfig.WithAllowInsecureHTTP(AValue);
   Result := Self;
 end;
 
@@ -586,7 +815,12 @@ begin
           LAAD := TEncoding.UTF8.GetBytes('IAMClient4D/v1');
         end;
 
-        Result := TIAM4DAESMemoryTokenStorageRawKey32.Create(LKey32, LAAD, FConfig.TokenExpiryBufferSeconds);
+        try
+          Result := TIAM4DAESMemoryTokenStorageRawKey32.Create(LKey32, LAAD, FConfig.TokenExpiryBufferSeconds);
+        finally
+          // The storage keeps its own copy of the key
+          SecureZero(LKey32);
+        end;
       end;
   else
     raise EInvalidOpException.CreateFmt('Unknown storage type: %d', [Ord(FStorageType)]);
@@ -596,14 +830,10 @@ end;
 procedure TIAM4DClientConfigBuilder.ConfigureClientOrFail(
   const AClient: IIAM4DClient;
   const AConfig: TIAM4DClientConfig);
-var
-  LState: TAsyncOperationState;
 begin
-  LState := AClient.ConfigureAsync(AConfig).Run.WaitForCompletion(30000, True);
-  if LState <> TAsyncOperationState.Completed then
-    raise EIAM4DException.CreateFmt(
-      'Client configuration did not complete successfully (state: %d).',
-      [Ord(LState)]);
+  // On the calling thread: BuildAsync is already on a task, a second one only blocked it.
+  // The discovery request ends within the timeouts of AConfig
+  (AClient as TIAM4DKeycloakClient).Configure(AConfig);
 end;
 
 procedure TIAM4DClientConfigBuilder.ValidateBeforeBuild;
@@ -611,13 +841,19 @@ begin
   EnsureConfigInitialized;
 
   if FConfig.GrantType = gtUnknown then
-    raise EInvalidOpException.Create('Grant type not set. Call ForAuthorizationCode() or ForClientCredentials()');
+    raise EInvalidOpException.Create('Grant type not set. Call ForAuthorizationCode(), ForClientCredentials() or ForPassword()');
 
   if (FConfig.GrantType = gtAuthorizationCode) and
     (FCallbackMode = cbmExternal) and
     (FConfig.ExternalCallbackURL.IsEmpty) then
     raise EInvalidOpException.Create(
       'External callback URL required when using WithExternalCallback(). Call WithExternalCallback(url) first.');
+
+  if (FConfig.GrantType = gtAuthorizationCode) and
+    (FCallbackMode = cbmAppRedirect) and
+    (FConfig.ExternalCallbackURL.IsEmpty) then
+    raise EInvalidOpException.Create(
+      'Redirect URI required when using WithAppRedirect(). Call WithAppRedirect(uri) first.');
 end;
 
 function TIAM4DClientConfigBuilder.Build: IIAM4DClient;

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Themed icon: shield silhouette with the padlock cut out (keyhole filled back) -->
+    <group
+        android:scaleX="0.56"
+        android:scaleY="0.56"
+        android:translateX="26"
+        android:translateY="26">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M50,5 C62,13 74,16 86,17 L86,48 C86,70 71,86 50,95 C29,86 14,70 14,48 L14,17 C26,16 38,13 50,5 Z M36,47 V40 A14,14 0 0 1 64,40 V47 H58 V40 A8,8 0 0 0 42,40 V47 Z M33,47 H67 V73 Q67,76 64,76 H36 Q33,76 33,73 Z M50,53 A4.5,4.5 0 1 1 50,62 A4.5,4.5 0 1 1 50,53 Z M48,60 H52 V68 H48 Z" />
+    </group>
+</vector>

@@ -1,0 +1,15 @@
+{{# Error page of UseExceptionHandler (browser requests): status, statustext, error (DEBUG only) #}}
+{{extends "baselayout.html"}}
+
+{{block "title"}}{{:t.errors.page_title}}{{endblock}}
+
+{{block "body"}}
+<header class="page-header">
+  <p class="error-code">HTTP {{:status}}</p>
+  <h1>{{:statustext}}</h1>
+  {{if error}}<p class="lead lead-full">{{:error}}</p>{{else}}<p class="lead">{{:t.errors.page_lead}}</p>{{endif}}
+  <div class="page-actions">
+    <a href="/" class="btn btn-primary">{{:t.errors.home_page}}</a>
+  </div>
+</header>
+{{endblock}}

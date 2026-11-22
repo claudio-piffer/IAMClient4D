@@ -1,0 +1,78 @@
+{{extends "../baselayout.html"}}
+
+{{block "title"}}{{:t.layout.home}}{{endblock}}
+
+{{block "body"}}
+{{if is_authenticated}}
+<header class="page-header">
+  <p class="section-label">{{:t.home.signed_in_as|replace,"{user}",user_name}}</p>
+  <h1>{{:t.home.welcome|replace,"{name}",display_name}}</h1>
+  <p class="lead">{{:t.home.lead_html$|replace,"{backend}",backend_label}}</p>
+</header>
+
+<div class="row g-3 section">
+  <div class="col-md-6 col-xl-3">
+    <a class="panel panel-link h-100 d-block" href="/calculator">
+      <div class="panel-title"><i class="bi bi-plus-slash-minus"></i>{{:t.layout.calculator}}</div>
+      <p class="text-secondary mb-0">{{:t.home.calculator_text}}</p>
+      <span class="badge text-bg-secondary brand-mono mt-3">calculator-user</span>
+      {{if !can_calculate}}<span class="badge text-bg-warning mt-3">{{:t.home.missing_role}}</span>{{endif}}
+    </a>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <a class="panel panel-link h-100 d-block" href="/keypad">
+      <div class="panel-title"><i class="bi bi-grid-3x3-gap"></i>{{:t.layout.keypad}}</div>
+      <p class="text-secondary mb-0">{{:t.home.keypad_text}}</p>
+      <span class="badge text-bg-secondary brand-mono mt-3">calculator-user</span>
+      {{if !can_calculate}}<span class="badge text-bg-warning mt-3">{{:t.home.missing_role}}</span>{{endif}}
+    </a>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <a class="panel panel-link h-100 d-block" href="/advanced">
+      <div class="panel-title"><i class="bi bi-graph-up"></i>{{:t.layout.advanced}}</div>
+      <p class="text-secondary mb-0">{{:t.home.advanced_text}}</p>
+      <span class="badge text-bg-secondary brand-mono mt-3">calculator-advanced</span>
+      {{if !can_advanced}}<span class="badge text-bg-warning mt-3">{{:t.home.missing_role_403}}</span>{{endif}}
+    </a>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <a class="panel panel-link h-100 d-block" href="/profile">
+      <div class="panel-title"><i class="bi bi-person-vcard"></i>{{:t.layout.profile}}</div>
+      <p class="text-secondary mb-0">{{:t.home.profile_text}}</p>
+    </a>
+  </div>
+</div>
+{{else}}
+<div class="hero">
+  <p class="section-label">IAMClient4D &middot; DelphiMVCFramework &middot; htmx</p>
+  <h1>{{:t.app_name}}</h1>
+  <p class="lead mx-auto">{{:t.home.hero_lead}}</p>
+  <a class="btn btn-primary btn-lg mt-2" href="/login" hx-boost="false"><i class="bi bi-box-arrow-in-right me-2"></i>{{:t.home.sign_in_keycloak}}</a>
+</div>
+
+<section class="section">
+  <h2 class="section-title">{{:t.home.how_title}}</h2>
+  <ol class="steps">
+    <li><strong>{{:t.home.step1_title}}</strong><p>{{:t.home.step1_text}}</p></li>
+    <li><strong>{{:t.home.step2_title}}</strong><p>{{:t.home.step2_text}}</p></li>
+    <li><strong>{{:t.home.step3_title}}</strong><p>{{:t.home.step3_text_html$}}</p></li>
+  </ol>
+  <p class="text-secondary small mt-3 mb-0">{{:t.home.accounts_html$}}</p>
+</section>
+{{endif}}
+
+<div class="row g-4">
+  <section class="col-lg-5">
+    <h2 class="section-title">{{:t.home.servers}}</h2>
+    <div id="servers" hx-get="/fragments/servers" hx-trigger="load" hx-swap="innerHTML">
+      <div class="panel text-secondary"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>{{:t.home.servers_loading}}</div>
+    </div>
+  </section>
+  <section class="col-lg-7">
+    <h2 class="section-title">{{:t.home.constants}} <span class="text-secondary fw-normal small">{{:t.home.constants_public}}</span></h2>
+    <div id="constants" hx-get="/fragments/constants" hx-trigger="load" hx-swap="innerHTML">
+      <div class="panel text-secondary"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>{{:t.home.loading}}</div>
+    </div>
+  </section>
+</div>
+{{endblock}}

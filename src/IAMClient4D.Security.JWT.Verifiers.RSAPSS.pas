@@ -45,8 +45,10 @@ type
   /// Padding: EMSA-PSS encoding scheme with MGF1 mask generation.
   /// Salt length: Uses hash length as salt length (recommended by RFC).
   /// Crypto provider: Configurable (default: LockBox3).
-  /// Key format: JWK with 'n' (modulus) and 'e' (exponent) parameters in Base64URL.
-  /// Thread-safety: Create separate instance per thread (not thread-safe).
+  /// Key format: JWK with 'n' (modulus) and 'e' (exponent) parameters in Base64URL;
+  /// keys failing TIAM4DRSAPublicKey.IsValid are rejected, leading zero bytes of 'n' ignored.
+  /// Signature: exactly k bytes (modulus size). Algorithm names are case-sensitive.
+  /// Thread-safety: stateless, safe for concurrent use when the crypto provider is.
   /// Security: Production-ready implementation with proper PSS verification.
   /// </remarks>
   TRSAPSSJWTSignatureVerifier = class(TInterfacedObject, IIAM4DJWTSignatureVerifier)
@@ -161,11 +163,11 @@ end;
 
 function TRSAPSSJWTSignatureVerifier.GetHashLength(const AAlg: string): Integer;
 begin
-  if SameText(AAlg, 'PS256') then
+  if AAlg = 'PS256' then
     Result := 32
-  else if SameText(AAlg, 'PS384') then
+  else if AAlg = 'PS384' then
     Result := 48
-  else if SameText(AAlg, 'PS512') then
+  else if AAlg = 'PS512' then
     Result := 64
   else
     raise EIAM4DSecurityValidationException.CreateFmt('Unsupported RSA-PSS algorithm: %s', [AAlg]);
@@ -173,11 +175,11 @@ end;
 
 function TRSAPSSJWTSignatureVerifier.GetHashAlgorithm(const AAlg: string): TIAM4DHashAlgorithm;
 begin
-  if SameText(AAlg, 'PS256') then
+  if AAlg = 'PS256' then
     Result := haSHA256
-  else if SameText(AAlg, 'PS384') then
+  else if AAlg = 'PS384' then
     Result := haSHA384
-  else if SameText(AAlg, 'PS512') then
+  else if AAlg = 'PS512' then
     Result := haSHA512
   else
     raise EIAM4DSecurityValidationException.CreateFmt('Unsupported RSA-PSS algorithm: %s', [AAlg]);
@@ -200,10 +202,17 @@ begin
   Result := False;
 
   try
-    if not (SameText(AAlg, 'PS256') or SameText(AAlg, 'PS384') or SameText(AAlg, 'PS512')) then
+    // Case-sensitive (RFC 7515 4.1.1)
+    if not ((AAlg = 'PS256') or (AAlg = 'PS384') or (AAlg = 'PS512')) then
       Exit;
 
-    if not ExtractRSAPublicKeyBytes(APublicKeyJWK, LModulus, LExponent) then
+    if not ExtractRSAPublicKeyBytes(APublicKeyJWK, LModulus, LExponent) or
+       not TIAM4DRSAPublicKey.IsValid(LModulus, LExponent) then
+      Exit;
+
+    // Exactly k bytes, as RS*: some providers accept a signature with its leading zero bytes stripped
+    LModulus := TIAM4DRSAPublicKey.Stripped(LModulus);
+    if Length(ASignatureBytes) <> Length(LModulus) then
       Exit;
 
     LSigningInputBytes := TEncoding.UTF8.GetBytes(ASigningInput);

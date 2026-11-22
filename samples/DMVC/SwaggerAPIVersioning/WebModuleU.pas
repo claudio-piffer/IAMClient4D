@@ -32,11 +32,9 @@ uses
   MyControllerU,
   System.IOUtils,
   MVCFramework.Commons,
-  MVCFramework.Middleware.Compression,
-  MVCFramework.Middleware.Swagger,
-  MVCFramework.Middleware.CORS,
-  MVCFramework.Middleware.StaticFiles,
-  IAMClient4D.DMVC.Middleware,
+  MVCFramework.Filters,
+  MVCFramework.Filters.Swagger,
+  IAMClient4D.DMVC.Filters,
   IAMClient4D.Common.Security;
 
 function TMyWebModule.GetSwagInfoV1: TMVCSwaggerInfo;
@@ -62,6 +60,8 @@ begin
 end;
 
 procedure TMyWebModule.WebModuleCreate(Sender: TObject);
+var
+  LSSLMode: TIAM4DSSLValidationMode;
 begin
   FMVC := TMVCEngine.Create(Self,
     procedure(Config: TMVCConfig)
@@ -80,8 +80,8 @@ begin
       Config[TMVCConfigKey.ViewPath] := 'templates';
       // Max Record Count for automatic Entities CRUD
       Config[TMVCConfigKey.MaxEntitiesRecordCount] := '20';
-      // Enable Server Signature in response
-      Config[TMVCConfigKey.ExposeServerSignature] := 'true';
+      // No Server header: it would tell the framework and its version
+      Config[TMVCConfigKey.ExposeServerSignature] := 'false';
       // Max request size in bytes
       Config[TMVCConfigKey.MaxRequestSize] := IntToStr(TMVCConstants.DEFAULT_MAX_REQUEST_SIZE);
     end);
@@ -89,23 +89,29 @@ begin
   //  FMVC.AddController(TMyControllerV1);
   //  FMVC.AddController(TMyControllerV2);
 
-  FMVC.AddMiddleware(TMVCCORSMiddleware.Create);
+  // CORS first: it answers the preflight before any token is asked; WWW-Authenticate (401/403)
+  // and Retry-After (503) readable by a browser client
+  FMVC.Use(CORSHTTPFilter('*', False, 'WWW-Authenticate,Retry-After'));
 
-  FMVC.AddMiddleware(TMVCStaticFilesMiddleware.Create(
-    '/swagger', { StaticFilesPath }
-    '.\www', { DocumentRoot }
-    'index.html' { IndexDocument }
-    ));
+  // Bearer token checked on every controller action; before SwaggerHTTPFilter,
+  // so the bearer scheme is added to the Swagger documents on the way out.
+  // Issuer from IAM4D_ISSUER (environment or .env next to the exe); the default is the Keycloak of
+  // Docker/ (start.cmd)
+  if dotEnv.Env('IAM4D_ALLOW_SELF_SIGNED', False) then
+    LSSLMode := TIAM4DSSLValidationMode.svmAllowSelfSigned
+  else
+    LSSLMode := TIAM4DSSLValidationMode.svmStrict;
+  FMVC.Use(IAM4DJWTBundle(
+    dotEnv.Env('IAM4D_ISSUER', 'http://localhost:18180/auth/realms/iamclient4d').TrimRight(['/']),
+    dotEnv.Env('IAM4D_AUDIENCE', 'api-server'),
+    LSSLMode));
 
-  FMVC.AddMiddleware(TMVCSwaggerMiddleware.Create(FMVC, GetSwagInfoV1, '/api/swagger-v1.json',
-    'Method for authentication using JSON Web Token (JWT)', False, '', '', '/api/v1'));
-  FMVC.AddMiddleware(TMVCSwaggerMiddleware.Create(FMVC, GetSwagInfoV2, '/api/swagger-v2.json',
-    'Method for authentication using JSON Web Token (JWT)', False, '', '', '/api/v2', [psHTTP, psHTTPS]));
+  FMVC.Use(StaticFilesHTTPFilter('/swagger', '.\www'));
 
-  FMVC.AddMiddleware(TIAM4DJWTMiddleware.Create(
-    'https://192.168.0.24:28443/auth/realms/iamclient4d', // Issuer
-    'api-server', // Audience
-    TIAM4DSSLValidationMode.svmAllowSelfSigned));
+  FMVC.Use(SwaggerHTTPFilter(FMVC, GetSwagInfoV1, '/api/swagger-v1.json',
+    'Method for authentication using JSON Web Token (JWT)', [], '', '', '/api/v1'));
+  FMVC.Use(SwaggerHTTPFilter(FMVC, GetSwagInfoV2, '/api/swagger-v2.json',
+    'Method for authentication using JSON Web Token (JWT)', [], '', '', '/api/v2', [psHTTP, psHTTPS]));
 
   FMVC.AddController(TMyControllerV1);
   FMVC.AddController(TMyControllerV2);

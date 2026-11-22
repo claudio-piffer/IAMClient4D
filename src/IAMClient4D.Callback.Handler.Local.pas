@@ -28,7 +28,6 @@ interface
 uses
   System.SysUtils,
   System.Classes,
-  System.Threading,
   System.Net.URLClient,
   System.NetEncoding,
   IAMClient4D.Core,
@@ -49,24 +48,29 @@ type
   /// 3. User authenticates in browser
   /// 4. Keycloak redirects to http://localhost:port/callback
   /// 5. Server receives code and state, validates state parameter
-  /// 6. Calls OnCodeReceived callback with code and state
+  /// 6. Calls OnCodeReceived callback with code, state and kc_action_status ('' if absent)
+  ///
+  /// Error response (error, error_description): with the state of the flow OnError receives an
+  /// EIAM4DOAuth2CallbackException (both values in its Context).
+  /// A callback without the state of the flow (code or error), or one that cannot be parsed, is
+  /// ignored: the browser gets an error page and the login keeps waiting.
   ///
   /// Thread-safety: Callbacks are executed asynchronously via TTask.
   /// Port requirements: Port must be available and not blocked by firewall.
   /// Security: Uses state parameter validation to prevent CSRF attacks.
   /// Cleanup: Automatically stops server in destructor.
   /// </remarks>
-  TIAM4DLocalCallbackHandler = class(TIAM4DCallbackHandlerBase)
+  TIAM4DLocalCallbackHandler = class(TIAM4DRedirectCallbackHandlerBase)
   private
     FCallbackServer: IIAM4DHttpCallbackServer;
     FPort: Word;
     FCallbackPath: string;
-    FOnCodeReceived: TProc<string, string>;
-    FOnError: TProc<Exception>;
+    FAppActivation: TIAM4DAppActivation;
+    FLoopbackRedirectHost: TIAM4DLoopbackRedirectHost;
+    // State of the last callback dispatched: the same redirect again does not exchange the code twice
+    FTakenState: string;
 
     procedure HandleServerCallback(AResponseType: TIAM4DCallbackResponseType; AData: string);
-    procedure ValidateStateParameter(const AReceivedState: string);
-    procedure ExtractCodeAndStateFromURL(const AURL: string; out ACode, AState: string);
   protected
     procedure DoStart; override;
     procedure DoStop; override;
@@ -76,28 +80,24 @@ type
     /// <summary>
     /// Creates local callback handler with specified port and path
     /// </summary>
+    /// <remarks>
+    /// AAppActivation: what the app does when a valid callback arrives (see TIAM4DAppActivation).
+    /// ALoopbackRedirectHost: host of the redirect URI (see TIAM4DLoopbackRedirectHost).
+    /// </remarks>
     constructor Create(
       const APort: Word;
-      const ACallbackPath: string = '/callback'); reintroduce;
+      const ACallbackPath: string = '/callback';
+      const AAppActivation: TIAM4DAppActivation = aaNone;
+      const ALoopbackRedirectHost: TIAM4DLoopbackRedirectHost = lrhLocalhost); reintroduce;
     destructor Destroy; override;
-
-    /// <summary>
-    /// Sets callback invoked when authorization code is received
-    /// </summary>
-    procedure SetOnCodeReceived(const ACallback: TProc<string, string>);
-
-    /// <summary>
-    /// Sets callback invoked on callback processing errors
-    /// </summary>
-    procedure SetOnError(const ACallback: TProc<Exception>);
   end;
 
 implementation
 
 uses
   IAMClient4D.Common.Constants,
-  IAMClient4D.Common.SecureMemory,
   IAMClient4D.Common.OAuth2URLParser,
+  IAMClient4D.Common.PlatformUtils,
   IAMClient4D.Server.Callback.IndyHttpServer,
   IAMClient4D.Exceptions;
 
@@ -105,11 +105,15 @@ uses
 
 constructor TIAM4DLocalCallbackHandler.Create(
   const APort: Word;
-  const ACallbackPath: string);
+  const ACallbackPath: string;
+  const AAppActivation: TIAM4DAppActivation;
+  const ALoopbackRedirectHost: TIAM4DLoopbackRedirectHost);
 begin
   inherited Create(cbmLocalServer);
 
   FPort := APort;
+  FAppActivation := AAppActivation;
+  FLoopbackRedirectHost := ALoopbackRedirectHost;
   FCallbackPath := ACallbackPath;
 
   if not FCallbackPath.StartsWith('/') then
@@ -164,91 +168,40 @@ end;
 
 function TIAM4DLocalCallbackHandler.DoGetRedirectURI: string;
 begin
-  Result := Format('http://localhost:%d%s', [FCallbackServer.GetListeningPort, FCallbackPath]);
+  if FLoopbackRedirectHost = lrhLoopbackIP then
+    Result := Format('http://127.0.0.1:%d%s', [FCallbackServer.GetListeningPort, FCallbackPath])
+  else
+    Result := Format('http://localhost:%d%s', [FCallbackServer.GetListeningPort, FCallbackPath]);
 end;
 
 procedure TIAM4DLocalCallbackHandler.HandleServerCallback(
   AResponseType: TIAM4DCallbackResponseType;
   AData: string);
 var
-  LCode, LState: string;
+  LState: string;
 begin
   if AResponseType <> crtCheckResponseIAM then
     Exit;
 
-  TTask.Run(
-    procedure
-    begin
-      try
-        ExtractCodeAndStateFromURL(AData, LCode, LState);
+  // Anybody can call the loopback URL: raising here leaves the login waiting, the server shows an error page
+  CheckCallbackCanEndFlow(AData);
 
-        if Assigned(FOnCodeReceived) then
-          FOnCodeReceived(LCode, LState);
-      except
-        on E: Exception do
-        begin
-          DoStop;
-
-          try
-            if Assigned(FOnError) then
-              FOnError(E);
-          except
-            // Callback exceptions are intentionally caught to prevent
-            // authorization flow disruption. The OAuth flow must complete
-            // regardless of callback handler errors.
-          end;
-
-          NotifyAuthorizationError(E);
-        end;
-      end;
-    end);
-end;
-
-procedure TIAM4DLocalCallbackHandler.ExtractCodeAndStateFromURL(const AURL: string; out ACode, AState: string);
-begin
+  // One-shot per flow (reload, double request of the browser): a second exchange of the same code would
+  // be refused, and Keycloak revokes the tokens already issued for a code used twice (RFC 6749 4.1.2)
+  LState := TIAM4DOAuth2URLParser.ParseOAuth2Callback(AData).State;
+  TMonitor.Enter(Self);
   try
-    TIAM4DOAuth2URLParser.ExtractCodeAndState(AURL, ACode, AState);
-
-    ValidateStateParameter(AState);
-  except
-    on E: EIAM4DOAuth2CallbackException do
-      raise EIAM4DCallbackHandlerException.Create(E.Message);
-    on E: Exception do
-      raise EIAM4DCallbackHandlerException.CreateFmt(
-        'Failed to extract authorization code and state from callback URL: %s',
-        [E.Message]);
+    if FTakenState = LState then
+      raise EIAM4DCallbackHandlerException.Create('OAuth2 callback already received: ignored');
+    FTakenState := LState;
+  finally
+    TMonitor.Exit(Self);
   end;
-end;
 
-procedure TIAM4DLocalCallbackHandler.ValidateStateParameter(const AReceivedState: string);
-const
-  MAX_STATE_LENGTH = 256;
-var
-  LContext: TIAM4DOAuthContext;
-begin
-  LContext := GetOAuthContext;
+  // Only a callback of this flow: a stranger calling the loopback URL does not take the focus
+  TIAM4DPlatformUtils.ActivateApplication(FAppActivation);
 
-  if AReceivedState.Trim.IsEmpty then
-    raise EIAM4DCallbackHandlerException.Create('Missing state parameter in OAuth2 callback');
-
-  if Length(AReceivedState) > MAX_STATE_LENGTH then
-    raise EIAM4DCallbackHandlerException.CreateFmt(
-      'State parameter exceeds maximum length (%d chars). Possible attack attempt.',
-      [MAX_STATE_LENGTH]);
-
-  if not SecureStringEquals(AReceivedState, LContext.State) then
-    raise EIAM4DCallbackHandlerException.Create(
-      'State mismatch in OAuth2 callback. Possible CSRF attack or session mix-up.');
-end;
-
-procedure TIAM4DLocalCallbackHandler.SetOnCodeReceived(const ACallback: TProc<string, string>);
-begin
-  FOnCodeReceived := ACallback;
-end;
-
-procedure TIAM4DLocalCallbackHandler.SetOnError(const ACallback: TProc<Exception>);
-begin
-  FOnError := ACallback;
+  DispatchCallback(AData);
 end;
 
 end.

@@ -1,0 +1,20 @@
+{{# Result of combinatorics: r.data = n, k, combinations, permutations #}}
+<div class="result">
+  {{include "../partials/_call.html"}}
+  {{if r.ok}}
+  <div class="display">
+    <div class="row g-3">
+      <div class="col-sm-6">
+        <div class="display-expression">C({{:r.data.n}}, {{:r.data.k}})</div>
+        <div class="display-value">{{:r.data.combinations|num}}</div>
+      </div>
+      <div class="col-sm-6">
+        <div class="display-expression">P({{:r.data.n}}, {{:r.data.k}})</div>
+        <div class="display-value">{{:r.data.permutations|num}}</div>
+      </div>
+    </div>
+  </div>
+  {{else}}
+  {{include "../partials/_error.html"}}
+  {{endif}}
+</div>

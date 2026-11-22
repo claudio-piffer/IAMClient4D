@@ -1,0 +1,12 @@
+{{# Result of power, root, log, factorial, trigonometry: r.data = operation, expression, value #}}
+<div class="result">
+  {{include "../partials/_call.html"}}
+  {{if r.ok}}
+  <div class="display">
+    <div class="display-expression">{{:r.data.expression}}</div>
+    <div class="display-value" data-copy="{{:r.data.value}}">{{:r.data.value|num}}</div>
+  </div>
+  {{else}}
+  {{include "../partials/_error.html"}}
+  {{endif}}
+</div>

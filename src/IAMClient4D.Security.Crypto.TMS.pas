@@ -77,10 +77,13 @@ type
   /// <remarks>
   /// Supports RSA PKCS#1 v1.5 (RS256, RS384, RS512), RSA-PSS (PS256, PS384, PS512),
   /// and ECDSA (ES256, ES384, ES512).
-  /// Thread-safety: Create separate instance per thread (not thread-safe).
+  /// ECDSA through IIAM4DECDSAMessageVerifier only: TMS hashes the message itself.
+  /// RSA keys checked with TIAM4DRSAPublicKey.IsValid first; RSA signatures exactly k bytes;
+  /// moduli up to 8192 bits (larger valid keys fail verification).
+  /// Thread-safety: TMS objects created per call, safe for concurrent use.
   /// Requires TMS Cryptography Pack commercial license.
   /// </remarks>
-  TIAM4DTMSCryptoProvider = class(TInterfacedObject, IIAM4DCryptoProvider)
+  TIAM4DTMSCryptoProvider = class(TInterfacedObject, IIAM4DCryptoProvider, IIAM4DECDSAMessageVerifier)
   private
     function GetHashLength(AHashAlg: TIAM4DHashAlgorithm): Integer;
     function ComputeHash(const AData: TBytes; AHashAlg: TIAM4DHashAlgorithm): TBytes;
@@ -94,6 +97,11 @@ type
     /// TMS library uses little-endian internally, RSA uses big-endian externally
     /// </summary>
     function ReverseBytes(const AData: TBytes): TBytes;
+
+    /// <summary>
+    /// Uncompressed point octet string 04 || A || B, as read by TMS OctetStringToPoint
+    /// </summary>
+    function OctetPoint(const AFirst, ASecond: TBytes): TBytes;
 
     /// <summary>
     /// MGF1 Mask Generation Function (RFC 3447 Appendix B.2.1)
@@ -118,12 +126,20 @@ type
     function GetSupportedAlgorithms: TArray<string>;
     function SupportsAlgorithm(const AAlg: string): Boolean;
     function GetProviderName: string;
+
+    { IIAM4DECDSAMessageVerifier }
+    function ECDSAVerifyMessage(const AMessage, AR, AS_, AX, AY: TBytes;
+      ACurve: TIAM4DECCurve): Boolean;
   end;
 {$ENDIF}
 
+{$IFDEF IAM4D_CRYPTO_TMS}
+
 implementation
 
-{$IFDEF IAM4D_CRYPTO_TMS}
+const
+  // 8192-bit moduli: TMS IB32 integers (544 words) must hold twice the modulus in ExpMod
+  MAX_MODULUS_BYTES = 1024;
 
 { TIAM4DECDSAp256 }
 
@@ -175,14 +191,66 @@ end;
 
 function TIAM4DTMSCryptoProvider.SupportsAlgorithm(const AAlg: string): Boolean;
 begin
-  Result := SameText(AAlg, 'RS256') or SameText(AAlg, 'RS384') or SameText(AAlg, 'RS512') or
-            SameText(AAlg, 'PS256') or SameText(AAlg, 'PS384') or SameText(AAlg, 'PS512') or
-            SameText(AAlg, 'ES256') or SameText(AAlg, 'ES384') or SameText(AAlg, 'ES512');
+  // Case-sensitive (RFC 7515 4.1.1)
+  Result := (AAlg = 'RS256') or (AAlg = 'RS384') or (AAlg = 'RS512') or
+            (AAlg = 'PS256') or (AAlg = 'PS384') or (AAlg = 'PS512') or
+            (AAlg = 'ES256') or (AAlg = 'ES384') or (AAlg = 'ES512');
+end;
+
+/// <summary>A < B for big-endian integers of the same length</summary>
+function BigEndianBelow(const A, B: TBytes): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if Length(A) <> Length(B) then
+    Exit;
+  for I := 0 to High(A) do
+    if A[I] <> B[I] then
+      Exit(A[I] < B[I]);
+end;
+
+/// <summary>Bits of a big-endian integer without leading zero bytes</summary>
+function BigEndianBitLength(const A: TBytes): Integer;
+var
+  LTop: Byte;
+begin
+  Result := 0;
+  if Length(A) = 0 then
+    Exit;
+  Result := (Length(A) - 1) * 8;
+  LTop := A[0];
+  while LTop <> 0 do
+  begin
+    Inc(Result);
+    LTop := LTop shr 1;
+  end;
+end;
+
+/// <summary>
+/// The last ALength bytes of AValue when the bytes before them are zero (TMS works on padded sizes);
+/// nil when a dropped byte is not zero
+/// </summary>
+function FitBigEndian(const AValue: TBytes; ALength: Integer): TBytes;
+var
+  I, LExtra: Integer;
+begin
+  LExtra := Length(AValue) - ALength;
+  if LExtra < 0 then
+  begin
+    SetLength(Result, ALength);
+    FillChar(Result[0], ALength, 0);
+    if Length(AValue) > 0 then
+      Move(AValue[0], Result[-LExtra], Length(AValue));
+    Exit;
+  end;
+  for I := 0 to LExtra - 1 do
+    if AValue[I] <> 0 then
+      Exit(nil);
+  Result := Copy(AValue, LExtra, ALength);
 end;
 
 function TIAM4DTMSCryptoProvider.NormalizeModulus(const AModulus: TBytes): TBytes;
-const
-  MAX_MODULUS_BYTES = 1024; // 8192-bit RSA key maximum
 var
   LLen: Integer;
   LTargetLen: Integer;
@@ -238,6 +306,14 @@ begin
   SetLength(Result, LLen);
   for I := 0 to LLen - 1 do
     Result[I] := AData[LLen - 1 - I];
+end;
+
+function TIAM4DTMSCryptoProvider.OctetPoint(const AFirst, ASecond: TBytes): TBytes;
+begin
+  SetLength(Result, 1 + Length(AFirst) + Length(ASecond));
+  Result[0] := $04;
+  Move(AFirst[0], Result[1], Length(AFirst));
+  Move(ASecond[0], Result[1 + Length(AFirst)], Length(ASecond));
 end;
 
 function TIAM4DTMSCryptoProvider.GetHashLength(AHashAlg: TIAM4DHashAlgorithm): Integer;
@@ -417,7 +493,19 @@ var
 begin
   Result := False;
 
-  LNormModulus := NormalizeModulus(AModulus);
+  // No key checks in ExpMod: e = 1 would accept the EM itself, a huge n or e burns CPU.
+  // NormalizeModulus pads the signature: its length is checked first.
+  // Valid keys over MAX_MODULUS_BYTES cannot be verified by TMS: rejected, not raised
+  if not TIAM4DRSAPublicKey.IsValid(AModulus, AExponent) or
+     (TIAM4DRSAPublicKey.ModulusSize(AModulus) > MAX_MODULUS_BYTES) or
+     (Length(ASignature) <> TIAM4DRSAPublicKey.ModulusSize(AModulus)) then
+    Exit;
+
+  // RFC 8017 5.2.2 (RSAVP1): the signature representative must be below n
+  if not BigEndianBelow(ASignature, TIAM4DRSAPublicKey.Stripped(AModulus)) then
+    Exit;
+
+  LNormModulus := NormalizeModulus(TIAM4DRSAPublicKey.Stripped(AModulus));
   LNormSignature := NormalizeModulus(ASignature);
 
   if Length(LNormSignature) <> Length(LNormModulus) then
@@ -430,7 +518,7 @@ begin
   LExponentLE := ReverseBytes(AExponent);
 
   // Use TBase32 for raw modular exponentiation: m = s^e mod n
-  LBase32 := TBase32.Create;
+  LBase32 := TBase32.Create(nil);
   try
     try
       LBase32.Zeroize(LModulus32);
@@ -476,6 +564,8 @@ begin
         Move(LTemp[0], LActualEM[LPadLen], Length(LTemp));
       end;
 
+      // A modulus of non-standard size is padded for TMS: the EM has the k bytes of n
+      LActualEM := FitBigEndian(LActualEM, TIAM4DRSAPublicKey.ModulusSize(AModulus));
       if Length(AExpectedEM) <> Length(LActualEM) then
         Exit;
 
@@ -485,8 +575,10 @@ begin
         raise;
       on E: EAccessViolation do
         raise;
+{$WARN SYMBOL_DEPRECATED OFF} // still raised by the RTL (System.Internal.ExcUtils)
       on E: EStackOverflow do
         raise;
+{$WARN SYMBOL_DEPRECATED DEFAULT}
       on E: Exception do
         Exit;
     end;
@@ -511,20 +603,30 @@ var
 begin
   Result := False;
 
-  LNormModulus := NormalizeModulus(AModulus);
+  if not TIAM4DRSAPublicKey.IsValid(AModulus, AExponent) or
+     (TIAM4DRSAPublicKey.ModulusSize(AModulus) > MAX_MODULUS_BYTES) or
+     (Length(ASignature) <> TIAM4DRSAPublicKey.ModulusSize(AModulus)) then
+    Exit;
+
+  // RFC 8017 5.2.2 (RSAVP1): the signature representative must be below n
+  if not BigEndianBelow(ASignature, TIAM4DRSAPublicKey.Stripped(AModulus)) then
+    Exit;
+
+  LNormModulus := NormalizeModulus(TIAM4DRSAPublicKey.Stripped(AModulus));
   LNormSignature := NormalizeModulus(ASignature);
 
   if Length(LNormSignature) <> Length(LNormModulus) then
     Exit;
 
-  LModBits := Length(LNormModulus) * 8;
+  // RFC 8017 8.1.2: emBits = modBits - 1 of n itself, not of the size padded for TMS
+  LModBits := BigEndianBitLength(TIAM4DRSAPublicKey.Stripped(AModulus));
   LEmLen := (LModBits + 6) div 8;
 
   LModulusLE := ReverseBytes(LNormModulus);
   LSignatureLE := ReverseBytes(LNormSignature);
   LExponentLE := ReverseBytes(AExponent);
 
-  LBase32 := TBase32.Create;
+  LBase32 := TBase32.Create(nil);
   try
     try
       LBase32.Zeroize(LModulus32);
@@ -571,8 +673,10 @@ begin
         raise;
       on E: EAccessViolation do
         raise;
+{$WARN SYMBOL_DEPRECATED OFF} // still raised by the RTL (System.Internal.ExcUtils)
       on E: EStackOverflow do
         raise;
+{$WARN SYMBOL_DEPRECATED DEFAULT}
       on E: Exception do
         Exit;
     end;
@@ -583,7 +687,18 @@ end;
 
 function TIAM4DTMSCryptoProvider.ECDSAVerify(const AHash, AR, AS_, AX, AY: TBytes;
   ACurve: TIAM4DECCurve): Boolean;
+begin
+  // TMS Verify always hashes its input: a precomputed digest cannot be verified
+  raise EIAM4DCryptoNotSupportedException.CreateFmt(
+    'Crypto provider "%s" cannot verify ECDSA over a precomputed hash: ' +
+    'use IIAM4DECDSAMessageVerifier.ECDSAVerifyMessage with the message', [GetProviderName]);
+end;
+
+function TIAM4DTMSCryptoProvider.ECDSAVerifyMessage(const AMessage, AR, AS_, AX, AY: TBytes;
+  ACurve: TIAM4DECCurve): Boolean;
 var
+  LSize: Integer;
+  LMessage: TBytes;
   LPublicKey: TBytes;
   LSignature: TBytes;
   LVerifyResult: Integer;
@@ -591,22 +706,33 @@ var
   LCurve384: TIAM4DECDSAp384;
   LCurve521: TIAM4DECDSAp521;
 begin
-  SetLength(LPublicKey, 1 + Length(AX) + Length(AY));
-  LPublicKey[0] := $04;
-  Move(AX[0], LPublicKey[1], Length(AX));
-  Move(AY[0], LPublicKey[1 + Length(AX)], Length(AY));
+  case ACurve of
+    eccP256: LSize := 32;
+    eccP384: LSize := 48;
+    eccP521: LSize := 66;
+  else
+    raise EIAM4DCryptoNotSupportedException.Create(
+      Format('Curve %d not supported', [Ord(ACurve)]), GetProviderName);
+  end;
 
-  SetLength(LSignature, Length(AR) + Length(AS_));
-  Move(AR[0], LSignature[0], Length(AR));
-  Move(AS_[0], LSignature[Length(AR)], Length(AS_));
+  // OctetStringToPoint reads full-size coordinates without bounds checks
+  if (Length(AR) <> LSize) or (Length(AS_) <> LSize) or
+     (Length(AX) <> LSize) or (Length(AY) <> LSize) then
+    Exit(False);
+
+  // TMS reverses the message bytes before hashing, and reads
+  // both key and signature as points: 04 || X || Y, 04 || R || S
+  LMessage := ReverseBytes(AMessage);
+  LPublicKey := OctetPoint(AX, AY);
+  LSignature := OctetPoint(AR, AS_);
 
   try
     case ACurve of
       eccP256:
       begin
-        LCurve256 := TIAM4DECDSAp256.Create(nil);
+        LCurve256 := TIAM4DECDSAp256.Create;
         try
-          LVerifyResult := LCurve256.Verify(AHash, LPublicKey, LSignature);
+          LVerifyResult := LCurve256.Verify(LMessage, LPublicKey, LSignature);
           Result := (LVerifyResult = 0);
         finally
           LCurve256.Free;
@@ -615,9 +741,9 @@ begin
 
       eccP384:
       begin
-        LCurve384 := TIAM4DECDSAp384.Create(nil);
+        LCurve384 := TIAM4DECDSAp384.Create;
         try
-          LVerifyResult := LCurve384.Verify(AHash, LPublicKey, LSignature);
+          LVerifyResult := LCurve384.Verify(LMessage, LPublicKey, LSignature);
           Result := (LVerifyResult = 0);
         finally
           LCurve384.Free;
@@ -626,19 +752,19 @@ begin
 
       eccP521:
       begin
-        LCurve521 := TIAM4DECDSAp521.Create(nil);
+        LCurve521 := TIAM4DECDSAp521.Create;
         try
-          LVerifyResult := LCurve521.Verify(AHash, LPublicKey, LSignature);
+          LVerifyResult := LCurve521.Verify(LMessage, LPublicKey, LSignature);
           Result := (LVerifyResult = 0);
         finally
           LCurve521.Free;
         end;
       end;
     else
-      raise EIAM4DCryptoNotSupportedException.Create(
-        Format('Curve %d not supported', [Ord(ACurve)]), GetProviderName);
+      Result := False;
     end;
   finally
+    SecureZero(LMessage);
     SecureZero(LPublicKey);
     SecureZero(LSignature);
   end;

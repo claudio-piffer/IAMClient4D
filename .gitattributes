@@ -1,0 +1,7 @@
+# Files are checked out exactly as committed, whatever core.autocrlf says:
+# Delphi sources are CRLF, some Markdown files mix CRLF and LF.
+* -text
+
+# Run by bash in Linux containers or WSL: always LF, also when committed from Windows
+*.sh text eol=lf
+Dockerfile text eol=lf

@@ -100,21 +100,23 @@ begin
   Result.IDToken := AJSONObject.GetValue<string>(IAM4D_OAUTH2_TOKEN_ID_TOKEN, '');
   Result.ExpiresIn := AJSONObject.GetValue<Integer>(IAM4D_OAUTH2_TOKEN_EXPIRES_IN, 0);
   Result.RefreshExpiresIn := AJSONObject.GetValue<Integer>(IAM4D_OAUTH2_TOKEN_REFRESH_EXPIRES_IN, 0);
+  // Granted scope of the token response (RFC 6749 5.1), also in the stored form
+  Result.Scope := AJSONObject.GetValue<string>(IAM4D_OAUTH2_PARAM_SCOPE, '');
 
   // All expiry times are stored and compared in UTC for consistency
   if AJSONObject.TryGetValue<string>(JSON_KEY_ACCESS_TOKEN_EXPIRY, LExpiryStr) and (LExpiryStr <> EmptyStr) then
     Result.AccessTokenExpiry := ISO8601ToDate(LExpiryStr, True)
   else
-    Result.AccessTokenExpiry := TTimeZone.Local.ToUniversalTime(Now) + Result.ExpiresIn / IAM4D_SECOND_PER_DAY;
+    Result.AccessTokenExpiry := TDateTime.NowUTC + Result.ExpiresIn / IAM4D_SECOND_PER_DAY;
 
   if AJSONObject.TryGetValue<string>(JSON_KEY_REFRESH_TOKEN_EXPIRY, LExpiryStr) and (LExpiryStr <> EmptyStr) then
     Result.RefreshTokenExpiry := ISO8601ToDate(LExpiryStr, True)
   else
   begin
     if Result.RefreshExpiresIn = 0 then
-      Result.RefreshTokenExpiry := IncDay(TTimeZone.Local.ToUniversalTime(Now), 10)
+      Result.RefreshTokenExpiry := IncDay(TDateTime.NowUTC, 10)
     else
-      Result.RefreshTokenExpiry := TTimeZone.Local.ToUniversalTime(Now) + Result.RefreshExpiresIn / IAM4D_SECOND_PER_DAY;
+      Result.RefreshTokenExpiry := TDateTime.NowUTC + Result.RefreshExpiresIn / IAM4D_SECOND_PER_DAY;
   end;
 end;
 
@@ -127,6 +129,7 @@ begin
     Result.AddPair(IAM4D_OAUTH2_TOKEN_ID_TOKEN, ATokens.IDToken);
     Result.AddPair(IAM4D_OAUTH2_TOKEN_EXPIRES_IN, TJSONNumber.Create(ATokens.ExpiresIn));
     Result.AddPair(IAM4D_OAUTH2_TOKEN_REFRESH_EXPIRES_IN, TJSONNumber.Create(ATokens.RefreshExpiresIn));
+    Result.AddPair(IAM4D_OAUTH2_PARAM_SCOPE, ATokens.Scope);
 
     Result.AddPair(JSON_KEY_ACCESS_TOKEN_EXPIRY, DateToISO8601(ATokens.AccessTokenExpiry, True));
     Result.AddPair(JSON_KEY_REFRESH_TOKEN_EXPIRY, DateToISO8601(ATokens.RefreshTokenExpiry, True));

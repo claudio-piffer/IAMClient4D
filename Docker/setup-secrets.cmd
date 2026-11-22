@@ -1,65 +1,18 @@
 @echo off
-setlocal enabledelayedexpansion
-
-set "SECRETS_DIR=.\secrets"
-
-echo.
-echo ====================================================
-echo   Checking and generating secret files...
-echo ====================================================
-echo.
-
-if not exist "%SECRETS_DIR%" (
-    echo [INFO] Secrets directory not found, creating it...
-    mkdir "%SECRETS_DIR%"
+rem Generates the passwords of the sample environment in secrets\ (24 letters and digits):
+rem Keycloak admin, PostgreSQL admin, PostgreSQL user keycloak. An existing, non-empty file is kept.
+rem Called by start.cmd; delete-volumes.cmd does not touch them.
+setlocal
+cd /d "%~dp0"
+if not exist secrets mkdir secrets
+for %%S in (kc_admin_password pg_admin_password pg_keycloak_password) do (
+  call :secret %%S || exit /b 1
 )
+exit /b 0
 
-call :ProcessSecret pg_admin_password
-call :ProcessSecret pg_keycloak_password
-
-echo.
-echo ====================================================
-echo   Secret setup check complete.
-echo ====================================================
-echo.
-
-goto :eof
-
-:ProcessSecret
-set "SECRET_NAME=%1"
-set "TARGET_FILE=%SECRET_NAME%.txt"
-set "TARGET_PATH=%SECRETS_DIR%\%TARGET_FILE%"
-
-echo --- Checking for %TARGET_FILE%...
-
-set "NEEDS_GENERATION=0"
-if not exist "%TARGET_PATH%" (
-    echo   [INFO] %TARGET_FILE% not found. Will generate a new password.
-    set "NEEDS_GENERATION=1"
-) else (
-    for %%F in ("%TARGET_PATH%") do (
-        if %%~zF gtr 0 (
-            echo   [OK] %TARGET_FILE% already exists and is not empty. Skipping.
-        ) else (
-            echo   [INFO] %TARGET_FILE% exists but is empty. Will generate a new password.
-            set "NEEDS_GENERATION=1"
-        )
-    )
-)
-
-if !NEEDS_GENERATION! equ 1 (
-    echo   Generating an ultra script-safe password...
-
-    for /f "usebackq delims=" %%P in (`
-		powershell -NoProfile -Command "$chars = ([char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'); -join (1..24 | ForEach-Object { $chars | Get-Random })"
-    `) do set "GENERATED_PASS=%%P"
-
-    if not "!GENERATED_PASS!"=="" (
-        <NUL set /p ".=!GENERATED_PASS!" > "%TARGET_PATH%"
-        echo   [SET] New password saved in %TARGET_FILE%.
-    ) else (
-        echo   [ERROR] Failed to generate password for %TARGET_FILE%.
-    )
-)
-echo.
-goto :eof
+:secret
+set "FILE=secrets\%~1.txt"
+if exist "%FILE%" for %%F in ("%FILE%") do if %%~zF gtr 0 exit /b 0
+powershell -NoProfile -Command "$c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'; $p = ''; $r = [Security.Cryptography.RandomNumberGenerator]::Create(); $b = New-Object byte[] 1; while ($p.Length -lt 24) { $r.GetBytes($b); if ($b[0] -lt 248) { $p += $c[$b[0] %% 62] } }; [IO.File]::WriteAllText((Join-Path (Get-Location) '%FILE%'), $p)" || exit /b 1
+echo [OK] Generated %FILE%
+exit /b 0

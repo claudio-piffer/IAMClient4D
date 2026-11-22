@@ -1,0 +1,15 @@
+{{# Result of the primality test: r.data = number, isPrime, factors #}}
+<div class="result">
+  {{include "../partials/_call.html"}}
+  {{if r.ok}}
+  <div class="display">
+    <div class="display-expression">{{:r.data.number}}</div>
+    <div class="display-value">{{if r.data.isPrime}}{{:t.results.prime}}{{else}}{{:t.results.composite}}{{endif}}</div>
+    <div class="factors mt-2" aria-label="{{:t.results.prime_factors}}">
+      {{for f in r.data.factors}}<span class="factor">{{:f}}</span>{{endfor}}
+    </div>
+  </div>
+  {{else}}
+  {{include "../partials/_error.html"}}
+  {{endif}}
+</div>

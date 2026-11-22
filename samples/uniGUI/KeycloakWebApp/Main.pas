@@ -95,17 +95,19 @@ procedure TMainForm.ValidateTokenButtonClick(Sender: TObject);
 var
   LJWTValidator: IIAM4DJWTValidator;
   LClaims: TJSONObject;
-  LExpectedAud: string;
+  LExpectedAud, LToken: string;
 begin
+  LToken := UniMainModule.IAMClient.GetAccessToken;
   UniMemo1.Lines.Clear;
-  UniMemo1.Lines.Add(UniMainModule.IAMClient.GetAccessToken);
+  UniMemo1.Lines.Add(LToken);
   LExpectedAud := Trim(ExpectedAUDEdit.Text);
   LJWTValidator := TIAM4DJWTValidator.Create(UniMainModule.IAMClient.Issuer, LExpectedAud, svmAllowSelfSigned);
   try
     if LExpectedAud.IsEmpty then
       (LJWTValidator as IIAM4DJWTValidatorConfigurable).AudienceValidationEnabled := False;
 
-    if LJWTValidator.ValidateToken(UniMemo1.Lines.Text, LClaims) then
+    // The token itself: the memo text ends with a line break
+    if LJWTValidator.ValidateToken(LToken, LClaims) then
     begin
       try
         UniMemo1.Lines.Clear;

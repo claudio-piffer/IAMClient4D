@@ -28,7 +28,6 @@ unit Async.Core;
 interface
 
 uses
-  System.Math,
   System.SysUtils,
   System.Threading,
   System.SyncObjs,
@@ -49,6 +48,9 @@ type
   /// <summary>
   ///   Callback invoked when an error occurs during task execution.
   /// </summary>
+  /// <remarks>
+  ///   The exception is owned by the operation: do not free it or keep it after the callback returns.
+  /// </remarks>
   TAsyncCoreErrorCallback = reference to procedure(const AException: Exception);
 
   /// <summary>
@@ -62,39 +64,28 @@ type
   TAsyncCoreProcedureSuccessCallback = reference to procedure;
 
   /// <summary>
-  ///   Defines how callbacks are dispatched to the main thread.
+  ///   Decides whether a failed attempt of RunWithRetry is retried.
+  /// </summary>
+  TAsyncCoreRetryPredicate = reference to function(const AException: Exception): Boolean;
+
+  /// <summary>
+  ///   Creates an independent copy of an exception, including the fields of its class.
+  /// </summary>
+  TAsyncExceptionCloner = reference to function(const ASource: Exception): Exception;
+
+  /// <summary>
+  ///   Defines on which thread callbacks are executed.
   /// </summary>
   /// <remarks>
-  ///   <para>dmSynchronize: Blocks the worker thread until the main thread executes the callback.</para>
-  ///   <para>dmQueue: Queues the callback for execution on the main thread without blocking.</para>
+  ///   <para>dmSynchronize: Blocks the worker thread until the main thread executes the callback. On the main thread
+  ///   the callback runs at once, inside the call that ends the operation (e.g. Cancel on WhenAll).</para>
+  ///   <para>dmQueue: Queues the callback for execution on the main thread without blocking. Always queued
+  ///   (TThread.ForceQueue), also on the main thread: callbacks never run inside Cancel, SetResult or OnCompletion.</para>
+  ///   <para>dmInline: Runs the callback on the thread that completes the operation (usually a pool thread),
+  ///   without involving the main thread. For console applications, services and servers; the callbacks must be thread-safe.</para>
   /// </remarks>
-  TAsyncCallbackDispatchMode = (dmSynchronize, dmQueue);
+  TAsyncCallbackDispatchMode = (dmSynchronize, dmQueue, dmInline);
 
-  /// <summary>
-  ///   Reference-counted wrapper for TEvent to prevent use-after-free in async callbacks.
-  /// </summary>
-  IEventWrapper = interface
-    ['{4E5E41AC-A4C4-4B06-A450-97195C9FF3A7}']
-    procedure Signal;
-    function WaitFor(ATimeout: Cardinal): TWaitResult;
-  end;
-
-  /// <summary>
-  ///   Implementation of IEventWrapper that ensures thread-safe event lifetime management.
-  /// </summary>
-  TEventWrapper = class(TInterfacedObject, IEventWrapper)
-  private
-    FEvent: TEvent;
-  public
-    constructor Create;
-    destructor Destroy; override;
-    procedure Signal;
-    function WaitFor(ATimeout: Cardinal): TWaitResult;
-  end;
-
-  /// <summary>
-  ///   Exception raised when an asynchronous operation is cancelled.
-  /// </summary>
   /// <summary>
   ///   Base class for all exceptions raised by the Async.Core library.
   /// </summary>
@@ -140,7 +131,9 @@ type
     /// <summary>Linearly increasing delay (delay * attempt)</summary>
     Linear,
     /// <summary>Exponentially increasing delay (delay * 2^attempt)</summary>
-    Exponential);
+    Exponential,
+    /// <summary>Exponential delay randomized between 50% and 100%: spreads the retries of many clients</summary>
+    ExponentialJitter);
 
   /// <summary>
   ///   Interface for controlling and monitoring an asynchronous operation.
@@ -150,6 +143,16 @@ type
     /// <summary>
     ///   Requests cancellation of the asynchronous operation.
     /// </summary>
+    /// <remarks>
+    ///   <para>Run/New tasks: cooperative, the task must check IsCancellationRequested.</para>
+    ///   <para>ContinueWith, WhenAll, WhenAny and RunWithTimeout: the operation is cancelled at once and the
+    ///   cancellation is forwarded to the operations it depends on.</para>
+    ///   <para>Delay and CreateCancellationTokenWithTimeout: the operation is cancelled at once and its timer disposed;
+    ///   the callbacks run on a pool thread.</para>
+    ///   <para>RunWithRetry: cooperative during an attempt, as for Run; during the wait between attempts the operation is
+    ///   cancelled at once and its timer disposed, the callbacks run on a pool thread.</para>
+    ///   <para>FromOperation: forwarded to the followed operation, the operation ends when that one does.</para>
+    /// </remarks>
     procedure Cancel;
 
     /// <summary>
@@ -162,15 +165,18 @@ type
     ///   Registers a callback to be invoked when the operation is cancelled.
     /// </summary>
     /// <param name="ACallback">The callback to execute on cancellation.</param>
+    /// <remarks>
+    ///   Several callbacks can be registered. If cancellation was already requested the callback is dispatched at once.
+    /// </remarks>
     procedure OnCancelled(const ACallback: TAsyncCoreCancelledCallback);
 
     /// <summary>
     ///   Waits for the operation to complete.
     /// </summary>
     /// <param name="ATimeout">Timeout in milliseconds. Use INFINITE for no timeout.</param>
-    /// <param name="ARaiseOnError">If True, raises exceptions for Faulted and Timeout states. Cancelled state never raises. Default: False for backward compatibility.</param>
+    /// <param name="ARaiseOnError">If True, raises a copy of the exception when the operation faulted. Cancelled state never raises. Default: False for backward compatibility.</param>
     /// <returns>The final state of the operation.</returns>
-    /// <exception cref="EAsyncTimeoutException">Raised if the timeout expires.</exception>
+    /// <exception cref="EAsyncTimeoutException">Raised if the timeout expires, whatever ARaiseOnError.</exception>
     /// <exception cref="Exception">Raised if ARaiseOnError=True and the operation faulted.</exception>
     function WaitForCompletion(ATimeout: Cardinal = INFINITE; ARaiseOnError: Boolean = False): TAsyncOperationState;
 
@@ -204,7 +210,7 @@ type
     /// <returns>The result of the operation.</returns>
     /// <exception cref="EAsyncTimeoutException">Raised if the timeout expires.</exception>
     /// <exception cref="EAsyncCancelException">Raised if the operation was cancelled.</exception>
-    /// <exception cref="Exception">Re-raises the exception if the operation faulted.</exception>
+    /// <exception cref="Exception">Raises a copy of the exception if the operation faulted.</exception>
     function WaitForResult(ATimeout: Cardinal = INFINITE): T;
 
     /// <summary>
@@ -228,23 +234,34 @@ type
     function TryGetResult(out AResult: T): Boolean;
 
     /// <summary>
-    ///   Gets the exception if the operation faulted.
+    ///   Gets a copy of the exception if the operation faulted.
     /// </summary>
-    /// <returns>The exception, or nil if the operation did not fault.</returns>
+    /// <returns>A new exception owned by the caller (free it), or nil if the operation did not fault.</returns>
     function GetException: Exception;
   end;
 
+  /// <summary>
+  ///   Thread-safe implementation of IAsyncOperation: state, cancellation, callbacks and waiters.
+  /// </summary>
   TAsyncOperationController = class(TInterfacedObject, IAsyncOperation)
+  private type
+    TCancelHandler = record
+      Callback: TAsyncCoreCancelledCallback;
+      DispatchMode: TAsyncCallbackDispatchMode;
+    end;
   private
     FCancelled: Integer;
-    FCancelledCallback: TAsyncCoreCancelledCallback;
+    FCancelHandlers: TList<TCancelHandler>;
+    FCompletionCallbacks: TList<TAsyncCoreFinallyCallback>;
+    FCompletionEvent: TEvent;
+    FContinuations: TList<TAsyncCoreFinallyCallback>;
     FCriticalSection: TCriticalSection;
     FDispatchMode: TAsyncCallbackDispatchMode;
-    FState: TAsyncOperationState;
-    FCompletionEvent: TEvent;
     FException: Exception;
-    FCompletionCallbacks: TList<TAsyncCoreFinallyCallback>;
-
+    FSignalled: Boolean;
+    FState: TAsyncOperationState;
+    procedure AddCancelHandler(const ACallback: TAsyncCoreCancelledCallback; ADispatchMode: TAsyncCallbackDispatchMode);
+    procedure RunCancelHandler(const AHandler: TCancelHandler);
   protected
     // IAsyncOperation
     procedure Cancel;
@@ -253,11 +270,55 @@ type
     procedure OnCompletion(const ACallback: TAsyncCoreFinallyCallback);
     function WaitForCompletion(ATimeout: Cardinal = INFINITE; ARaiseOnError: Boolean = False): TAsyncOperationState;
     function GetState: TAsyncOperationState;
-
-    procedure SetState(AState: TAsyncOperationState);
-    procedure SignalCompletion;
-    procedure SetException(AException: Exception);
     function GetException: Exception;
+
+    class function IsFinal(AState: TAsyncOperationState): Boolean; static; inline;
+
+    /// <summary>
+    ///   Waits until the operation is completed and signalled. Returns False on timeout, without raising.
+    /// </summary>
+    function WaitSignaled(ATimeout: Cardinal): Boolean;
+
+    /// <summary>
+    ///   Moves a pending operation to the Running state.
+    /// </summary>
+    procedure SetRunning;
+
+    /// <summary>
+    ///   Moves the operation to a final state. Returns False if it already reached one.
+    /// </summary>
+    /// <remarks>
+    ///   Takes ownership of AException in any case. A nil exception for Faulted is replaced by an EAsyncException.
+    /// </remarks>
+    function TryComplete(AState: TAsyncOperationState; AException: Exception = nil): Boolean;
+
+    /// <summary>
+    ///   Dispatches the completion callbacks (once) and releases the waiters.
+    /// </summary>
+    procedure SignalCompletion;
+
+    /// <summary>
+    ///   Dispatches ACallback with the stored exception; the operation stays alive until the callback has run.
+    /// </summary>
+    procedure DispatchException(const ACallback: TAsyncCoreErrorCallback);
+
+    /// <summary>
+    ///   Registers a cancellation handler run on the cancelling thread, for internal signalling.
+    /// </summary>
+    procedure OnCancelledInline(const ACallback: TAsyncCoreCancelledCallback);
+
+    /// <summary>
+    ///   Registers an internal continuation, run on the completing thread after the waiters are released.
+    /// </summary>
+    /// <remarks>
+    ///   Used by the combinators: they must work even when the main thread does not serve Synchronize/Queue.
+    /// </remarks>
+    procedure OnCompletionInline(const ACallback: TAsyncCoreFinallyCallback);
+
+    /// <summary>
+    ///   Removes a continuation registered with OnCompletionInline that has not run yet.
+    /// </summary>
+    procedure RemoveCompletionInline(const ACallback: TAsyncCoreFinallyCallback);
   public
     constructor Create(ADispatchMode: TAsyncCallbackDispatchMode);
     destructor Destroy; override;
@@ -271,7 +332,10 @@ type
     FResult: T;
     FHasResult: Boolean;
   protected
-    procedure SetResult(const AValue: T);
+    /// <summary>
+    ///   Stores the result and completes the operation. Returns False if it already reached a final state.
+    /// </summary>
+    function TrySetResult(const AValue: T): Boolean;
   public
     // IAsyncOperation<T>
     function WaitForResult(ATimeout: Cardinal = INFINITE): T;
@@ -407,6 +471,7 @@ type
   TAsyncCorePromise<T> = class(TInterfacedObject, IAsyncPromise<T>)
   private
     FTask: TAsyncCoreFunctionTask<T>;
+    FSource: IAsyncOperation<T>;
     FOnSuccess: TAsyncCoreSuccessCallback<T>;
     FOnError: TAsyncCoreErrorCallback;
     FOnFinally: TAsyncCoreFinallyCallback;
@@ -418,6 +483,7 @@ type
     function DispatchMode(const AMode: TAsyncCallbackDispatchMode): IAsyncPromise<T>;
     function Run: IAsyncOperation<T>;
     constructor Create(const ATask: TAsyncCoreFunctionTask<T>);
+    constructor CreateFromOperation(const ASource: IAsyncOperation<T>);
   end;
 
   TAsyncCoreVoidPromise = class(TInterfacedObject, IAsyncVoidPromise)
@@ -447,12 +513,10 @@ type
   TAsyncTaskCompletionSource<T> = class(TInterfacedObject, IAsyncTaskCompletionSource<T>)
   private
     FController: TAsyncOperationController<T>;
-    FCompleted: Boolean;
-    FCriticalSection: TCriticalSection;
+    FOperation: IAsyncOperation<T>; // keeps FController alive as long as the source
     function GetOperation: IAsyncOperation<T>;
   public
     constructor Create(ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmQueue);
-    destructor Destroy; override;
 
     /// <summary>
     ///   Sets the result and marks the operation as completed successfully.
@@ -501,12 +565,10 @@ type
   TAsyncTaskCompletionSource = class(TInterfacedObject, IAsyncTaskCompletionSource)
   private
     FController: TAsyncOperationController;
-    FCompleted: Boolean;
-    FCriticalSection: TCriticalSection;
+    FOperation: IAsyncOperation; // keeps FController alive as long as the source
     function GetOperation: IAsyncOperation;
   public
     constructor Create(ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmQueue);
-    destructor Destroy; override;
 
     /// <summary>
     ///   Marks the operation as completed successfully.
@@ -549,15 +611,53 @@ type
   end;
 
   /// <summary>
+  ///   Operation of TAsyncCore.RunWithRetry: each attempt is a pool task, each wait between attempts a timer of the
+  ///   shared timer thread. Internal: use RunWithRetry.
+  /// </summary>
+  TAsyncRetryOperation<T> = class(TAsyncOperationController<T>)
+  private
+    FTask: TAsyncCoreFunctionTask<T>;
+    FShouldRetry: TAsyncCoreRetryPredicate;
+    FMaxRetries: Integer;
+    FInitialDelay: Cardinal;
+    FMaxDelay: Cardinal;
+    FStrategy: TBackoffStrategy;
+    FAttempt: Integer; // only the running attempt uses it
+    FTimer: Int64;     // last backoff timer, guarded by FCriticalSection
+    function AttemptProc: TProc;
+    function FinishProc: TProc;
+    function CancelHandler: TAsyncCoreCancelledCallback;
+    procedure Start;
+    procedure RunAttempt;
+    function ScheduleRetry: Boolean;
+    procedure CancelWait;
+    procedure Finish;
+  public
+    constructor Create(const ATask: TAsyncCoreFunctionTask<T>; AMaxRetries: Integer; AInitialDelay: Cardinal;
+      AStrategy: TBackoffStrategy; AMaxDelay: Cardinal; const AShouldRetry: TAsyncCoreRetryPredicate;
+      ADispatchMode: TAsyncCallbackDispatchMode);
+  end;
+
+  /// <summary>
   ///   Main entry point for creating and executing asynchronous operations.
   /// </summary>
   TAsyncCore = class sealed
   private
     class var FOnUnhandledError: TAsyncCoreErrorCallback;
-    class function GetElapsedTime(AStartTime: Cardinal): Cardinal; static;
-    class procedure DispatchIfAssigned(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreFinallyCallback); overload; static;
-    class procedure DispatchIfAssigned<T>(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreSuccessCallback<T>; const AValue: T); overload; static;
-    class procedure DispatchAcquiredException(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreErrorCallback; AException: Exception); static;
+    class procedure DispatchCallback(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreFinallyCallback); static;
+    class function ReportUnhandledError(AException: Exception): Boolean; static;
+    class function CloneException(ASource: Exception): Exception; static;
+    class function RetryDelay(AStrategy: TBackoffStrategy; AInitialDelay, AMaxDelay: Cardinal; AAttempt: Integer): Cardinal; static;
+    class procedure AddContinuation(const AOperation: IAsyncOperation; const AContinuation: TAsyncCoreFinallyCallback); static;
+    class procedure RemoveContinuation(const AOperation: IAsyncOperation; const AContinuation: TAsyncCoreFinallyCallback); static;
+    class function ScheduleTimer(ADelayMs: Cardinal; const ACallback: TProc): Int64; static;
+    class function CancelTimer(AId: Int64): Boolean; static;
+    class procedure AddCancelHandler(const AOperation: IAsyncOperation; const AHandler: TAsyncCoreCancelledCallback); static;
+    class procedure SetFaulted(AController: TAsyncOperationController; AException: Exception;
+      const OnError: TAsyncCoreErrorCallback); static;
+    class function Follow<T>(const ASource: IAsyncOperation<T>; OnSuccess: TAsyncCoreSuccessCallback<T>;
+      OnError: TAsyncCoreErrorCallback; OnFinally: TAsyncCoreFinallyCallback;
+      ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<T>; static;
   public
     /// <summary>
     ///   Executes an asynchronous function task that returns a value.
@@ -606,38 +706,58 @@ type
     class function New(const ATask: TAsyncCoreProcedureTask): IAsyncVoidPromise; overload; static;
 
     /// <summary>
+    ///   Creates a promise for an operation completed elsewhere, typically by a TAsyncTaskCompletionSource.
+    /// </summary>
+    /// <param name="AOperation">The operation to follow.</param>
+    /// <returns>A promise whose Run returns an operation that ends as AOperation does.</returns>
+    /// <remarks>
+    ///   <para>Unlike a New task that waits on AOperation, no thread is blocked and no exception is raised
+    ///   when AOperation is cancelled. The callbacks are dispatched from a pool thread, as for New.</para>
+    ///   <para>Cancel on the operation returned by Run is forwarded to AOperation: its producer ends it,
+    ///   e.g. with OnCancelled and TrySetCancelled on the completion source.</para>
+    /// </remarks>
+    class function FromOperation<T>(const AOperation: IAsyncOperation<T>): IAsyncPromise<T>; static;
+
+    /// <summary>
     ///   Creates a continuation that executes when the source operation completes successfully.
     /// </summary>
     /// <param name="AOperation">The source operation to chain from.</param>
     /// <param name="AContinuation">Function that transforms the result to a new type.</param>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the returned operation.</param>
     /// <returns>A new operation representing the continuation.</returns>
     /// <remarks>
-    ///   If the source operation fails or is cancelled, the continuation is not executed and the error propagates.
+    ///   <para>If the source operation fails or is cancelled, the continuation is not executed and the error propagates.</para>
+    ///   <para>The continuation runs on a pool thread. Cancel cancels the continuation at once and the source operation.</para>
     /// </remarks>
     class function ContinueWith<T, TResult>(const AOperation: IAsyncOperation<T>;
-      const AContinuation: TAsyncCoreContinuationFunc<T, TResult>): IAsyncOperation<TResult>; static;
+      const AContinuation: TAsyncCoreContinuationFunc<T, TResult>;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation<TResult>; static;
 
     /// <summary>
     ///   Waits for all operations to complete successfully.
     /// </summary>
     /// <param name="AOperations">Array of operations to wait for.</param>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the returned operation.</param>
     /// <returns>An operation that completes when all operations complete, returning an array of results.</returns>
     /// <remarks>
     ///   If any operation fails or is cancelled, WhenAll fails immediately with that error.
-    ///   All operations execute in parallel.
+    ///   All operations execute in parallel. Cancel cancels the result at once and all the operations.
     /// </remarks>
-    class function WhenAll<T>(const AOperations: array of IAsyncOperation<T>): IAsyncOperation<TArray<T>>; static;
+    class function WhenAll<T>(const AOperations: array of IAsyncOperation<T>;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation<TArray<T>>; static;
 
     /// <summary>
     ///   Waits for the first operation to complete.
     /// </summary>
     /// <param name="AOperations">Array of operations to race.</param>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the returned operation.</param>
     /// <returns>An operation that completes when the first operation completes, returning its result.</returns>
     /// <remarks>
     ///   Returns the result of the first operation that completes (success, error, or cancellation).
-    ///   Other operations continue running in the background.
+    ///   Other operations continue running in the background. Cancel cancels the result at once and all the operations.
     /// </remarks>
-    class function WhenAny<T>(const AOperations: array of IAsyncOperation<T>): IAsyncOperation<T>; static;
+    class function WhenAny<T>(const AOperations: array of IAsyncOperation<T>;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation<T>; static;
 
     /// <summary>
     ///   Executes an asynchronous task with automatic retry on failure.
@@ -647,12 +767,20 @@ type
     /// <param name="AInitialDelay">Initial delay between retries in milliseconds.</param>
     /// <param name="ABackoffStrategy">Backoff strategy for calculating delays.</param>
     /// <param name="AMaxDelay">Maximum delay between retries in milliseconds (default: 30000ms = 30s).</param>
+    /// <param name="AShouldRetry">Optional filter: a failed attempt is retried only if it returns True. Default: retry any error.</param>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the returned operation, which is also
+    /// the controller passed to ATask (default: dmSynchronize).</param>
     /// <returns>An operation that completes when the task succeeds or all retries are exhausted.</returns>
+    /// <exception cref="EArgumentOutOfRangeException">Raised if AMaxRetries is negative.</exception>
     /// <remarks>
     ///   <para>Fixed: Always waits AInitialDelay between retries.</para>
     ///   <para>Linear: Delay = AInitialDelay * attempt (1x, 2x, 3x, ...).</para>
     ///   <para>Exponential: Delay = AInitialDelay * 2^attempt (1x, 2x, 4x, 8x, ...).</para>
+    ///   <para>ExponentialJitter: exponential delay (capped) randomized between 50% and 100%.</para>
     ///   <para>All delays are capped at AMaxDelay.</para>
+    ///   <para>Each attempt runs as a pool task; no thread waits between attempts: the shared timer thread serves the
+    ///   delay. Cancel during the delay disposes the timer and ends the operation as Cancelled at once, without raising
+    ///   exceptions; the callbacks run on a pool thread. During an attempt cancellation is cooperative, as for Run.</para>
     ///   <para>If all retries fail, raises the last exception encountered.</para>
     /// </remarks>
     class function RunWithRetry<T>(
@@ -660,46 +788,63 @@ type
       AMaxRetries: Integer = 3;
       AInitialDelay: Cardinal = 1000;
       ABackoffStrategy: TBackoffStrategy = TBackoffStrategy.Exponential;
-      AMaxDelay: Cardinal = 30000): IAsyncOperation<T>; static;
+      AMaxDelay: Cardinal = 30000;
+      AShouldRetry: TAsyncCoreRetryPredicate = nil;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation<T>; static;
 
     /// <summary>
     ///   Executes an asynchronous task with automatic cancellation after timeout.
     /// </summary>
     /// <param name="ATask">The task to execute.</param>
     /// <param name="ATimeoutMs">Timeout in milliseconds after which the task is automatically cancelled.</param>
-    /// <returns>An operation that completes when the task finishes or is cancelled by timeout.</returns>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the returned operation and on the
+    /// controller passed to ATask (default: dmSynchronize).</param>
+    /// <returns>An operation that completes when the task finishes or the timeout expires.</returns>
     /// <remarks>
     ///   <para>If the task completes before timeout, returns normally.</para>
-    ///   <para>If timeout expires, the task is automatically cancelled and raises EAsyncCancelException.</para>
-    ///   <para>The task should check IsCancellationRequested to respond to timeout cancellation.</para>
+    ///   <para>If timeout expires, the operation faults with EAsyncTimeoutException and cancellation is requested
+    ///   to the task, which should check IsCancellationRequested.</para>
+    ///   <para>Only the task takes a pool thread: the timeout is served by the shared timer thread and disposed as soon
+    ///   as the task ends.</para>
+    ///   <para>The timeout cancels the task from a pool thread: where the main thread does not serve Synchronize
+    ///   (console, service, server) use dmInline or dmQueue, or the OnCancelled callbacks of the task never run.</para>
+    ///   <para>Cancel cancels the operation at once and the task.</para>
     /// </remarks>
     class function RunWithTimeout<T>(
       ATask: TAsyncCoreFunctionTask<T>;
-      ATimeoutMs: Cardinal): IAsyncOperation<T>; static;
+      ATimeoutMs: Cardinal;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation<T>; static;
 
     /// <summary>
     ///   Creates an asynchronous delay operation.
     /// </summary>
     /// <param name="AMilliseconds">The delay duration in milliseconds.</param>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the returned operation (default: dmSynchronize).</param>
     /// <returns>An operation that completes after the specified delay.</returns>
     /// <remarks>
-    ///   <para>This is a non-blocking alternative to Sleep().</para>
-    ///   <para>The delay can be cancelled by calling Cancel on the returned operation.</para>
+    ///   <para>This is a non-blocking alternative to Sleep(). No thread waits: a shared timer thread serves every
+    ///   delay and completes it from a pool thread. INFINITE never completes.</para>
+    ///   <para>Cancel disposes the timer and ends the delay as Cancelled (at once while the timer is pending), without
+    ///   raising exceptions; the callbacks run on a pool thread. A Cancel that comes before the delay has completed always wins.</para>
     ///   <para>Useful for testing, throttling, or introducing delays in task chains.</para>
     /// </remarks>
-    class function Delay(AMilliseconds: Cardinal): IAsyncOperation; static;
+    class function Delay(AMilliseconds: Cardinal;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation; static;
 
     /// <summary>
     ///   Creates a cancellation token that automatically signals after a timeout.
     /// </summary>
     /// <param name="ATimeoutMs">Timeout in milliseconds before the token signals completion.</param>
+    /// <param name="ADispatchMode">Dispatch mode of the callbacks registered on the token (default: dmSynchronize).</param>
     /// <returns>An operation that completes when timeout expires.</returns>
     /// <remarks>
-    ///   <para>Use this to create time-based cancellation tokens.</para>
+    ///   <para>Use this to create time-based cancellation tokens; it is a Delay.</para>
     ///   <para>Check State property to see if timeout has expired.</para>
-    ///   <para>Can be combined with WhenAny to implement timeout patterns.</para>
+    ///   <para>Cancel the token to dispose its timer before it expires.</para>
+    ///   <para>Can be combined with WhenAny or LinkCancellationToken to implement timeout patterns.</para>
     /// </remarks>
-    class function CreateCancellationTokenWithTimeout(ATimeoutMs: Cardinal): IAsyncOperation; static;
+    class function CreateCancellationTokenWithTimeout(ATimeoutMs: Cardinal;
+      ADispatchMode: TAsyncCallbackDispatchMode = TAsyncCallbackDispatchMode.dmSynchronize): IAsyncOperation; static;
 
     /// <summary>
     ///   Links a cancellation token to an operation, automatically cancelling the operation when the token completes.
@@ -707,16 +852,39 @@ type
     /// <param name="AOperation">The operation to monitor and cancel.</param>
     /// <param name="ACancellationToken">The token that triggers cancellation when it completes.</param>
     /// <remarks>
-    ///   <para>When ACancellationToken completes, AOperation.Cancel is called automatically.</para>
+    ///   <para>When ACancellationToken completes, AOperation.Cancel is called automatically. A cancelled token
+    ///   does not cancel the operation.</para>
+    ///   <para>The link is dropped as soon as either one ends: a pending token does not keep a completed operation
+    ///   alive. The token is not cancelled, since it may be linked to other operations: cancel it to dispose its timer.</para>
     ///   <para>Useful for implementing automatic timeout cancellation.</para>
     /// </remarks>
     class procedure LinkCancellationToken(const AOperation: IAsyncOperation; const ACancellationToken: IAsyncOperation); static;
 
     /// <summary>
+    ///   Number of timers waiting in the shared timer thread (Delay, RunWithRetry, RunWithTimeout, timeout tokens). Diagnostics.
+    /// </summary>
+    class function PendingTimerCount: Integer; static;
+
+    /// <summary>
+    ///   Registers how to copy exceptions of AClass (and descendants) when they are re-raised.
+    /// </summary>
+    /// <param name="AClass">Exception class handled by the cloner.</param>
+    /// <param name="ACloner">Function returning a new, independent copy. Nil removes the registration.</param>
+    /// <remarks>
+    ///   <para>WaitForResult, WaitForCompletion and GetException hand out copies, since the operation owns its exception.</para>
+    ///   <para>Without a cloner the copy keeps only class and message: the fields of the class are lost.</para>
+    ///   <para>The most specific registered ancestor wins. Register at startup.</para>
+    /// </remarks>
+    class procedure RegisterExceptionCloner(AClass: ExceptClass; const ACloner: TAsyncExceptionCloner); static;
+
+    /// <summary>
     ///   Global handler for unhandled errors in asynchronous operations.
     /// </summary>
     /// <remarks>
-    ///   This callback is invoked when an error occurs and no OnError callback was registered.
+    ///   <para>Invoked when a task fails and no OnError callback was registered.</para>
+    ///   <para>Also receives the exceptions raised by callbacks; without a handler they go to the application
+    ///   exception handler (VCL/FMX, main thread only) or are discarded, and never change the state of the operation.</para>
+    ///   <para>Runs on the thread of the callback: a pool thread for dmInline.</para>
     /// </remarks>
     class property OnUnhandledError: TAsyncCoreErrorCallback read FOnUnhandledError write FOnUnhandledError;
   end;
@@ -724,88 +892,393 @@ type
 implementation
 
 uses
-  System.Classes;
+  System.Classes,
+  System.Diagnostics,
+  System.Math;
 
-{ TEventWrapper }
+const
+  // While waiting, the main thread serves Synchronize/Queue requests at least this often
+  MAIN_THREAD_WAIT_SLICE_MS = 10;
 
-constructor TEventWrapper.Create;
+type
+  /// <summary>
+  ///   Shared timer of Delay, RunWithRetry, RunWithTimeout and the timeout tokens: one thread serves all of them.
+  /// </summary>
+  /// <remarks>
+  ///   The callback of a due timer runs on a pool thread: a slow callback (e.g. dmSynchronize) never delays the others.
+  /// </remarks>
+  TAsyncTimerQueue = class
+  private type
+    TEntry = record
+      Id: Int64;
+      Due: Int64;
+      Callback: TProc;
+    end;
+
+    TTimerThread = class(TThread)
+    private
+      FQueue: TAsyncTimerQueue;
+    protected
+      procedure Execute; override;
+    public
+      constructor Create(AQueue: TAsyncTimerQueue);
+    end;
+  private const
+    NEVER = High(Int64);
+  private
+    FLock: TCriticalSection;
+    FWakeUp: TEvent;
+    FEntries: TList<TEntry>; // descending by (Due, Id): the next timer to fire is the last one
+    FClock: TStopwatch;
+    FLastId: Int64;
+    FThread: TTimerThread;
+    FShutdown: Boolean;
+    procedure Run;
+  public
+    constructor Create;
+    destructor Destroy; override;
+
+    /// <summary>
+    ///   Runs ACallback on a pool thread after ADelayMs (INFINITE: never). Returns the timer ID.
+    /// </summary>
+    function Schedule(ADelayMs: Cardinal; const ACallback: TProc): Int64;
+
+    /// <summary>
+    ///   Disposes a timer and releases its callback. False if it already fired or was cancelled.
+    /// </summary>
+    function Cancel(AId: Int64): Boolean;
+
+    function Count: Integer;
+  end;
+
+  ICancellationLink = interface
+    procedure TokenEnded;
+    procedure OperationEnded;
+  end;
+
+  /// <summary>
+  ///   Lets a token cancel an operation (LinkCancellationToken). Dropped by both as soon as either one ends.
+  /// </summary>
+  TCancellationLink = class(TInterfacedObject, ICancellationLink)
+  private
+    FLock: TCriticalSection;
+    FOperation: IAsyncOperation;
+    FToken: IAsyncOperation;
+    FTrigger: TAsyncCoreFinallyCallback;
+  public
+    constructor Create(const AOperation, AToken: IAsyncOperation);
+    destructor Destroy; override;
+    procedure Start;
+    procedure TokenEnded;
+    procedure OperationEnded;
+  end;
+
+{$IFDEF MSWINDOWS}
+function AsyncTerminateThread(AThread: THandle; AExitCode: Cardinal): LongBool; stdcall;
+  external 'kernel32.dll' name 'TerminateThread';
+{$ENDIF}
+
+var
+  GClonerLock: TCriticalSection;
+  GCloners: TDictionary<TClass, TAsyncExceptionCloner>;
+  GJitterState: Int64;
+  GTimers: TAsyncTimerQueue;
+
+{$IFOPT Q+}{$DEFINE ASYNC_CORE_Q_ON}{$Q-}{$ENDIF}
+{$IFOPT R+}{$DEFINE ASYNC_CORE_R_ON}{$R-}{$ENDIF}
+// SplitMix64: thread-safe and independent of RandSeed, which applications rarely randomize
+function NextRandom: UInt64;
 begin
-  inherited Create;
-  FEvent := TEvent.Create(nil, True, False, '');
+  Result := UInt64(TInterlocked.Add(GJitterState, Int64($9E3779B97F4A7C15)));
+  Result := (Result xor (Result shr 30)) * $BF58476D1CE4E5B9;
+  Result := (Result xor (Result shr 27)) * $94D049BB133111EB;
+  Result := Result xor (Result shr 31);
+end;
+{$IFDEF ASYNC_CORE_R_ON}{$R+}{$ENDIF}
+{$IFDEF ASYNC_CORE_Q_ON}{$Q+}{$ENDIF}
+
+{ TAsyncTimerQueue.TTimerThread }
+
+constructor TAsyncTimerQueue.TTimerThread.Create(AQueue: TAsyncTimerQueue);
+begin
+  inherited Create(False);
+  // Set before AfterConstruction starts the thread
+  FQueue := AQueue;
 end;
 
-destructor TEventWrapper.Destroy;
+procedure TAsyncTimerQueue.TTimerThread.Execute;
 begin
-  FEvent.Free;
+  NameThreadForDebugging('Async.Core timer');
+  FQueue.Run;
+end;
+
+{ TAsyncTimerQueue }
+
+constructor TAsyncTimerQueue.Create;
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+  FWakeUp := TEvent.Create(nil, False, False, '');
+  FEntries := TList<TEntry>.Create;
+  FClock := TStopwatch.StartNew;
+end;
+
+destructor TAsyncTimerQueue.Destroy;
+begin
+  FLock.Acquire;
+  try
+    FShutdown := True;
+  finally
+    FLock.Release;
+  end;
+  FWakeUp.SetEvent;
+
+  if Assigned(FThread) then
+  begin
+{$IFDEF MSWINDOWS}
+    // DLL unload: no thread can end while the loader lock is held (the RTL thread pool does the same)
+    if IsLibrary then
+      AsyncTerminateThread(FThread.Handle, 0);
+{$ENDIF}
+    FThread.Free; // waits for the thread
+  end;
+
+  // Pending timers never fire: their callbacks, and the operations they hold, are released
+  FEntries.Free;
+  FWakeUp.Free;
+  FLock.Free;
   inherited;
 end;
 
-procedure TEventWrapper.Signal;
-begin
-  FEvent.SetEvent;
-end;
-
-function TEventWrapper.WaitFor(ATimeout: Cardinal): TWaitResult;
-begin
-  Result := FEvent.WaitFor(ATimeout);
-end;
-
-{ TAsyncCore - Helper Methods }
-
-class function TAsyncCore.GetElapsedTime(AStartTime: Cardinal): Cardinal;
+function TAsyncTimerQueue.Schedule(ADelayMs: Cardinal; const ACallback: TProc): Int64;
 var
-  LCurrentTime: Cardinal;
+  LEntry: TEntry;
+  LLow, LHigh, LMid: Integer;
 begin
-  LCurrentTime := TThread.GetTickCount;
-  if LCurrentTime >= AStartTime then
-    Result := LCurrentTime - AStartTime
-  else
-    Result := (High(Cardinal) - AStartTime) + LCurrentTime + 1;
+  FLock.Acquire;
+  try
+    if FShutdown then
+      Exit(0);
+
+    // Started with the first timer: no thread for applications that never use one
+    if not Assigned(FThread) then
+      FThread := TTimerThread.Create(Self);
+
+    Inc(FLastId);
+    LEntry.Id := FLastId;
+    LEntry.Callback := ACallback;
+    if ADelayMs = INFINITE then
+      LEntry.Due := NEVER
+    else
+      LEntry.Due := FClock.ElapsedMilliseconds + ADelayMs;
+
+    // The newest ID sorts after the timers with the same due time: they fire first
+    LLow := 0;
+    LHigh := FEntries.Count;
+    while LLow < LHigh do
+    begin
+      LMid := (LLow + LHigh) div 2;
+      if FEntries[LMid].Due > LEntry.Due then
+        LLow := LMid + 1
+      else
+        LHigh := LMid;
+    end;
+    FEntries.Insert(LLow, LEntry);
+
+    // A new first timer: the thread waits for a later one
+    if LLow = FEntries.Count - 1 then
+      FWakeUp.SetEvent;
+    Result := LEntry.Id;
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TAsyncTimerQueue.Cancel(AId: Int64): Boolean;
+var
+  I: Integer;
+  LCallback: TProc;
+begin
+  Result := False;
+  if AId = 0 then
+    Exit;
+
+  FLock.Acquire;
+  try
+    for I := FEntries.Count - 1 downto 0 do
+      if FEntries[I].Id = AId then
+      begin
+        // Released outside the lock: it may free the operation it holds
+        LCallback := FEntries[I].Callback;
+        FEntries.Delete(I);
+        Result := True;
+        Break;
+      end;
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TAsyncTimerQueue.Count: Integer;
+begin
+  FLock.Acquire;
+  try
+    Result := FEntries.Count;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TAsyncTimerQueue.Run;
+var
+  LFired: TArray<TProc>;
+  LCount, I: Integer;
+  LNow, LWait: Int64;
+begin
+  while True do
+  begin
+    LCount := 0;
+    LWait := INFINITE;
+    FLock.Acquire;
+    try
+      if FShutdown then
+        Exit;
+
+      LNow := FClock.ElapsedMilliseconds;
+      while FEntries.Count > 0 do
+      begin
+        if FEntries.Last.Due > LNow then
+        begin
+          if FEntries.Last.Due <> NEVER then
+            LWait := Min(FEntries.Last.Due - LNow, Int64(INFINITE) - 1);
+          Break;
+        end;
+        if LCount = Length(LFired) then
+          SetLength(LFired, LCount * 2 + 8);
+        LFired[LCount] := FEntries.Last.Callback;
+        Inc(LCount);
+        FEntries.Delete(FEntries.Count - 1);
+      end;
+    finally
+      FLock.Release;
+    end;
+
+    for I := 0 to LCount - 1 do
+    begin
+      try
+        TTask.Run(LFired[I]);
+      except
+        // The thread must survive (e.g. out of memory): the operation of this timer stays pending
+      end;
+      LFired[I] := nil;
+    end;
+
+    if LCount = 0 then
+      FWakeUp.WaitFor(Cardinal(LWait));
+  end;
+end;
+
+{ TCancellationLink }
+
+function LinkTrigger(const ALink: ICancellationLink): TAsyncCoreFinallyCallback;
+begin
+  Result :=
+    procedure
+    begin
+      ALink.TokenEnded;
+    end;
+end;
+
+function LinkEnder(const ALink: ICancellationLink): TAsyncCoreFinallyCallback;
+begin
+  Result :=
+    procedure
+    begin
+      ALink.OperationEnded;
+    end;
+end;
+
+constructor TCancellationLink.Create(const AOperation, AToken: IAsyncOperation);
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+  FOperation := AOperation;
+  FToken := AToken;
+end;
+
+destructor TCancellationLink.Destroy;
+begin
+  FLock.Free;
+  inherited;
+end;
+
+procedure TCancellationLink.Start;
+var
+  LSelf: ICancellationLink;
+  LOperation, LToken: IAsyncOperation;
+  LTrigger: TAsyncCoreFinallyCallback;
+begin
+  LSelf := Self;
+  LTrigger := LinkTrigger(LSelf);
+  FLock.Acquire;
+  try
+    FTrigger := LTrigger;
+    LOperation := FOperation;
+    LToken := FToken;
+  finally
+    FLock.Release;
+  end;
+
+  // Token first: an operation already ended removes the trigger at once
+  TAsyncCore.AddContinuation(LToken, LTrigger);
+  TAsyncCore.AddContinuation(LOperation, LinkEnder(LSelf));
+end;
+
+procedure TCancellationLink.TokenEnded;
+var
+  LOperation, LToken: IAsyncOperation;
+  LTrigger: TAsyncCoreFinallyCallback;
+begin
+  FLock.Acquire;
+  try
+    LOperation := FOperation;
+    LToken := FToken;
+    LTrigger := FTrigger;
+    FOperation := nil;
+    FToken := nil;
+    FTrigger := nil;
+  finally
+    FLock.Release;
+  end;
+
+  // Only an expired token cancels: a cancelled one just goes away
+  if Assigned(LOperation) and (LToken.State = TAsyncOperationState.Completed) then
+    LOperation.Cancel;
+end;
+
+procedure TCancellationLink.OperationEnded;
+var
+  LOperation, LToken: IAsyncOperation;
+  LTrigger: TAsyncCoreFinallyCallback;
+begin
+  FLock.Acquire;
+  try
+    LOperation := FOperation;
+    LToken := FToken;
+    LTrigger := FTrigger;
+    FOperation := nil;
+    FToken := nil;
+    FTrigger := nil;
+  finally
+    FLock.Release;
+  end;
+
+  // The token no longer references the link, nor the operation
+  if Assigned(LToken) then
+    TAsyncCore.RemoveContinuation(LToken, LTrigger);
 end;
 
 { TAsyncOperationController }
-
-procedure TAsyncOperationController.Cancel;
-var
-  LCallback: TAsyncCoreCancelledCallback;
-  LWasAlreadyCancelled: Boolean;
-begin
-  FCriticalSection.Acquire;
-  try
-    if FState in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled] then
-      Exit;
-
-    LWasAlreadyCancelled := (TInterlocked.CompareExchange(FCancelled, 1, 0) = 1);
-    if LWasAlreadyCancelled then
-      Exit;
-
-    LCallback := FCancelledCallback;
-    FCancelledCallback := nil;
-  finally
-    FCriticalSection.Release;
-  end;
-
-  if Assigned(LCallback) then
-  begin
-    (procedure(ACapturedCallback: TAsyncCoreCancelledCallback)
-      begin
-        case FDispatchMode of
-          TAsyncCallbackDispatchMode.dmQueue:
-            TThread.Queue(nil,
-              procedure
-              begin
-                ACapturedCallback();
-              end);
-          TAsyncCallbackDispatchMode.dmSynchronize:
-            TThread.Synchronize(nil,
-              procedure
-              begin
-                ACapturedCallback();
-              end);
-        end;
-      end)(LCallback);
-  end;
-end;
 
 constructor TAsyncOperationController.Create(ADispatchMode: TAsyncCallbackDispatchMode);
 begin
@@ -814,21 +1287,48 @@ begin
   FCriticalSection := TCriticalSection.Create;
   FCompletionEvent := TEvent.Create;
   FCompletionCallbacks := TList<TAsyncCoreFinallyCallback>.Create;
+  FContinuations := TList<TAsyncCoreFinallyCallback>.Create;
+  FCancelHandlers := TList<TCancelHandler>.Create;
   FDispatchMode := ADispatchMode;
   FState := TAsyncOperationState.Pending;
 end;
 
 destructor TAsyncOperationController.Destroy;
 begin
-  FCancelledCallback := nil;
-
-  if Assigned(FException) then
-    FException.Free;
-  FCompletionEvent.Free;
+  FException.Free;
+  FCancelHandlers.Free;
+  FContinuations.Free;
   FCompletionCallbacks.Free;
+  FCompletionEvent.Free;
   FCriticalSection.Free;
 
   inherited;
+end;
+
+class function TAsyncOperationController.IsFinal(AState: TAsyncOperationState): Boolean;
+begin
+  Result := AState in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled];
+end;
+
+procedure TAsyncOperationController.Cancel;
+var
+  LHandlers: TArray<TCancelHandler>;
+  LHandler: TCancelHandler;
+begin
+  FCriticalSection.Acquire;
+  try
+    if IsFinal(FState) or (FCancelled <> 0) then
+      Exit;
+
+    TInterlocked.Exchange(FCancelled, 1);
+    LHandlers := FCancelHandlers.ToArray;
+    FCancelHandlers.Clear;
+  finally
+    FCriticalSection.Release;
+  end;
+
+  for LHandler in LHandlers do
+    RunCancelHandler(LHandler);
 end;
 
 function TAsyncOperationController.IsCancellationRequested: Boolean;
@@ -836,148 +1336,161 @@ begin
   Result := TInterlocked.CompareExchange(FCancelled, 0, 0) = 1;
 end;
 
-procedure TAsyncOperationController.OnCancelled(const ACallback: TAsyncCoreCancelledCallback);
+procedure TAsyncOperationController.AddCancelHandler(const ACallback: TAsyncCoreCancelledCallback; ADispatchMode: TAsyncCallbackDispatchMode);
 var
+  LHandler: TCancelHandler;
   LAlreadyCancelled: Boolean;
 begin
+  if not Assigned(ACallback) then
+    Exit;
+
+  LHandler.Callback := ACallback;
+  LHandler.DispatchMode := ADispatchMode;
+
   FCriticalSection.Acquire;
   try
-    LAlreadyCancelled := (TInterlocked.CompareExchange(FCancelled, 0, 0) = 1);
-    if not LAlreadyCancelled then
-      FCancelledCallback := ACallback;
+    LAlreadyCancelled := FCancelled <> 0;
+    // Final without cancellation: the handler could never run
+    if not LAlreadyCancelled and not IsFinal(FState) then
+      FCancelHandlers.Add(LHandler);
   finally
     FCriticalSection.Release;
   end;
 
-  if LAlreadyCancelled and Assigned(ACallback) then
-  begin
-    case FDispatchMode of
-      TAsyncCallbackDispatchMode.dmQueue:
-        TThread.Queue(nil, procedure
-          begin
-            ACallback();
-          end);
-      TAsyncCallbackDispatchMode.dmSynchronize:
-        TThread.Synchronize(nil, procedure
-          begin
-            ACallback();
-          end);
+  if LAlreadyCancelled then
+    RunCancelHandler(LHandler);
+end;
+
+procedure TAsyncOperationController.RunCancelHandler(const AHandler: TCancelHandler);
+var
+  LCallback: TAsyncCoreCancelledCallback;
+begin
+  LCallback := AHandler.Callback;
+  TAsyncCore.DispatchCallback(AHandler.DispatchMode,
+    procedure
+    begin
+      LCallback();
+    end);
+end;
+
+procedure TAsyncOperationController.OnCancelled(const ACallback: TAsyncCoreCancelledCallback);
+begin
+  AddCancelHandler(ACallback, FDispatchMode);
+end;
+
+procedure TAsyncOperationController.OnCancelledInline(const ACallback: TAsyncCoreCancelledCallback);
+begin
+  AddCancelHandler(ACallback, TAsyncCallbackDispatchMode.dmInline);
+end;
+
+procedure TAsyncOperationController.OnCompletionInline(const ACallback: TAsyncCoreFinallyCallback);
+var
+  LIsFinal: Boolean;
+begin
+  if not Assigned(ACallback) then
+    Exit;
+
+  FCriticalSection.Acquire;
+  try
+    LIsFinal := IsFinal(FState);
+    if not LIsFinal then
+      FContinuations.Add(ACallback);
+  finally
+    FCriticalSection.Release;
+  end;
+
+  if LIsFinal then
+    TAsyncCore.DispatchCallback(TAsyncCallbackDispatchMode.dmInline, ACallback);
+end;
+
+procedure TAsyncOperationController.RemoveCompletionInline(const ACallback: TAsyncCoreFinallyCallback);
+var
+  I: Integer;
+  LItem: TAsyncCoreFinallyCallback;
+  LRemoved: TAsyncCoreFinallyCallback;
+begin
+  if not Assigned(ACallback) then
+    Exit;
+
+  FCriticalSection.Acquire;
+  try
+    for I := FContinuations.Count - 1 downto 0 do
+    begin
+      LItem := FContinuations[I];
+      if PPointer(@LItem)^ = PPointer(@ACallback)^ then
+      begin
+        // Released outside the lock
+        LRemoved := LItem;
+        FContinuations.Delete(I);
+        Break;
+      end;
     end;
+  finally
+    FCriticalSection.Release;
   end;
 end;
 
 procedure TAsyncOperationController.OnCompletion(const ACallback: TAsyncCoreFinallyCallback);
 var
-  LIsCompleted: Boolean;
+  LIsFinal: Boolean;
 begin
+  if not Assigned(ACallback) then
+    Exit;
+
   FCriticalSection.Acquire;
   try
-    LIsCompleted := FState in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled];
-    if not LIsCompleted then
+    LIsFinal := IsFinal(FState);
+    if not LIsFinal then
       FCompletionCallbacks.Add(ACallback);
   finally
     FCriticalSection.Release;
   end;
 
-  if LIsCompleted then
-  begin
-    case FDispatchMode of
-      TAsyncCallbackDispatchMode.dmQueue:
-        TThread.Queue(nil, procedure
-          begin
-            ACallback();
-          end);
-      TAsyncCallbackDispatchMode.dmSynchronize:
-        TThread.Synchronize(nil, procedure
-          begin
-            ACallback();
-          end);
-    end;
-  end;
+  if LIsFinal then
+    TAsyncCore.DispatchCallback(FDispatchMode, ACallback);
+end;
+
+function TAsyncOperationController.WaitSignaled(ATimeout: Cardinal): Boolean;
+var
+  LStopwatch: TStopwatch;
+  LSlice: Int64;
+begin
+  if IsFinal(GetState) then
+    Exit(True);
+
+  if TThread.Current.ThreadID <> MainThreadID then
+    Exit(FCompletionEvent.WaitFor(ATimeout) = wrSignaled);
+
+  // The callbacks of the operation may need the main thread: keep serving them
+  LStopwatch := TStopwatch.StartNew;
+  repeat
+    LSlice := MAIN_THREAD_WAIT_SLICE_MS;
+    if ATimeout <> INFINITE then
+      LSlice := Min(LSlice, Int64(ATimeout) - LStopwatch.ElapsedMilliseconds);
+    if LSlice > 0 then
+      CheckSynchronize(Integer(LSlice));
+    Result := FCompletionEvent.WaitFor(0) = wrSignaled;
+  until Result or ((ATimeout <> INFINITE) and (LStopwatch.ElapsedMilliseconds >= ATimeout));
 end;
 
 function TAsyncOperationController.WaitForCompletion(ATimeout: Cardinal; ARaiseOnError: Boolean): TAsyncOperationState;
-
-  function CreateExceptionCopy(ASource: Exception): Exception;
-  var
-    LExceptionClass: ExceptClass;
-  begin
-    try
-      LExceptionClass := ExceptClass(ASource.ClassType);
-      Result := LExceptionClass.Create(ASource.Message);
-    except
-      Result := Exception.Create(ASource.ClassName + ': ' + ASource.Message);
-    end;
-  end;
-
 var
-  LStartTime: Cardinal;
-  LElapsed: Cardinal;
-  LRemainingTimeout: Cardinal;
-  LWaitTime: Cardinal;
-  LIsMainThread: Boolean;
-  LExceptionToRaise: Exception;
-  LCurrentState: TAsyncOperationState;
+  LException: Exception;
 begin
-  LExceptionToRaise := nil;
+  if not WaitSignaled(ATimeout) then
+    raise EAsyncTimeoutException.Create('Operation timed out');
 
   FCriticalSection.Acquire;
   try
-    LCurrentState := FState;
-    if LCurrentState in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled] then
-    begin
-      if ARaiseOnError and (LCurrentState = TAsyncOperationState.Faulted) and Assigned(FException) then
-        LExceptionToRaise := CreateExceptionCopy(FException);
-    end;
+    Result := FState;
+    LException := FException;
   finally
     FCriticalSection.Release;
   end;
 
-  if LCurrentState in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled] then
-  begin
-    if Assigned(LExceptionToRaise) then
-      raise LExceptionToRaise;
-    Result := LCurrentState;
-    Exit;
-  end;
-
-  LIsMainThread := TThread.Current.ThreadID = MainThreadID;
-  LStartTime := TThread.GetTickCount;
-
-  while True do
-  begin
-    if ATimeout <> INFINITE then
-    begin
-      LElapsed := TAsyncCore.GetElapsedTime(LStartTime);
-      if LElapsed >= ATimeout then
-        raise EAsyncTimeoutException.Create('Operation timed out');
-      LRemainingTimeout := ATimeout - LElapsed;
-      LWaitTime := Min(LRemainingTimeout, 50);
-    end
-    else
-      LWaitTime := 50;
-
-    if LIsMainThread then
-      CheckSynchronize(10);
-
-    if FCompletionEvent.WaitFor(LWaitTime) = wrSignaled then
-    begin
-      FCriticalSection.Acquire;
-      try
-        Result := FState;
-
-        if ARaiseOnError and (FState = TAsyncOperationState.Faulted) and Assigned(FException) then
-          LExceptionToRaise := CreateExceptionCopy(FException);
-      finally
-        FCriticalSection.Release;
-      end;
-
-      if Assigned(LExceptionToRaise) then
-        raise LExceptionToRaise;
-
-      Exit;
-    end;
-  end;
+  // FException is set once and lives as long as the operation: copy it outside the lock
+  if ARaiseOnError and (Result = TAsyncOperationState.Faulted) and Assigned(LException) then
+    raise TAsyncCore.CloneException(LException);
 end;
 
 function TAsyncOperationController.GetState: TAsyncOperationState;
@@ -990,193 +1503,141 @@ begin
   end;
 end;
 
-procedure TAsyncOperationController.SetState(AState: TAsyncOperationState);
+procedure TAsyncOperationController.SetRunning;
 begin
   FCriticalSection.Acquire;
   try
-    FState := AState;
+    if FState = TAsyncOperationState.Pending then
+      FState := TAsyncOperationState.Running;
   finally
     FCriticalSection.Release;
   end;
+end;
+
+function TAsyncOperationController.TryComplete(AState: TAsyncOperationState; AException: Exception): Boolean;
+begin
+  Assert(IsFinal(AState));
+  if (AState = TAsyncOperationState.Faulted) and not Assigned(AException) then
+    AException := EAsyncException.Create('Operation faulted without exception information');
+
+  FCriticalSection.Acquire;
+  try
+    Result := not IsFinal(FState);
+    if Result then
+    begin
+      FState := AState;
+      if AState = TAsyncOperationState.Faulted then
+      begin
+        FException := AException;
+        AException := nil;
+      end;
+    end;
+  finally
+    FCriticalSection.Release;
+  end;
+
+  AException.Free;
 end;
 
 procedure TAsyncOperationController.SignalCompletion;
 var
   LCallbacks: TArray<TAsyncCoreFinallyCallback>;
-  LIndex: Integer;
-  LCapturedException: Exception;
+  LContinuations: TArray<TAsyncCoreFinallyCallback>;
+  LCallback: TAsyncCoreFinallyCallback;
 begin
   FCriticalSection.Acquire;
   try
+    if FSignalled then
+      Exit;
+
+    FSignalled := True;
     LCallbacks := FCompletionCallbacks.ToArray;
     FCompletionCallbacks.Clear;
+    LContinuations := FContinuations.ToArray;
+    FContinuations.Clear;
+    // Cancellation is no longer possible: release what the handlers captured
+    FCancelHandlers.Clear;
   finally
     FCriticalSection.Release;
   end;
 
-  for LIndex := 0 to High(LCallbacks) do
-  begin
-    if Assigned(LCallbacks[LIndex]) then
-    begin
-      try
-        (procedure(ACallback: TAsyncCoreFinallyCallback)
-          begin
-            case FDispatchMode of
-              TAsyncCallbackDispatchMode.dmQueue:
-                TThread.Queue(nil, procedure
-                  begin
-                    ACallback();
-                  end);
-              TAsyncCallbackDispatchMode.dmSynchronize:
-                TThread.Synchronize(nil, procedure
-                  begin
-                    ACallback();
-                  end);
-            end;
-          end)(LCallbacks[LIndex]);
-      except
-        on E: Exception do
-        begin
-          if Assigned(TAsyncCore.OnUnhandledError) then
-          begin
-            LCapturedException := Exception(AcquireExceptionObject);
-            try
-              TAsyncCore.OnUnhandledError(LCapturedException);
-            finally
-              LCapturedException.Free;
-            end;
-          end;
-        end;
-      end;
-    end;
+  try
+    for LCallback in LCallbacks do
+      TAsyncCore.DispatchCallback(FDispatchMode, LCallback);
+  finally
+    FCompletionEvent.SetEvent;
   end;
 
-  FCompletionEvent.SetEvent;
+  // After the waiters: a continuation blocked on its own callbacks does not hold them
+  for LCallback in LContinuations do
+    TAsyncCore.DispatchCallback(TAsyncCallbackDispatchMode.dmInline, LCallback);
 end;
 
-procedure TAsyncOperationController.SetException(AException: Exception);
+procedure TAsyncOperationController.DispatchException(const ACallback: TAsyncCoreErrorCallback);
+var
+  LOwner: IAsyncOperation;
 begin
-  FCriticalSection.Acquire;
-  try
-    FException := AException;
-  finally
-    FCriticalSection.Release;
-  end;
+  LOwner := Self;
+  TAsyncCore.DispatchCallback(FDispatchMode,
+    procedure
+    begin
+      ACallback((LOwner as TAsyncOperationController).FException);
+    end);
 end;
 
 function TAsyncOperationController.GetException: Exception;
 var
-  LExceptionClass: ExceptClass;
+  LException: Exception;
 begin
   FCriticalSection.Acquire;
   try
-    if Assigned(FException) then
-    begin
-      try
-        LExceptionClass := ExceptClass(FException.ClassType);
-        Result := LExceptionClass.Create(FException.Message);
-      except
-        Result := Exception.Create(FException.ClassName + ': ' + FException.Message);
-      end;
-    end
-    else
-      Result := nil;
+    LException := FException;
   finally
     FCriticalSection.Release;
   end;
+
+  Result := TAsyncCore.CloneException(LException);
 end;
 
-{TAsyncOperationController<T>}
+{ TAsyncOperationController<T> }
 
-procedure TAsyncOperationController<T>.SetResult(const AValue: T);
+function TAsyncOperationController<T>.TrySetResult(const AValue: T): Boolean;
 begin
   FCriticalSection.Acquire;
   try
-    FResult := AValue;
-    FHasResult := True;
+    Result := not IsFinal(FState);
+    if Result then
+    begin
+      FResult := AValue;
+      FHasResult := True;
+      FState := TAsyncOperationState.Completed;
+    end;
   finally
     FCriticalSection.Release;
   end;
 end;
 
 function TAsyncOperationController<T>.WaitForResult(ATimeout: Cardinal): T;
-var
-  LState: TAsyncOperationState;
-  LExceptionToRaise: Exception;
-  LExceptionClass: ExceptClass;
 begin
-  LExceptionToRaise := nil;
-
-  FCriticalSection.Acquire;
-  try
-    if FHasResult and (FState = TAsyncOperationState.Completed) then
-      Exit(FResult);
-
-    if FState = TAsyncOperationState.Faulted then
-    begin
-      try
-        LExceptionClass := ExceptClass(FException.ClassType);
-        LExceptionToRaise := LExceptionClass.Create(FException.Message);
-      except
-        LExceptionToRaise := Exception.Create(FException.ClassName + ': ' + FException.Message);
-      end;
-    end;
-
-    if FState = TAsyncOperationState.Cancelled then
+  case WaitForCompletion(ATimeout, True) of
+    TAsyncOperationState.Completed:
+      if not TryGetResult(Result) then
+        raise EAsyncException.Create('Operation completed without a result');
+    TAsyncOperationState.Cancelled:
       raise EAsyncCancelException.Create;
-  finally
-    FCriticalSection.Release;
-  end;
-
-  if Assigned(LExceptionToRaise) then
-    raise LExceptionToRaise;
-
-  LState := WaitForCompletion(ATimeout, True);
-
-  FCriticalSection.Acquire;
-  try
-    case LState of
-      TAsyncOperationState.Completed:
-        Result := FResult;
-      TAsyncOperationState.Cancelled:
-        raise EAsyncCancelException.Create;
-    else
-      raise EAsyncException.Create('Unexpected operation state');
-    end;
-  finally
-    FCriticalSection.Release;
+  else
+    raise EAsyncException.Create('Unexpected operation state');
   end;
 end;
 
 function TAsyncOperationController<T>.TryWaitForResult(ATimeout: Cardinal; out AResult: T): Boolean;
-var
-  LState: TAsyncOperationState;
 begin
-  Result := False;
-
   if TryGetResult(AResult) then
     Exit(True);
 
-  try
-    LState := WaitForCompletion(ATimeout);
-
-    if LState = TAsyncOperationState.Completed then
-    begin
-      FCriticalSection.Acquire;
-      try
-        if FHasResult then
-        begin
-          AResult := FResult;
-          Result := True;
-        end;
-      finally
-        FCriticalSection.Release;
-      end;
-    end;
-  except
-    on EAsyncTimeoutException do
-      Result := False;
-  end;
+  // No exception on timeout: polling loops would flood the debugger with them
+  WaitSignaled(ATimeout);
+  Result := TryGetResult(AResult);
 end;
 
 function TAsyncOperationController<T>.TryGetResult(out AResult: T): Boolean;
@@ -1191,67 +1652,291 @@ begin
   end;
 end;
 
-{TAsyncCore}
+{ TAsyncCore }
+
+class procedure TAsyncCore.DispatchCallback(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreFinallyCallback);
+var
+  LGuarded: TThreadProcedure;
+begin
+  if not Assigned(ACallback) then
+    Exit;
+
+  // A failing callback never reaches the dispatching thread nor changes the operation
+  LGuarded :=
+    procedure
+    begin
+      try
+        ACallback();
+      except
+        on E: Exception do
+          if not ReportUnhandledError(E) and Assigned(ApplicationHandleException) and
+            (TThread.Current.ThreadID = MainThreadID) then
+            ApplicationHandleException(nil);
+      end;
+    end;
+
+  case ADispatchMode of
+    TAsyncCallbackDispatchMode.dmQueue:
+      // Queue runs at once on the main thread: e.g. inside a Cancel called by the UI
+      TThread.ForceQueue(nil, LGuarded);
+    TAsyncCallbackDispatchMode.dmSynchronize:
+      TThread.Synchronize(nil, LGuarded);
+    TAsyncCallbackDispatchMode.dmInline:
+      LGuarded();
+  end;
+end;
+
+class procedure TAsyncCore.AddContinuation(const AOperation: IAsyncOperation; const AContinuation: TAsyncCoreFinallyCallback);
+var
+  LObject: TObject;
+begin
+  LObject := AOperation as TObject;
+  if LObject is TAsyncOperationController then
+    TAsyncOperationController(LObject).OnCompletionInline(AContinuation)
+  else
+    AOperation.OnCompletion(AContinuation); // foreign implementation: its own dispatch
+end;
+
+class procedure TAsyncCore.RemoveContinuation(const AOperation: IAsyncOperation; const AContinuation: TAsyncCoreFinallyCallback);
+var
+  LObject: TObject;
+begin
+  // A foreign implementation keeps the continuation until it completes
+  LObject := AOperation as TObject;
+  if LObject is TAsyncOperationController then
+    TAsyncOperationController(LObject).RemoveCompletionInline(AContinuation);
+end;
+
+class function TAsyncCore.ScheduleTimer(ADelayMs: Cardinal; const ACallback: TProc): Int64;
+begin
+  Result := GTimers.Schedule(ADelayMs, ACallback);
+end;
+
+class function TAsyncCore.CancelTimer(AId: Int64): Boolean;
+begin
+  Result := GTimers.Cancel(AId);
+end;
+
+class procedure TAsyncCore.AddCancelHandler(const AOperation: IAsyncOperation; const AHandler: TAsyncCoreCancelledCallback);
+var
+  LObject: TObject;
+begin
+  LObject := AOperation as TObject;
+  if LObject is TAsyncOperationController then
+    TAsyncOperationController(LObject).OnCancelledInline(AHandler)
+  else
+    AOperation.OnCancelled(AHandler);
+end;
+
+class function TAsyncCore.ReportUnhandledError(AException: Exception): Boolean;
+var
+  LHandler: TAsyncCoreErrorCallback;
+begin
+  LHandler := FOnUnhandledError;
+  Result := Assigned(LHandler);
+  if Result then
+  try
+    LHandler(AException);
+  except
+    // A failing error handler is ignored: there is nowhere left to report it
+  end;
+end;
+
+class function TAsyncCore.CloneException(ASource: Exception): Exception;
+var
+  LClass: TClass;
+  LCloner: TAsyncExceptionCloner;
+begin
+  if not Assigned(ASource) then
+    Exit(nil);
+
+  LCloner := nil;
+  GClonerLock.Acquire;
+  try
+    LClass := ASource.ClassType;
+    while Assigned(LClass) and not GCloners.TryGetValue(LClass, LCloner) do
+      LClass := LClass.ClassParent;
+  finally
+    GClonerLock.Release;
+  end;
+
+  Result := nil;
+  if Assigned(LCloner) then
+  try
+    Result := LCloner(ASource);
+  except
+    Result := nil;
+  end;
+
+  if not Assigned(Result) then
+  begin
+    // Exception constructors are not virtual: only class and message survive
+    Result := ExceptClass(ASource.ClassType).Create(ASource.Message);
+    Result.HelpContext := ASource.HelpContext;
+  end;
+end;
+
+class procedure TAsyncCore.RegisterExceptionCloner(AClass: ExceptClass; const ACloner: TAsyncExceptionCloner);
+begin
+  GClonerLock.Acquire;
+  try
+    if Assigned(ACloner) then
+      GCloners.AddOrSetValue(AClass, ACloner)
+    else
+      GCloners.Remove(AClass);
+  finally
+    GClonerLock.Release;
+  end;
+end;
+
+class function TAsyncCore.RetryDelay(AStrategy: TBackoffStrategy; AInitialDelay, AMaxDelay: Cardinal; AAttempt: Integer): Cardinal;
+var
+  LDelay: UInt64;
+begin
+  // 64-bit arithmetic: no overflow, and no division, for any input
+  case AStrategy of
+    TBackoffStrategy.Linear:
+      LDelay := UInt64(AInitialDelay) * UInt64(AAttempt + 1);
+    TBackoffStrategy.Exponential, TBackoffStrategy.ExponentialJitter:
+      LDelay := UInt64(AInitialDelay) shl Min(AAttempt, 31);
+  else
+    LDelay := AInitialDelay;
+  end;
+
+  if LDelay > AMaxDelay then
+    LDelay := AMaxDelay;
+
+  // Equal jitter: at least half of the delay, the rest random
+  if AStrategy = TBackoffStrategy.ExponentialJitter then
+    LDelay := LDelay div 2 + NextRandom mod (LDelay - LDelay div 2 + 1);
+
+  Result := Cardinal(LDelay);
+end;
 
 class function TAsyncCore.Run<T>(OnAsyncTask: TAsyncCoreFunctionTask<T>; OnSuccess: TAsyncCoreSuccessCallback<T>; OnError: TAsyncCoreErrorCallback; OnFinally: TAsyncCoreFinallyCallback; ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<T>;
 var
-  LOperationController: TAsyncOperationController<T>;
-  LSelfReference: IAsyncOperation<T>;
+  LController: TAsyncOperationController<T>;
+  LOperation: IAsyncOperation<T>;
 begin
-  LOperationController := TAsyncOperationController<T>.Create(ADispatchMode);
-
-  LSelfReference := LOperationController as IAsyncOperation<T>;
+  LController := TAsyncOperationController<T>.Create(ADispatchMode);
+  // Captured by the task: keeps the controller alive until the task has finished
+  LOperation := LController;
 
   TTask.Run(
     procedure
     var
       LTaskResult: T;
-      LKeepAlive: IAsyncOperation<T>;
-      LAcquiredException: Exception;
+      LSucceeded: Boolean;
     begin
-      LKeepAlive := LSelfReference;
-
-      if LOperationController.IsCancellationRequested then
-      begin
-        LOperationController.SetState(TAsyncOperationState.Cancelled);
-        LOperationController.SignalCompletion;
-        TAsyncCore.DispatchIfAssigned(ADispatchMode, OnFinally);
-        Exit;
-      end;
-
-      LOperationController.SetState(TAsyncOperationState.Running);
       try
-        try
-          LTaskResult := OnAsyncTask(LOperationController as IAsyncOperation);
-
-          LOperationController.SetResult(LTaskResult);
-          LOperationController.SetState(TAsyncOperationState.Completed);
-
-          TAsyncCore.DispatchIfAssigned<T>(ADispatchMode, OnSuccess, LTaskResult);
-        except
-          on E: EAsyncCancelException do
-          begin
-            LOperationController.SetState(TAsyncOperationState.Cancelled);
-          end;
-          on E: Exception do
-          begin
-            LAcquiredException := Exception(AcquireExceptionObject);
-            LOperationController.SetException(LAcquiredException);
-            LOperationController.SetState(TAsyncOperationState.Faulted);
-
-            if Assigned(OnError) then
-              TAsyncCore.DispatchAcquiredException(ADispatchMode, OnError, LAcquiredException)
-            else if Assigned(FOnUnhandledError) then
-              TAsyncCore.DispatchAcquiredException(ADispatchMode, FOnUnhandledError, LAcquiredException);
-          end;
+        if LController.IsCancellationRequested then
+        begin
+          LController.TryComplete(TAsyncOperationState.Cancelled);
+          Exit;
         end;
+
+        LController.SetRunning;
+        LSucceeded := False;
+        try
+          LTaskResult := OnAsyncTask(LOperation);
+          LSucceeded := LController.TrySetResult(LTaskResult);
+        except
+          on EAsyncCancelException do
+            LController.TryComplete(TAsyncOperationState.Cancelled);
+          on Exception do
+            SetFaulted(LController, Exception(AcquireExceptionObject), OnError);
+        end;
+
+        // Outside the try: a failing OnSuccess cannot turn a completed operation into a faulted one
+        if LSucceeded and Assigned(OnSuccess) then
+          DispatchCallback(ADispatchMode,
+            procedure
+            begin
+              OnSuccess(LTaskResult);
+            end);
       finally
-        LOperationController.SignalCompletion;
-        TAsyncCore.DispatchIfAssigned(ADispatchMode, OnFinally);
+        LController.SignalCompletion;
+        DispatchCallback(ADispatchMode, OnFinally);
       end;
     end);
 
-  Result := LOperationController;
+  Result := LOperation;
+end;
+
+class procedure TAsyncCore.SetFaulted(AController: TAsyncOperationController; AException: Exception;
+  const OnError: TAsyncCoreErrorCallback);
+var
+  LErrorHandler: TAsyncCoreErrorCallback;
+begin
+  if not AController.TryComplete(TAsyncOperationState.Faulted, AException) then
+    Exit;
+
+  LErrorHandler := OnError;
+  if not Assigned(LErrorHandler) then
+    LErrorHandler := FOnUnhandledError;
+  if Assigned(LErrorHandler) then
+    AController.DispatchException(LErrorHandler);
+end;
+
+class function TAsyncCore.Follow<T>(const ASource: IAsyncOperation<T>; OnSuccess: TAsyncCoreSuccessCallback<T>;
+  OnError: TAsyncCoreErrorCallback; OnFinally: TAsyncCoreFinallyCallback;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<T>;
+var
+  LController: TAsyncOperationController<T>;
+  LOperation: IAsyncOperation<T>;
+begin
+  LController := TAsyncOperationController<T>.Create(ADispatchMode);
+  // Captured by the continuation: keeps the controller alive until the source has completed
+  LOperation := LController;
+  LController.SetRunning;
+
+  // As for a task, the producer of the source decides how to end it
+  AddCancelHandler(LOperation,
+    procedure
+    begin
+      ASource.Cancel;
+    end);
+
+  AddContinuation(ASource,
+    procedure
+    begin
+      // Not on the completing thread: it may be the main thread inside Cancel or a destructor
+      TTask.Run(
+        procedure
+        var
+          LFollower: TAsyncOperationController<T>;
+          LValue: T;
+          LSucceeded: Boolean;
+        begin
+          LFollower := LOperation as TAsyncOperationController<T>;
+          LSucceeded := False;
+          try
+            case ASource.State of
+              TAsyncOperationState.Completed:
+                if ASource.TryGetResult(LValue) then
+                  LSucceeded := LFollower.TrySetResult(LValue)
+                else
+                  SetFaulted(LFollower, EAsyncException.Create('Operation completed without a result'), OnError);
+              TAsyncOperationState.Faulted:
+                SetFaulted(LFollower, ASource.GetException, OnError);
+            else
+              LFollower.TryComplete(TAsyncOperationState.Cancelled);
+            end;
+
+            if LSucceeded and Assigned(OnSuccess) then
+              DispatchCallback(ADispatchMode,
+                procedure
+                begin
+                  OnSuccess(LValue);
+                end);
+          finally
+            LFollower.SignalCompletion;
+            DispatchCallback(ADispatchMode, OnFinally);
+          end;
+        end);
+    end);
+
+  Result := LOperation;
 end;
 
 class function TAsyncCore.Run(OnAsyncTask: TAsyncCoreProcedureTask; OnSuccess: TAsyncCoreProcedureSuccessCallback; OnError: TAsyncCoreErrorCallback; OnFinally: TAsyncCoreFinallyCallback; ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation;
@@ -1279,9 +1964,9 @@ begin
       Result := True;
     end,
     LSuccessCallback,
-      OnError,
-      OnFinally,
-      ADispatchMode);
+    OnError,
+    OnFinally,
+    ADispatchMode);
 end;
 
 class function TAsyncCore.New<T>(const ATask: TAsyncCoreFunctionTask<T>): IAsyncPromise<T>;
@@ -1289,353 +1974,137 @@ begin
   Result := TAsyncCorePromise<T>.Create(ATask);
 end;
 
-class procedure TAsyncCore.DispatchIfAssigned(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreFinallyCallback);
-begin
-  if not (Assigned(ACallback)) then
-    Exit;
-
-  case ADispatchMode of
-    TAsyncCallbackDispatchMode.dmQueue:
-      TThread.Queue(nil,
-        procedure
-        begin
-          ACallback();
-        end);
-    TAsyncCallbackDispatchMode.dmSynchronize:
-      TThread.Synchronize(nil,
-        procedure
-        begin
-          ACallback();
-        end);
-  end;
-end;
-
-class procedure TAsyncCore.DispatchAcquiredException(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreErrorCallback; AException: Exception);
-var
-  LExceptionCopy: Exception;
-  LExceptionClass: ExceptClass;
-begin
-  if not Assigned(ACallback) then
-  begin
-    AException.Free;
-    Exit;
-  end;
-
-  try
-    LExceptionClass := ExceptClass(AException.ClassType);
-    LExceptionCopy := LExceptionClass.Create(AException.Message);
-  except
-    LExceptionCopy := Exception.Create(AException.ClassName + ': ' + AException.Message);
-  end;
-
-  case ADispatchMode of
-    TAsyncCallbackDispatchMode.dmQueue:
-      TThread.Queue(nil,
-        procedure
-        begin
-          try
-            ACallback(LExceptionCopy);
-          finally
-            LExceptionCopy.Free;
-          end;
-        end);
-    TAsyncCallbackDispatchMode.dmSynchronize:
-      TThread.Synchronize(nil,
-        procedure
-        begin
-          try
-            ACallback(LExceptionCopy);
-          finally
-            LExceptionCopy.Free;
-          end;
-        end);
-  end;
-end;
-
-class procedure TAsyncCore.DispatchIfAssigned<T>(ADispatchMode: TAsyncCallbackDispatchMode; const ACallback: TAsyncCoreSuccessCallback<T>; const AValue: T);
-begin
-  if not (Assigned(ACallback)) then
-    Exit;
-
-  case ADispatchMode of
-    TAsyncCallbackDispatchMode.dmQueue:
-      TThread.Queue(nil,
-        procedure
-        begin
-          ACallback(AValue);
-        end);
-    TAsyncCallbackDispatchMode.dmSynchronize:
-      TThread.Synchronize(nil,
-        procedure
-        begin
-          ACallback(AValue);
-        end);
-  end;
-end;
-
 class function TAsyncCore.New(const ATask: TAsyncCoreProcedureTask): IAsyncVoidPromise;
 begin
   Result := TAsyncCoreVoidPromise.Create(ATask);
 end;
 
-{TAsyncTaskCompletionSource<T>}
+class function TAsyncCore.FromOperation<T>(const AOperation: IAsyncOperation<T>): IAsyncPromise<T>;
+begin
+  if not Assigned(AOperation) then
+    raise EArgumentNilException.Create('AsyncCore: Operation not assigned');
+  Result := TAsyncCorePromise<T>.CreateFromOperation(AOperation);
+end;
+
+{ TAsyncTaskCompletionSource<T> }
 
 constructor TAsyncTaskCompletionSource<T>.Create(ADispatchMode: TAsyncCallbackDispatchMode);
 begin
   inherited Create;
   FController := TAsyncOperationController<T>.Create(ADispatchMode);
-  FCriticalSection := TCriticalSection.Create;
-  FCompleted := False;
-end;
-
-destructor TAsyncTaskCompletionSource<T>.Destroy;
-begin
-  FCriticalSection.Free;
-  if Assigned(FController) then
-    FController := nil;
-
-  inherited;
+  FOperation := FController;
 end;
 
 procedure TAsyncTaskCompletionSource<T>.SetResult(const AValue: T);
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      raise EAsyncException.Create('TaskCompletionSource already completed');
-
-    FCompleted := True;
-    FController.SetResult(AValue);
-    FController.SetState(TAsyncOperationState.Completed);
-    FController.SignalCompletion;
-  finally
-    FCriticalSection.Release;
-  end;
+  if not TrySetResult(AValue) then
+    raise EAsyncException.Create('TaskCompletionSource already completed');
 end;
 
 procedure TAsyncTaskCompletionSource<T>.SetException(AException: Exception);
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-    begin
-      AException.Free;
-      raise EAsyncException.Create('TaskCompletionSource already completed');
-    end;
-
-    FCompleted := True;
-    FController.SetException(AException);
-    FController.SetState(TAsyncOperationState.Faulted);
-    FController.SignalCompletion;
-  finally
-    FCriticalSection.Release;
-  end;
+  if not TrySetException(AException) then
+    raise EAsyncException.Create('TaskCompletionSource already completed');
 end;
 
 procedure TAsyncTaskCompletionSource<T>.SetCancelled;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      raise EAsyncException.Create('TaskCompletionSource already completed');
-
-    FCompleted := True;
-    FController.SetState(TAsyncOperationState.Cancelled);
-    FController.SignalCompletion;
-  finally
-    FCriticalSection.Release;
-  end;
+  if not TrySetCancelled then
+    raise EAsyncException.Create('TaskCompletionSource already completed');
 end;
 
 function TAsyncTaskCompletionSource<T>.TrySetResult(const AValue: T): Boolean;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      Exit(False);
-
-    FCompleted := True;
-    FController.SetResult(AValue);
-    FController.SetState(TAsyncOperationState.Completed);
+  Result := FController.TrySetResult(AValue);
+  if Result then
     FController.SignalCompletion;
-    Result := True;
-  finally
-    FCriticalSection.Release;
-  end;
 end;
 
 function TAsyncTaskCompletionSource<T>.TrySetException(AException: Exception): Boolean;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-    begin
-      AException.Free;
-      Exit(False);
-    end;
-
-    FCompleted := True;
-    FController.SetException(AException);
-    FController.SetState(TAsyncOperationState.Faulted);
+  Result := FController.TryComplete(TAsyncOperationState.Faulted, AException);
+  if Result then
     FController.SignalCompletion;
-    Result := True;
-  finally
-    FCriticalSection.Release;
-  end;
 end;
 
 function TAsyncTaskCompletionSource<T>.TrySetCancelled: Boolean;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      Exit(False);
-
-    FCompleted := True;
-    FController.SetState(TAsyncOperationState.Cancelled);
+  Result := FController.TryComplete(TAsyncOperationState.Cancelled);
+  if Result then
     FController.SignalCompletion;
-    Result := True;
-  finally
-    FCriticalSection.Release;
-  end;
 end;
 
 function TAsyncTaskCompletionSource<T>.GetOperation: IAsyncOperation<T>;
 begin
-  Result := FController;
+  Result := FOperation;
 end;
 
-{TAsyncTaskCompletionSource}
+{ TAsyncTaskCompletionSource }
 
 constructor TAsyncTaskCompletionSource.Create(ADispatchMode: TAsyncCallbackDispatchMode);
 begin
   inherited Create;
   FController := TAsyncOperationController.Create(ADispatchMode);
-  FCriticalSection := TCriticalSection.Create;
-  FCompleted := False;
-end;
-
-destructor TAsyncTaskCompletionSource.Destroy;
-begin
-  FCriticalSection.Free;
-  if Assigned(FController) then
-    FController := nil;
-
-  inherited;
+  FOperation := FController;
 end;
 
 procedure TAsyncTaskCompletionSource.SetResult;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      raise EAsyncException.Create('TaskCompletionSource already completed');
-
-    FCompleted := True;
-    FController.SetState(TAsyncOperationState.Completed);
-    FController.SignalCompletion;
-  finally
-    FCriticalSection.Release;
-  end;
+  if not TrySetResult then
+    raise EAsyncException.Create('TaskCompletionSource already completed');
 end;
 
 procedure TAsyncTaskCompletionSource.SetException(AException: Exception);
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-    begin
-      AException.Free;
-      raise EAsyncException.Create('TaskCompletionSource already completed');
-    end;
-
-    FCompleted := True;
-    FController.SetException(AException);
-    FController.SetState(TAsyncOperationState.Faulted);
-    FController.SignalCompletion;
-  finally
-    FCriticalSection.Release;
-  end;
+  if not TrySetException(AException) then
+    raise EAsyncException.Create('TaskCompletionSource already completed');
 end;
 
 procedure TAsyncTaskCompletionSource.SetCancelled;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      raise EAsyncException.Create('TaskCompletionSource already completed');
-
-    FCompleted := True;
-    FController.SetState(TAsyncOperationState.Cancelled);
-    FController.SignalCompletion;
-  finally
-    FCriticalSection.Release;
-  end;
+  if not TrySetCancelled then
+    raise EAsyncException.Create('TaskCompletionSource already completed');
 end;
 
 function TAsyncTaskCompletionSource.TrySetResult: Boolean;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      Exit(False);
-
-    FCompleted := True;
-    FController.SetState(TAsyncOperationState.Completed);
+  Result := FController.TryComplete(TAsyncOperationState.Completed);
+  if Result then
     FController.SignalCompletion;
-    Result := True;
-  finally
-    FCriticalSection.Release;
-  end;
 end;
 
 function TAsyncTaskCompletionSource.TrySetException(AException: Exception): Boolean;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-    begin
-      AException.Free;
-      Exit(False);
-    end;
-
-    FCompleted := True;
-    FController.SetException(AException);
-    FController.SetState(TAsyncOperationState.Faulted);
+  Result := FController.TryComplete(TAsyncOperationState.Faulted, AException);
+  if Result then
     FController.SignalCompletion;
-    Result := True;
-  finally
-    FCriticalSection.Release;
-  end;
 end;
 
 function TAsyncTaskCompletionSource.TrySetCancelled: Boolean;
 begin
-  FCriticalSection.Acquire;
-  try
-    if FCompleted then
-      Exit(False);
-
-    FCompleted := True;
-    FController.SetState(TAsyncOperationState.Cancelled);
+  Result := FController.TryComplete(TAsyncOperationState.Cancelled);
+  if Result then
     FController.SignalCompletion;
-    Result := True;
-  finally
-    FCriticalSection.Release;
-  end;
 end;
 
 function TAsyncTaskCompletionSource.GetOperation: IAsyncOperation;
 begin
-  Result := FController;
+  Result := FOperation;
 end;
 
-{TAsyncCorePromise<T>}
+{ TAsyncCorePromise<T> }
 
 constructor TAsyncCorePromise<T>.Create(const ATask: TAsyncCoreFunctionTask<T>);
 begin
   inherited Create;
   FTask := ATask;
+  FDispatchMode := TAsyncCallbackDispatchMode.dmSynchronize;
+end;
+
+constructor TAsyncCorePromise<T>.CreateFromOperation(const ASource: IAsyncOperation<T>);
+begin
+  inherited Create;
+  FSource := ASource;
   FDispatchMode := TAsyncCallbackDispatchMode.dmSynchronize;
 end;
 
@@ -1665,12 +2134,15 @@ end;
 
 function TAsyncCorePromise<T>.Run: IAsyncOperation<T>;
 begin
+  if Assigned(FSource) then
+    Exit(TAsyncCore.Follow<T>(FSource, FOnSuccess, FOnError, FOnFinally, FDispatchMode));
+
   if not Assigned(FTask) then
     raise EArgumentNilException.Create('AsyncCore: Task not assigned');
   Result := TAsyncCore.Run<T>(FTask, FOnSuccess, FOnError, FOnFinally, FDispatchMode);
 end;
 
-{TAsyncCoreVoidPromise}
+{ TAsyncCoreVoidPromise }
 
 constructor TAsyncCoreVoidPromise.Create(const ATask: TAsyncCoreProcedureTask);
 begin
@@ -1712,70 +2184,60 @@ begin
 end;
 
 class function TAsyncCore.ContinueWith<T, TResult>(const AOperation: IAsyncOperation<T>;
-  const AContinuation: TAsyncCoreContinuationFunc<T, TResult>): IAsyncOperation<TResult>;
+  const AContinuation: TAsyncCoreContinuationFunc<T, TResult>;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<TResult>;
 var
   LCompletionSource: IAsyncTaskCompletionSource<TResult>;
 begin
-  LCompletionSource := TAsyncTaskCompletionSource<TResult>.Create(TAsyncCallbackDispatchMode.dmSynchronize);
+  LCompletionSource := TAsyncTaskCompletionSource<TResult>.Create(ADispatchMode);
 
-  AOperation.OnCompletion(
+  AddCancelHandler(LCompletionSource.Operation,
     procedure
     begin
-      TTask.Run(
-        procedure
-        var
-          LValue: T;
-          LRes: TResult;
-          LException: Exception;
-          LEx: Exception;
-        begin
-          try
-            case AOperation.State of
-              TAsyncOperationState.Completed:
-                begin
-                  if AOperation.TryGetResult(LValue) then
-                  begin
-                    try
-                      LRes := AContinuation(LValue);
-                      LCompletionSource.SetResult(LRes);
-                    except
-                      on E: Exception do
-                      begin
-                        LEx := Exception(AcquireExceptionObject);
-                        LCompletionSource.SetException(LEx);
-                      end;
-                    end;
-                  end
-                  else
-                    LCompletionSource.SetException(Exception.Create('Failed to get result from completed operation'));
-                end;
+      LCompletionSource.TrySetCancelled;
+      AOperation.Cancel;
+    end);
 
-              TAsyncOperationState.Faulted:
-                begin
-                  LException := AOperation.GetException;
-                  if Assigned(LException) then
-                    LCompletionSource.SetException(LException)
-                  else
-                    LCompletionSource.SetException(Exception.Create('Previous operation faulted without exception information'));
-                end;
-
-              TAsyncOperationState.Cancelled:
-                LCompletionSource.SetCancelled;
-            end;
-          except
-            on E: Exception do
+  AddContinuation(AOperation,
+    procedure
+    begin
+      case AOperation.State of
+        TAsyncOperationState.Completed:
+          // The continuation may be slow: not on the completing thread
+          TTask.Run(
+            procedure
+            var
+              LValue: T;
             begin
-              LEx := Exception(AcquireExceptionObject);
-              LCompletionSource.SetException(LEx);
-            end;
-          end;
-        end);
+              if LCompletionSource.Operation.State <> TAsyncOperationState.Pending then
+                Exit; // cancelled in the meantime
+
+              try
+                if AOperation.TryGetResult(LValue) then
+                  LCompletionSource.TrySetResult(AContinuation(LValue))
+                else
+                  LCompletionSource.TrySetException(EAsyncException.Create('Failed to get result from completed operation'));
+              except
+                on EAsyncCancelException do
+                  LCompletionSource.TrySetCancelled;
+                on Exception do
+                  LCompletionSource.TrySetException(Exception(AcquireExceptionObject));
+              end;
+            end);
+
+        TAsyncOperationState.Faulted:
+          LCompletionSource.TrySetException(AOperation.GetException);
+
+        TAsyncOperationState.Cancelled:
+          LCompletionSource.TrySetCancelled;
+      end;
     end);
 
   Result := LCompletionSource.Operation;
 end;
 
-class function TAsyncCore.WhenAll<T>(const AOperations: array of IAsyncOperation<T>): IAsyncOperation<TArray<T>>;
+class function TAsyncCore.WhenAll<T>(const AOperations: array of IAsyncOperation<T>;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<TArray<T>>;
 var
   LCompletionSource: IAsyncTaskCompletionSource<TArray<T>>;
   LCount: Integer;
@@ -1783,21 +2245,30 @@ var
   LOperationsCopy: TArray<IAsyncOperation<T>>;
   LIndex: Integer;
 begin
+  LCompletionSource := TAsyncTaskCompletionSource<TArray<T>>.Create(ADispatchMode);
+
   LTotal := Length(AOperations);
   if LTotal = 0 then
   begin
-    LCompletionSource := TAsyncTaskCompletionSource < TArray<T> > .Create;
     LCompletionSource.SetResult([]);
     Exit(LCompletionSource.Operation);
   end;
-
-  LCompletionSource := TAsyncTaskCompletionSource < TArray<T> > .Create(TAsyncCallbackDispatchMode.dmSynchronize);
 
   LCount := LTotal;
 
   SetLength(LOperationsCopy, LTotal);
   for LIndex := 0 to LTotal - 1 do
     LOperationsCopy[LIndex] := AOperations[LIndex];
+
+  AddCancelHandler(LCompletionSource.Operation,
+    procedure
+    var
+      LOp: IAsyncOperation<T>;
+    begin
+      LCompletionSource.TrySetCancelled;
+      for LOp in LOperationsCopy do
+        LOp.Cancel;
+    end);
 
   for LIndex := 0 to LTotal - 1 do
   begin
@@ -1807,42 +2278,36 @@ begin
       begin
         LOp := LOperationsCopy[AIndex];
 
-        LOp.OnCompletion(
+        AddContinuation(LOp,
           procedure
           var
             LResults: TArray<T>;
-            LIndex: Integer;
+            LResultIndex: Integer;
             LResultVal: T;
-            LEx: Exception;
           begin
             if LOp.State = TAsyncOperationState.Faulted then
               LCompletionSource.TrySetException(LOp.GetException)
             else if LOp.State = TAsyncOperationState.Cancelled then
               LCompletionSource.TrySetCancelled;
 
-            if TInterlocked.Decrement(LCount) = 0 then
+            if (TInterlocked.Decrement(LCount) = 0) and
+              (LCompletionSource.Operation.State = TAsyncOperationState.Pending) then
             begin
-              if LCompletionSource.Operation.State = TAsyncOperationState.Pending then
-              begin
-                SetLength(LResults, LTotal);
-                try
-                  for LIndex := 0 to LTotal - 1 do
+              SetLength(LResults, LTotal);
+              try
+                for LResultIndex := 0 to LTotal - 1 do
+                begin
+                  if not LOperationsCopy[LResultIndex].TryGetResult(LResultVal) then
                   begin
-                    if LOperationsCopy[LIndex].TryGetResult(LResultVal) then
-                      LResults[LIndex] := LResultVal
-                    else
-                    begin
-                      Exit;
-                    end;
+                    LCompletionSource.TrySetException(EAsyncException.Create('WhenAll: an operation completed without a result'));
+                    Exit;
                   end;
-                  LCompletionSource.TrySetResult(LResults);
-                except
-                  on E: Exception do
-                  begin
-                    LEx := Exception(AcquireExceptionObject);
-                    LCompletionSource.TrySetException(LEx);
-                  end;
+                  LResults[LResultIndex] := LResultVal;
                 end;
+                LCompletionSource.TrySetResult(LResults);
+              except
+                on Exception do
+                  LCompletionSource.TrySetException(Exception(AcquireExceptionObject));
               end;
             end;
           end);
@@ -1852,26 +2317,36 @@ begin
   Result := LCompletionSource.Operation;
 end;
 
-class function TAsyncCore.WhenAny<T>(const AOperations: array of IAsyncOperation<T>): IAsyncOperation<T>;
+class function TAsyncCore.WhenAny<T>(const AOperations: array of IAsyncOperation<T>;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<T>;
 var
   LCompletionSource: IAsyncTaskCompletionSource<T>;
   LOperationsCopy: TArray<IAsyncOperation<T>>;
   LTotal: Integer;
   LIndex: Integer;
 begin
+  LCompletionSource := TAsyncTaskCompletionSource<T>.Create(ADispatchMode);
+
   LTotal := Length(AOperations);
   if LTotal = 0 then
   begin
-    LCompletionSource := TAsyncTaskCompletionSource<T>.Create;
-    LCompletionSource.SetException(Exception.Create('WhenAny requires at least one operation'));
+    LCompletionSource.SetException(EAsyncException.Create('WhenAny requires at least one operation'));
     Exit(LCompletionSource.Operation);
   end;
-
-  LCompletionSource := TAsyncTaskCompletionSource<T>.Create(TAsyncCallbackDispatchMode.dmSynchronize);
 
   SetLength(LOperationsCopy, LTotal);
   for LIndex := 0 to LTotal - 1 do
     LOperationsCopy[LIndex] := AOperations[LIndex];
+
+  AddCancelHandler(LCompletionSource.Operation,
+    procedure
+    var
+      LOp: IAsyncOperation<T>;
+    begin
+      LCompletionSource.TrySetCancelled;
+      for LOp in LOperationsCopy do
+        LOp.Cancel;
+    end);
 
   for LIndex := 0 to LTotal - 1 do
   begin
@@ -1880,7 +2355,7 @@ begin
         LOp: IAsyncOperation<T>;
       begin
         LOp := LOperationsCopy[AIndex];
-        LOp.OnCompletion(
+        AddContinuation(LOp,
           procedure
           var
             LRes: T;
@@ -1901,204 +2376,333 @@ begin
   Result := LCompletionSource.Operation;
 end;
 
+{ TAsyncRetryOperation<T> }
+
+constructor TAsyncRetryOperation<T>.Create(const ATask: TAsyncCoreFunctionTask<T>; AMaxRetries: Integer;
+  AInitialDelay: Cardinal; AStrategy: TBackoffStrategy; AMaxDelay: Cardinal; const AShouldRetry: TAsyncCoreRetryPredicate;
+  ADispatchMode: TAsyncCallbackDispatchMode);
+begin
+  inherited Create(ADispatchMode);
+  FTask := ATask;
+  FShouldRetry := AShouldRetry;
+  FMaxRetries := AMaxRetries;
+  FInitialDelay := AInitialDelay;
+  FMaxDelay := AMaxDelay;
+  FStrategy := AStrategy;
+end;
+
+// Keeps the operation alive until the attempt has run
+function TAsyncRetryOperation<T>.AttemptProc: TProc;
+var
+  LOperation: IAsyncOperation;
+begin
+  LOperation := Self;
+  Result :=
+    procedure
+    begin
+      (LOperation as TAsyncRetryOperation<T>).RunAttempt;
+    end;
+end;
+
+function TAsyncRetryOperation<T>.FinishProc: TProc;
+var
+  LOperation: IAsyncOperation;
+begin
+  LOperation := Self;
+  Result :=
+    procedure
+    begin
+      (LOperation as TAsyncRetryOperation<T>).Finish;
+    end;
+end;
+
+// Stored in the operation: it captures Self, not an interface, or a pending retry would never be freed
+function TAsyncRetryOperation<T>.CancelHandler: TAsyncCoreCancelledCallback;
+begin
+  Result :=
+    procedure
+    begin
+      CancelWait;
+    end;
+end;
+
+procedure TAsyncRetryOperation<T>.Start;
+begin
+  OnCancelledInline(CancelHandler());
+  TTask.Run(AttemptProc());
+end;
+
+procedure TAsyncRetryOperation<T>.RunAttempt;
+var
+  LOperation: IAsyncOperation<T>;
+  LValue: T;
+  LState: TAsyncOperationState;
+  LError: Exception;
+begin
+  LValue := Default(T);
+  LError := nil;
+  // A Cancel that came first wins, even if the timer fired in the meantime
+  if IsCancellationRequested then
+    LState := TAsyncOperationState.Cancelled
+  else
+  begin
+    SetRunning;
+    // The reference returned by RunWithRetry
+    LOperation := Self;
+    try
+      try
+        LValue := FTask(LOperation);
+        LState := TAsyncOperationState.Completed;
+      except
+        on EAsyncCancelException do
+          LState := TAsyncOperationState.Cancelled;
+        on E: Exception do
+          if IsCancellationRequested then
+            LState := TAsyncOperationState.Cancelled
+          else if (FAttempt < FMaxRetries) and (not Assigned(FShouldRetry) or FShouldRetry(E)) then
+            LState := TAsyncOperationState.Running // retried after the delay
+          else
+          begin
+            LError := Exception(AcquireExceptionObject);
+            LState := TAsyncOperationState.Faulted;
+          end;
+      end;
+    except
+      // Raised by AShouldRetry
+      on EAsyncCancelException do
+        LState := TAsyncOperationState.Cancelled;
+      on Exception do
+      begin
+        LError := Exception(AcquireExceptionObject);
+        LState := TAsyncOperationState.Faulted;
+      end;
+    end;
+  end;
+
+  if LState = TAsyncOperationState.Running then
+  begin
+    if ScheduleRetry then
+      Exit; // the timer runs the next attempt
+    LState := TAsyncOperationState.Cancelled;
+  end;
+
+  case LState of
+    TAsyncOperationState.Completed:
+      TrySetResult(LValue);
+    TAsyncOperationState.Faulted:
+      TAsyncCore.SetFaulted(Self, LError, nil);
+  else
+    TryComplete(TAsyncOperationState.Cancelled);
+  end;
+  Finish;
+end;
+
+// False if a Cancel came first: then no timer is scheduled
+function TAsyncRetryOperation<T>.ScheduleRetry: Boolean;
+var
+  LDelay: Cardinal;
+  LAttempt: TProc;
+begin
+  LDelay := TAsyncCore.RetryDelay(FStrategy, FInitialDelay, FMaxDelay, FAttempt);
+  Inc(FAttempt);
+  LAttempt := AttemptProc();
+  FCriticalSection.Acquire;
+  try
+    // Under the lock of CancelWait: either Cancel finds the timer or it is not scheduled
+    Result := not IsCancellationRequested;
+    if Result then
+      FTimer := TAsyncCore.ScheduleTimer(LDelay, LAttempt);
+  finally
+    FCriticalSection.Release;
+  end;
+end;
+
+procedure TAsyncRetryOperation<T>.CancelWait;
+var
+  LTimer: Int64;
+begin
+  FCriticalSection.Acquire;
+  try
+    LTimer := FTimer;
+    FTimer := 0;
+  finally
+    FCriticalSection.Release;
+  end;
+
+  // A timer that already fired is not found: its attempt sees the cancellation.
+  // Otherwise cancelled at once; the callbacks run on a pool thread, never inside Cancel
+  if TAsyncCore.CancelTimer(LTimer) and TryComplete(TAsyncOperationState.Cancelled) then
+    TTask.Run(FinishProc());
+end;
+
+procedure TAsyncRetryOperation<T>.Finish;
+begin
+  // Released at once, as Run does: the task may reference the operation
+  FTask := nil;
+  FShouldRetry := nil;
+  SignalCompletion;
+end;
+
 class function TAsyncCore.RunWithRetry<T>(
   ATask: TAsyncCoreFunctionTask<T>;
   AMaxRetries: Integer;
   AInitialDelay: Cardinal;
   ABackoffStrategy: TBackoffStrategy;
-  AMaxDelay: Cardinal): IAsyncOperation<T>;
+  AMaxDelay: Cardinal;
+  AShouldRetry: TAsyncCoreRetryPredicate;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<T>;
+var
+  LOperation: TAsyncRetryOperation<T>;
 begin
-  Result := TAsyncCore.Run<T>(
-    function(const AController: IAsyncOperation): T
-    var
-      LAttempt: Integer;
-      LDelay: Cardinal;
-      LMultiplier: Cardinal;
-    begin
-      for LAttempt := 0 to AMaxRetries do
-      begin
-        if AController.IsCancellationRequested then
-          raise EAsyncCancelException.Create;
+  if AMaxRetries < 0 then
+    raise EArgumentOutOfRangeException.Create('AsyncCore: AMaxRetries must be zero or positive');
 
-        try
-          Result := ATask(AController);
-
-          Exit;
-        except
-          on E: EAsyncCancelException do
-            raise;
-          on E: Exception do
-          begin
-            if AController.IsCancellationRequested then
-              raise EAsyncCancelException.Create;
-
-            if LAttempt >= AMaxRetries then
-              raise;
-
-            case ABackoffStrategy of
-              TBackoffStrategy.Fixed:
-                LDelay := AInitialDelay;
-
-              TBackoffStrategy.Linear:
-                begin
-                  if Cardinal(LAttempt) >= (High(Cardinal) div AInitialDelay) then
-                    LDelay := AMaxDelay
-                  else
-                    LDelay := AInitialDelay * Cardinal(LAttempt + 1);
-                end;
-
-              TBackoffStrategy.Exponential:
-                begin
-                  if (LAttempt = 0) or (LAttempt > 20) then
-                  begin
-                    if LAttempt = 0 then
-                      LDelay := AInitialDelay
-                    else
-                      LDelay := AMaxDelay;
-                  end
-                  else
-                  begin
-                    LMultiplier := Cardinal(1 shl LAttempt);
-                    if AInitialDelay > (High(Cardinal) div LMultiplier) then
-                      LDelay := AMaxDelay
-                    else
-                      LDelay := AInitialDelay * LMultiplier;
-                  end;
-                end;
-            else
-              LDelay := AInitialDelay;
-            end;
-
-            if LDelay > AMaxDelay then
-              LDelay := AMaxDelay;
-
-            if AController.IsCancellationRequested then
-              raise EAsyncCancelException.Create;
-
-            Sleep(LDelay);
-
-            if AController.IsCancellationRequested then
-              raise EAsyncCancelException.Create;
-          end;
-        end;
-      end;
-
-      raise EAsyncException.Create('Task execution exited retry loop unexpectedly');
-    end);
+  LOperation := TAsyncRetryOperation<T>.Create(ATask, AMaxRetries, AInitialDelay, ABackoffStrategy, AMaxDelay,
+    AShouldRetry, ADispatchMode);
+  Result := LOperation;
+  LOperation.Start;
 end;
 
 class function TAsyncCore.RunWithTimeout<T>(
   ATask: TAsyncCoreFunctionTask<T>;
-  ATimeoutMs: Cardinal): IAsyncOperation<T>;
+  ATimeoutMs: Cardinal;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation<T>;
 var
   LCompletionSource: IAsyncTaskCompletionSource<T>;
   LActualTask: IAsyncOperation<T>;
-  LTimeoutTask: IAsyncOperation;
+  LTimer: Int64;
 begin
-  LCompletionSource := TAsyncTaskCompletionSource<T>.Create(TAsyncCallbackDispatchMode.dmSynchronize);
+  LCompletionSource := TAsyncTaskCompletionSource<T>.Create(ADispatchMode);
 
-  LActualTask := TAsyncCore.Run<T>(ATask);
+  // The OnCancelled callbacks of the task run on a pool thread at timeout: same mode as the result
+  LActualTask := TAsyncCore.Run<T>(ATask, nil, nil, nil, ADispatchMode);
 
-  LTimeoutTask := TAsyncCore.Delay(ATimeoutMs);
+  LTimer := ScheduleTimer(ATimeoutMs,
+    procedure
+    begin
+      if LCompletionSource.TrySetException(EAsyncTimeoutException.Create(Format('Operation timed out after %d ms', [ATimeoutMs]))) then
+        LActualTask.Cancel;
+    end);
 
-  LActualTask.OnCompletion(
+  AddCancelHandler(LCompletionSource.Operation,
+    procedure
+    begin
+      CancelTimer(LTimer);
+      LCompletionSource.TrySetCancelled;
+      LActualTask.Cancel;
+    end);
+
+  AddContinuation(LActualTask,
     procedure
     var
       LRes: T;
     begin
+      // The timer is disposed as soon as the task is done
+      CancelTimer(LTimer);
+
       case LActualTask.State of
         TAsyncOperationState.Completed:
           if LActualTask.TryGetResult(LRes) then
-            if LCompletionSource.TrySetResult(LRes) then
-              LTimeoutTask.Cancel;
+            LCompletionSource.TrySetResult(LRes);
 
         TAsyncOperationState.Faulted:
-          if LCompletionSource.TrySetException(LActualTask.GetException) then
-            LTimeoutTask.Cancel;
+          LCompletionSource.TrySetException(LActualTask.GetException);
 
         TAsyncOperationState.Cancelled:
-          if LCompletionSource.TrySetCancelled then
-            LTimeoutTask.Cancel;
+          LCompletionSource.TrySetCancelled;
       end;
-    end);
-
-  LTimeoutTask.OnCompletion(
-    procedure
-    begin
-      if LTimeoutTask.State = TAsyncOperationState.Completed then
-      begin
-        if LCompletionSource.TrySetCancelled then
-          LActualTask.Cancel;
-      end;
-    end);
-
-  LCompletionSource.Operation.OnCancelled(
-    procedure
-    begin
-      LActualTask.Cancel;
-      LTimeoutTask.Cancel;
     end);
 
   Result := LCompletionSource.Operation;
 end;
 
-class function TAsyncCore.Delay(AMilliseconds: Cardinal): IAsyncOperation;
+// Runs on a pool thread when the timer of a delay fires
+function DelayFired(const AOperation: IAsyncOperation): TProc;
 begin
-  Result := TAsyncCore.Run(
-    procedure(const AController: IAsyncOperation)
+  Result :=
+    procedure
     var
-      LEventWrapper: IEventWrapper;
+      LController: TAsyncOperationController;
     begin
-      LEventWrapper := TEventWrapper.Create;
-
-      AController.OnCancelled(
-        procedure
-        begin
-          LEventWrapper.Signal;
-        end);
-
-      if AController.IsCancellationRequested then
-        raise EAsyncCancelException.Create;
-
-      LEventWrapper.WaitFor(AMilliseconds);
-
-      if AController.IsCancellationRequested then
-        raise EAsyncCancelException.Create;
-    end);
+      LController := AOperation as TAsyncOperationController;
+      // A Cancel that came first wins, even if the timer fired in the meantime
+      if LController.IsCancellationRequested then
+      begin
+        if LController.TryComplete(TAsyncOperationState.Cancelled) then
+          LController.SignalCompletion;
+      end
+      else if LController.TryComplete(TAsyncOperationState.Completed) then
+        LController.SignalCompletion;
+    end;
 end;
 
-class function TAsyncCore.CreateCancellationTokenWithTimeout(ATimeoutMs: Cardinal): IAsyncOperation;
+function SignalLater(const AOperation: IAsyncOperation): TProc;
 begin
-  Result := Delay(ATimeoutMs);
+  Result :=
+    procedure
+    begin
+      (AOperation as TAsyncOperationController).SignalCompletion;
+    end;
+end;
+
+// Stored in the controller: no interface reference to it, or a pending delay would never be freed
+function DelayCancelled(AController: TAsyncOperationController; ATimer: Int64): TAsyncCoreCancelledCallback;
+begin
+  Result :=
+    procedure
+    begin
+      // Cancelled at once; the callbacks run on a pool thread, never inside Cancel
+      if GTimers.Cancel(ATimer) and AController.TryComplete(TAsyncOperationState.Cancelled) then
+        TTask.Run(SignalLater(AController));
+    end;
+end;
+
+class function TAsyncCore.Delay(AMilliseconds: Cardinal; ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation;
+var
+  LController: TAsyncOperationController;
+  LTimer: Int64;
+begin
+  LController := TAsyncOperationController.Create(ADispatchMode);
+  Result := LController;
+  LController.SetRunning;
+
+  // The timer holds the operation until it fires or is cancelled; no thread waits
+  LTimer := GTimers.Schedule(AMilliseconds, DelayFired(Result));
+  LController.OnCancelledInline(DelayCancelled(LController, LTimer));
+end;
+
+class function TAsyncCore.CreateCancellationTokenWithTimeout(ATimeoutMs: Cardinal;
+  ADispatchMode: TAsyncCallbackDispatchMode): IAsyncOperation;
+begin
+  Result := Delay(ATimeoutMs, ADispatchMode);
 end;
 
 class procedure TAsyncCore.LinkCancellationToken(const AOperation: IAsyncOperation; const ACancellationToken: IAsyncOperation);
+var
+  LLink: TCancellationLink;
+  LReference: ICancellationLink;
 begin
-  if ACancellationToken.State = TAsyncOperationState.Completed then
-  begin
-    AOperation.Cancel;
-    Exit;
-  end;
-
-  if AOperation.State in [TAsyncOperationState.Completed, TAsyncOperationState.Faulted, TAsyncOperationState.Cancelled] then
+  if TAsyncOperationController.IsFinal(AOperation.State) then
     Exit;
 
-  ACancellationToken.OnCompletion(
-    procedure
-    begin
-      if ACancellationToken.State = TAsyncOperationState.Completed then
-        AOperation.Cancel;
-    end);
+  LLink := TCancellationLink.Create(AOperation, ACancellationToken);
+  LReference := LLink;
+  LLink.Start;
 end;
 
-{EAsyncCancelException}
+class function TAsyncCore.PendingTimerCount: Integer;
+begin
+  Result := GTimers.Count;
+end;
+
+{ EAsyncCancelException }
 
 constructor EAsyncCancelException.Create;
 begin
   inherited Create('Asynchronous operation was cancelled');
 end;
 
-{EAsyncTimeoutException}
+{ EAsyncTimeoutException }
 
 constructor EAsyncTimeoutException.Create(const AMessage: string);
 begin
@@ -2106,7 +2710,14 @@ begin
 end;
 
 initialization
+  GClonerLock := TCriticalSection.Create;
+  GCloners := TDictionary<TClass, TAsyncExceptionCloner>.Create;
+  GJitterState := TStopwatch.GetTimeStamp;
+  GTimers := TAsyncTimerQueue.Create;
 
-  TAsyncCore.OnUnhandledError := nil;
+finalization
+  GTimers.Free;
+  GCloners.Free;
+  GClonerLock.Free;
 
 end.

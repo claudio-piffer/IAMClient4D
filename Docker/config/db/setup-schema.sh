@@ -3,7 +3,7 @@ set -e
 
 echo "****** CREATING keycloak DATABASE ******"
 
-DB_PASS=$(< /run/secrets/pg_keycloak_password.txt)
+DB_PASS=$(< /run/secrets/pg_keycloak_password)
 
 psql -v ON_ERROR_STOP=1 --username postgres <<EOF
 CREATE USER keycloak WITH PASSWORD '${DB_PASS}';

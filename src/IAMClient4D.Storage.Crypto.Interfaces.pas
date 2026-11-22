@@ -26,7 +26,7 @@
 /// </summary>
 /// <remarks>
 /// This unit defines the abstraction layer for token storage encryption,
-/// allowing different crypto implementations (LockBox3, TMS) to be used
+/// allowing different crypto implementations (LockBox3, TMS, TaurusTLS) to be used
 /// interchangeably via the factory pattern.
 /// </remarks>
 unit IAMClient4D.Storage.Crypto.Interfaces;
@@ -34,25 +34,29 @@ unit IAMClient4D.Storage.Crypto.Interfaces;
 interface
 
 uses
-  System.SysUtils;
+  System.SysUtils,
+  IAMClient4D.Exceptions;
 
 type
   /// <summary>
   /// Available storage crypto provider types.
   /// </summary>
   /// <remarks>
-  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
-  /// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
+  /// The crypto provider is selected at compile-time (IAM4D_TMS / IAM4D_TAURUSTLS defines).
+  /// LockBox3, TMS and TaurusTLS are mutually exclusive - only one is compiled at a time.
   /// <para>
   /// <b>LockBox3:</b> AES-256-CBC + HMAC-SHA256 (default)
   /// </para>
   /// <para>
   /// <b>TMS:</b> AES-256-GCM (requires IAM4D_TMS define)
   /// </para>
+  /// <para>
+  /// <b>TaurusTLS:</b> AES-256-GCM via OpenSSL (requires IAM4D_TAURUSTLS define)
+  /// </para>
   /// </remarks>
   TIAM4DStorageCryptoProviderType = (
     /// <summary>
-    /// Default provider based on compilation defines (LockBox3 or TMS).
+    /// Default provider based on compilation defines (LockBox3, TMS or TaurusTLS).
     /// </summary>
     scpDefault,
 
@@ -69,21 +73,22 @@ type
   /// This interface abstracts symmetric encryption for token storage.
   /// <para>
   /// <b>LockBox3 provider:</b> AES-256-CBC + HMAC-SHA256 (Encrypt-then-MAC)
-  /// Frame format: [IV 16 bytes][Ciphertext][HMAC Tag 32 bytes]
+  /// Frame format: [IV seed 8 bytes][Ciphertext][HMAC Tag 32 bytes]
   /// </para>
   /// <para>
-  /// <b>TMS provider:</b> AES-256-GCM (Authenticated Encryption with Associated Data)
+  /// <b>TMS and TaurusTLS providers:</b> AES-256-GCM (Authenticated Encryption with Associated Data)
   /// Frame format: [Nonce 12 bytes][Ciphertext][Tag 16 bytes]
   /// </para>
   /// <para>
-  /// <b>Thread-safety:</b> Create separate instance per storage (not thread-safe).
+  /// <b>Thread-safety:</b> not required: TIAM4DAESMemoryTokenStorageRawKey32 serializes its calls.
+  /// Create one instance per storage; share it across threads only if the implementation allows it (TaurusTLS).
   /// </para>
   /// <para>
   /// <b>Memory:</b> Implementations must securely wipe sensitive data on Destroy.
   /// </para>
   /// </remarks>
   IIAM4DStorageCryptoProvider = interface
-    ['{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}']
+    ['{87717FEE-6EC6-46CB-A01D-F506BD9603C5}']
 
     /// <summary>
     /// Encrypts plaintext with optional additional authenticated data.
@@ -119,9 +124,20 @@ type
   /// <summary>
   /// Base exception for storage crypto operations.
   /// </summary>
-  EIAM4DStorageCryptoException = class(Exception)
+  /// <remarks>
+  /// An EIAM4DException: ErrorCode is ecStorageEncryptionFailed or ecStorageDecryptionFailed for the
+  /// two descendants, ecUnknown for the base class.
+  /// </remarks>
+  EIAM4DStorageCryptoException = class(EIAM4DException)
   private
     FProviderName: string;
+  protected
+    /// <summary>
+    /// Copy constructor used by Clone: copies ProviderName too.
+    /// </summary>
+    constructor CreateCopy(ASource: EIAM4DException); override;
+    /// <summary>ErrorCode of the exceptions of this class</summary>
+    class function DefaultErrorCode: TIAM4DErrorCode; virtual;
   public
     /// <summary>
     /// Creates exception with message.
@@ -134,15 +150,28 @@ type
     constructor Create(const AProviderName, AReason: string); overload;
 
     /// <summary>
+    /// Returns an independent copy (same class, message, error code and provider name).
+    /// </summary>
+    /// <remarks>
+    /// Async.Core copies it through the cloner of EIAM4DException: WaitForResult keeps ProviderName.
+    /// </remarks>
+    function Clone: EIAM4DStorageCryptoException;
+
+    /// <summary>
     /// Name of the crypto provider that raised the exception.
     /// </summary>
     property ProviderName: string read FProviderName;
   end;
 
+  EIAM4DStorageCryptoExceptionClass = class of EIAM4DStorageCryptoException;
+
   /// <summary>
   /// Exception raised when storage encryption fails.
   /// </summary>
-  EIAM4DStorageEncryptionException = class(EIAM4DStorageCryptoException);
+  EIAM4DStorageEncryptionException = class(EIAM4DStorageCryptoException)
+  protected
+    class function DefaultErrorCode: TIAM4DErrorCode; override;
+  end;
 
   /// <summary>
   /// Exception raised when storage decryption or authentication fails.
@@ -154,7 +183,10 @@ type
   /// - The key is incorrect
   /// - The data is corrupted
   /// </remarks>
-  EIAM4DStorageDecryptionException = class(EIAM4DStorageCryptoException);
+  EIAM4DStorageDecryptionException = class(EIAM4DStorageCryptoException)
+  protected
+    class function DefaultErrorCode: TIAM4DErrorCode; override;
+  end;
 
 implementation
 
@@ -162,14 +194,45 @@ implementation
 
 constructor EIAM4DStorageCryptoException.Create(const AMessage: string);
 begin
-  inherited Create(AMessage);
+  inherited Create(AMessage, DefaultErrorCode);
   FProviderName := '';
 end;
 
 constructor EIAM4DStorageCryptoException.Create(const AProviderName, AReason: string);
 begin
-  inherited CreateFmt('[%s] %s', [AProviderName, AReason]);
+  inherited Create(Format('[%s] %s', [AProviderName, AReason]), DefaultErrorCode);
   FProviderName := AProviderName;
+end;
+
+constructor EIAM4DStorageCryptoException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited CreateCopy(ASource);
+  if ASource is EIAM4DStorageCryptoException then
+    FProviderName := EIAM4DStorageCryptoException(ASource).FProviderName;
+end;
+
+class function EIAM4DStorageCryptoException.DefaultErrorCode: TIAM4DErrorCode;
+begin
+  Result := ecUnknown;
+end;
+
+function EIAM4DStorageCryptoException.Clone: EIAM4DStorageCryptoException;
+begin
+  Result := inherited Clone as EIAM4DStorageCryptoException;
+end;
+
+{ EIAM4DStorageEncryptionException }
+
+class function EIAM4DStorageEncryptionException.DefaultErrorCode: TIAM4DErrorCode;
+begin
+  Result := ecStorageEncryptionFailed;
+end;
+
+{ EIAM4DStorageDecryptionException }
+
+class function EIAM4DStorageDecryptionException.DefaultErrorCode: TIAM4DErrorCode;
+begin
+  Result := ecStorageDecryptionFailed;
 end;
 
 end.

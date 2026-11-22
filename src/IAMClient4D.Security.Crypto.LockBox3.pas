@@ -43,14 +43,12 @@ type
   /// </summary>
   /// <remarks>
   /// Supports RSA PKCS#1 v1.5 (RS256, RS384, RS512) and RSA-PSS (PS256, PS384, PS512).
-  /// ECDSA is NOT supported by this provider - use TMS provider for ECDSA.
-  /// Thread-safety: Create separate instance per thread (not thread-safe).
-  /// Memory: Uses memory pool for efficient stream management.
+  /// ECDSA is NOT supported by this provider - use the TMS or TaurusTLS provider for ECDSA.
+  /// RSA keys checked with TIAM4DRSAPublicKey.IsValid first.
+  /// Thread-safety: safe for concurrent use (LockBox3 memory pool created per call, it is not thread-safe).
   /// </remarks>
   TIAM4DLockBox3CryptoProvider = class(TInterfacedObject, IIAM4DCryptoProvider)
   private
-    FMemoryPool: IMemoryStreamPool;
-
     function GetHashLength(AHashAlg: TIAM4DHashAlgorithm): Integer;
     function ComputeHash(const AData: TBytes; AHashAlg: TIAM4DHashAlgorithm): TBytes;
 
@@ -66,7 +64,6 @@ type
       AHashAlg: TIAM4DHashAlgorithm; ASaltLen: Integer): Boolean;
   public
     constructor Create;
-    destructor Destroy; override;
 
     { IIAM4DCryptoProvider }
     function ECDSAVerify(const AHash, AR, AS_, AX, AY: TBytes;
@@ -89,13 +86,6 @@ uses
 constructor TIAM4DLockBox3CryptoProvider.Create;
 begin
   inherited Create;
-  FMemoryPool := NewPool;
-end;
-
-destructor TIAM4DLockBox3CryptoProvider.Destroy;
-begin
-  FMemoryPool := nil;
-  inherited;
 end;
 
 function TIAM4DLockBox3CryptoProvider.GetProviderName: string;
@@ -110,8 +100,9 @@ end;
 
 function TIAM4DLockBox3CryptoProvider.SupportsAlgorithm(const AAlg: string): Boolean;
 begin
-  Result := SameText(AAlg, 'RS256') or SameText(AAlg, 'RS384') or SameText(AAlg, 'RS512') or
-            SameText(AAlg, 'PS256') or SameText(AAlg, 'PS384') or SameText(AAlg, 'PS512');
+  // Case-sensitive (RFC 7515 4.1.1)
+  Result := (AAlg = 'RS256') or (AAlg = 'RS384') or (AAlg = 'RS512') or
+            (AAlg = 'PS256') or (AAlg = 'PS384') or (AAlg = 'PS512');
 end;
 
 function TIAM4DLockBox3CryptoProvider.GetHashLength(AHashAlg: TIAM4DHashAlgorithm): Integer;
@@ -157,6 +148,7 @@ end;
 function TIAM4DLockBox3CryptoProvider.RSAVerifyPKCS1(const AExpectedEM, ASignature,
   AModulus, AExponent: TBytes): Boolean;
 var
+  LPool: IMemoryStreamPool;
   LModulusHC, LExponentHC: THugeCardinal;
   LSignatureHC: THugeCardinal;
   LMessageHC: THugeCardinal;
@@ -165,6 +157,11 @@ var
   LModulusLen: Integer;
 begin
   Result := False;
+  // No key checks in PowerMod: e = 1 would accept the EM itself, a huge n or e burns CPU
+  if not TIAM4DRSAPublicKey.IsValid(AModulus, AExponent) then
+    Exit;
+
+  LPool := NewPool;
   LModulusHC := nil;
   LExponentHC := nil;
   LSignatureHC := nil;
@@ -175,7 +172,7 @@ begin
     try
       LModulusStream.Write(AModulus[0], Length(AModulus));
       LModulusStream.Position := 0;
-      if not OS2IP(LModulusStream, Length(AModulus), LModulusHC, FMemoryPool, Length(AModulus) * 8 + 32) then
+      if not OS2IP(LModulusStream, Length(AModulus), LModulusHC, LPool, Length(AModulus) * 8 + 32) then
         Exit;
     finally
       LModulusStream.Free;
@@ -185,7 +182,7 @@ begin
     try
       LExponentStream.Write(AExponent[0], Length(AExponent));
       LExponentStream.Position := 0;
-      if not OS2IP(LExponentStream, Length(AExponent), LExponentHC, FMemoryPool, Length(AExponent) * 8 + 32) then
+      if not OS2IP(LExponentStream, Length(AExponent), LExponentHC, LPool, Length(AExponent) * 8 + 32) then
         Exit;
     finally
       LExponentStream.Free;
@@ -200,7 +197,7 @@ begin
     try
       LSignatureStream.Write(ASignature[0], Length(ASignature));
       LSignatureStream.Position := 0;
-      if not OS2IP(LSignatureStream, Length(ASignature), LSignatureHC, FMemoryPool, LModulusHC.BitLength + 32) then
+      if not OS2IP(LSignatureStream, Length(ASignature), LSignatureHC, LPool, LModulusHC.BitLength + 32) then
         Exit;
     finally
       LSignatureStream.Free;
@@ -220,7 +217,7 @@ begin
 
     LMessageStream := TMemoryStream.Create;
     try
-      if not I2OSP(LMessageHC, LModulusLen, LMessageStream, FMemoryPool) then
+      if not I2OSP(LMessageHC, LModulusLen, LMessageStream, LPool) then
         Exit;
 
       SetLength(LActualEM, LModulusLen);
@@ -373,6 +370,7 @@ end;
 function TIAM4DLockBox3CryptoProvider.RSAVerifyPSS(const AMessage, ASignature,
   AModulus, AExponent: TBytes; AHashAlg: TIAM4DHashAlgorithm; ASaltLen: Integer): Boolean;
 var
+  LPool: IMemoryStreamPool;
   LModulusHC, LExponentHC: THugeCardinal;
   LSignatureHC: THugeCardinal;
   LMessageHC: THugeCardinal;
@@ -383,6 +381,10 @@ var
   LEmLen: Integer;
 begin
   Result := False;
+  if not TIAM4DRSAPublicKey.IsValid(AModulus, AExponent) then
+    Exit;
+
+  LPool := NewPool;
   LModulusHC := nil;
   LExponentHC := nil;
   LSignatureHC := nil;
@@ -393,7 +395,7 @@ begin
     try
       LModulusStream.Write(AModulus[0], Length(AModulus));
       LModulusStream.Position := 0;
-      if not OS2IP(LModulusStream, Length(AModulus), LModulusHC, FMemoryPool, Length(AModulus) * 8 + 32) then
+      if not OS2IP(LModulusStream, Length(AModulus), LModulusHC, LPool, Length(AModulus) * 8 + 32) then
         Exit;
     finally
       LModulusStream.Free;
@@ -403,7 +405,7 @@ begin
     try
       LExponentStream.Write(AExponent[0], Length(AExponent));
       LExponentStream.Position := 0;
-      if not OS2IP(LExponentStream, Length(AExponent), LExponentHC, FMemoryPool, Length(AExponent) * 8 + 32) then
+      if not OS2IP(LExponentStream, Length(AExponent), LExponentHC, LPool, Length(AExponent) * 8 + 32) then
         Exit;
     finally
       LExponentStream.Free;
@@ -420,7 +422,7 @@ begin
     try
       LSignatureStream.Write(ASignature[0], Length(ASignature));
       LSignatureStream.Position := 0;
-      if not OS2IP(LSignatureStream, LK, LSignatureHC, FMemoryPool, LModBits + 32) then
+      if not OS2IP(LSignatureStream, LK, LSignatureHC, LPool, LModBits + 32) then
         Exit;
     finally
       LSignatureStream.Free;
@@ -440,7 +442,7 @@ begin
 
     LMessageStream := TMemoryStream.Create;
     try
-      if not I2OSP(LMessageHC, LEmLen, LMessageStream, FMemoryPool) then
+      if not I2OSP(LMessageHC, LEmLen, LMessageStream, LPool) then
         Exit;
 
       SetLength(LEM, LEmLen);

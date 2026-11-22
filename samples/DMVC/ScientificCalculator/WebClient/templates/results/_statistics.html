@@ -1,0 +1,24 @@
+{{# Result of the statistics: r.data = count, sum, mean, median, minimum, maximum, variance,
+   standardDeviation, sample; r.valuesJson = the values, for the chart #}}
+<div class="result">
+  {{include "../partials/_call.html"}}
+  {{if r.ok}}
+  <dl class="stats-grid">
+    <div><dt>{{:t.results.count}}</dt><dd>{{:r.data.count}}</dd></div>
+    <div><dt>{{:t.results.sum}}</dt><dd>{{:r.data.sum|num}}</dd></div>
+    <div><dt>{{:t.results.mean}}</dt><dd>{{:r.data.mean|num}}</dd></div>
+    <div><dt>{{:t.results.median}}</dt><dd>{{:r.data.median|num}}</dd></div>
+    <div><dt>{{:t.results.minimum}}</dt><dd>{{:r.data.minimum|num}}</dd></div>
+    <div><dt>{{:t.results.maximum}}</dt><dd>{{:r.data.maximum|num}}</dd></div>
+    <div><dt>{{:t.results.variance}}</dt><dd>{{:r.data.variance|num}}</dd></div>
+    <div><dt>{{:t.results.std_dev}}</dt><dd>{{:r.data.standardDeviation|num}}</dd></div>
+  </dl>
+  <p class="small text-secondary">{{if r.data.sample}}{{:t.results.sample_stats}}{{else}}{{:t.results.population_stats}}{{endif}}</p>
+  <div class="chart-box">
+    <canvas data-chart="statistics" data-values="{{:r.valuesJson}}" data-mean="{{:r.data.mean}}"
+            data-median="{{:r.data.median}}" aria-label="{{:t.results.stats_chart}}" role="img"></canvas>
+  </div>
+  {{else}}
+  {{include "../partials/_error.html"}}
+  {{endif}}
+</div>

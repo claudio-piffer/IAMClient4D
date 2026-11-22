@@ -5,7 +5,8 @@ uses
   Vcl.Themes,
   Vcl.Styles,
   IAMClient.MainForm in 'IAMClient.MainForm.pas' {MainForm},
-  UserManagement in 'UserManagement.pas';
+  UserManagement in 'UserManagement.pas',
+  Samples.PendingOperations in '..\Common\Samples.PendingOperations.pas';
 
 {$R *.res}
 

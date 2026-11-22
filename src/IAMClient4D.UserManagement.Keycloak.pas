@@ -40,81 +40,14 @@ uses
   IAMClient4D.UserManagement.Validation,
   IAMClient4D.UserManagement.Helpers,
   IAMClient4D.Common.JSONUtils,
-  IAMClient4D.Exceptions;
+  IAMClient4D.Exceptions,
+  IAMClient4D.Admin.Keycloak.Base;
 
 type
-  /// <summary>
-  /// Authentication provider interface for Keycloak Admin API access.
-  /// </summary>
-  IKeycloakAuthProvider = interface
-    ['{8AFF271E-1A31-42CD-992E-7FCE62325685}']
-    /// <summary>
-    /// Returns access token for Admin API authentication.
-    /// </summary>
-    function GetAccessToken: string;
-    /// <summary>
-    /// Creates configured HTTP client for API calls.
-    /// </summary>
-    function CreateHTTPClient: THTTPClient;
-  end;
-
-  /// <summary>
-  /// Auth provider using IAM4D client for token management.
-  /// </summary>
-  /// <remarks>
-  /// Token source: Retrieved from IAM4D client (automatic refresh handling).
-  /// Use case: When using OAuth2 client for authentication.
-  /// </remarks>
-  TClientBasedAuthProvider = class(TInterfacedObject, IKeycloakAuthProvider)
-  private
-    FClient: IIAM4DClient;
-  protected
-    /// <summary>
-  /// Returns access token from client.
-  /// </summary>
-    function GetAccessToken: string;
-    /// <summary>
-    /// Creates HTTP client from client configuration.
-    /// </summary>
-    function CreateHTTPClient: THTTPClient;
-  public
-    /// <summary>
-    /// Creates provider with IAM4D client.
-    /// </summary>
-    constructor Create(const AClient: IIAM4DClient);
-  end;
-
-  /// <summary>
-  /// Auth provider using static access token.
-  /// </summary>
-  /// <remarks>
-  /// Token source: Provided directly (no automatic refresh).
-  /// Use case: Service accounts, external token management, testing.
-  /// </remarks>
-  TTokenBasedAuthProvider = class(TInterfacedObject, IKeycloakAuthProvider)
-  private
-    FAccessToken: string;
-    FHTTPConfig: TIAM4DHTTPClientConfig;
-  protected
-    /// <summary>
-    /// Returns the static access token.
-    /// </summary>
-    function GetAccessToken: string;
-    /// <summary>
-    /// Creates HTTP client with configured settings.
-    /// </summary>
-    function CreateHTTPClient: THTTPClient;
-  public
-    /// <summary>
-    /// Creates provider with access token and HTTP configuration.
-    /// </summary>
-    constructor Create(const AAccessToken: string; const AHTTPConfig: TIAM4DHTTPClientConfig); overload;
-
-    /// <summary>
-    /// Creates provider with access token and default HTTP configuration.
-    /// </summary>
-    constructor Create(const AAccessToken: string); overload;
-  end;
+  // Moved to IAMClient4D.Admin.Keycloak.Base: aliases keep existing code compiling
+  IKeycloakAuthProvider = IAMClient4D.Admin.Keycloak.Base.IKeycloakAuthProvider;
+  TClientBasedAuthProvider = IAMClient4D.Admin.Keycloak.Base.TClientBasedAuthProvider;
+  TTokenBasedAuthProvider = IAMClient4D.Admin.Keycloak.Base.TTokenBasedAuthProvider;
 
   /// <summary>
   /// Keycloak Admin API implementation for user management (synchronous).
@@ -122,29 +55,25 @@ type
   /// <remarks>
   /// API: Keycloak Admin REST API (/admin/realms/{realm}).
   /// Authentication: Uses access token with admin permissions via auth provider.
-  /// HTTP: Creates new HTTP client for each operation (no connection pooling).
+  /// HTTP: a pool of HTTP clients per instance (TIAM4DKeycloakAdminBase): connections are reused.
   /// JSON: Automatic serialization/deserialization of Keycloak entities.
   /// Sync: All operations execute synchronously and block until completion.
   /// Use case: Server-side (REST API) where the request is already on a worker thread.
   /// </remarks>
-  TIAM4DKeycloakUserManager = class(TInterfacedObject, IIAM4DUserManager)
+  TIAM4DKeycloakUserManager = class(TIAM4DKeycloakAdminBase, IIAM4DUserManager)
   private
-    FAuthProvider: IKeycloakAuthProvider;
-    FBaseURL: string;
-    FRealm: string;
-
-    function GetAdminURL: string;
     function GetUsersURL: string;
     function GetUserURL(const AUserID: string): string;
     function GetRealmRolesURL: string;
     function GetGroupsURL: string;
-    function GetAccessToken: string;
 
-    procedure EnsureResponseSuccess(const AResponse: IHTTPResponse; const AContext: string); overload;
-    procedure EnsureResponseSuccess(const AResponse: IHTTPResponse; const AContext: string; const AURL: string; const AMethod: string); overload;
-    function ExtractLocationID(const AResponse: IHTTPResponse): string;
-
-    function UserToJSON(const AUser: TIAM4DUser; const AIncludeCredentials: Boolean = False): TJSONObject;
+    /// <summary>
+    /// Keycloak representation of AUser. AForUpdate: the record is the new state of the profile,
+    /// email, first and last name and required actions are sent also when empty (they are cleared);
+    /// an empty username is not sent (unchanged). For a create the empty fields are left out.
+    /// </summary>
+    function UserToJSON(const AUser: TIAM4DUser; const AIncludeCredentials: Boolean = False;
+      const AForUpdate: Boolean = False): TJSONObject;
     function JSONToUser(const AJSON: TJSONObject): TIAM4DUser;
     function JSONToRole(const AJSON: TJSONObject): TIAM4DRole; overload;
     function JSONToRole(const AJSON: TJSONObject; const AContainerID: string; const AClientID: string): TIAM4DRole; overload;
@@ -156,49 +85,18 @@ type
 
     function ParseAttributesFromJSON(const AJSON: TJSONObject): TArray<TIAM4DUserAttribute>;
     procedure AddAttributesToJSON(const ATargetJSON: TJSONObject; const AAttributes: TArray<TIAM4DUserAttribute>);
-    function FindGroupByPath(const AGroups: TJSONArray; const AGroupPath: string; out AFoundGroup: TJSONObject): Boolean; overload;
-    function FindGroupByPath(const AGroupObj: TJSONObject; const AGroupPath: string; out AFoundGroup: TJSONObject): Boolean; overload;
-
     /// <summary>
-    /// Helper: Executes HTTP request with JSON body and validates response.
+    /// Internal: GET /admin/realms/{realm}/group-by-path/{path}, one encoded segment per level.
+    /// False on 404 or when Keycloak returns a group with another path (e.g. a case-insensitive
+    /// database collation).
     /// </summary>
-    function ExecuteJSONRequest(
-      const AHTTPClient: THTTPClient;
-      const AURL: string;
-      const AMethod: string;
-      const AJSON: TJSONObject;
-      const AContext: string): IHTTPResponse;
-
+    function TryFetchGroupByPath(const AHTTPClient: THTTPClient; const AGroupPath: string; out AGroup: TIAM4DGroup): Boolean;
     /// <summary>
-    /// Helper: Executes POST request with JSON body and extracts Location header ID.
+    /// Internal: adds the groups of AGroups and all their descendants: inline subGroups (Keycloak < 23)
+    /// or GET /groups/{id}/children, paged (Keycloak 23+ returns subGroupCount only).
     /// </summary>
-    function ExecuteJSONRequestWithLocation(
-      const AHTTPClient: THTTPClient;
-      const AURL: string;
-      const AJSON: TJSONObject;
-      const AContext: string): string;
-
-    /// <summary>
-    /// Helper: Executes HTTP request with JSON array body and validates response.
-    /// </summary>
-    function ExecuteJSONArrayRequest(
-      const AHTTPClient: THTTPClient;
-      const AURL: string;
-      const AMethod: string;
-      const AJSONArray: TJSONArray;
-      const AContext: string): IHTTPResponse;
-
-    /// <summary>
-    /// Helper: Executes an operation with authenticated HTTP client.
-    /// Handles token retrieval, client creation, auth header setup, and cleanup.
-    /// </summary>
-    function ExecuteWithAuth<T>(const AOperation: TFunc<THTTPClient, T>): T;
-
-    /// <summary>
-    /// Helper: Executes a void operation with authenticated HTTP client.
-    /// Handles token retrieval, client creation, auth header setup, and cleanup.
-    /// </summary>
-    procedure ExecuteWithAuthVoid(const AOperation: TProc<THTTPClient>);
+    procedure CollectGroups(const AHTTPClient: THTTPClient; const AGroups: TJSONArray; const AList: TList<TIAM4DGroup>);
+    procedure CollectChildGroups(const AHTTPClient: THTTPClient; const AGroupID: string; const AList: TList<TIAM4DGroup>);
 
     /// <summary>
     /// Validates batch operation array size.
@@ -218,7 +116,7 @@ type
     function GetClientUUIDByClientID(const AHTTPClient: THTTPClient; const AClientID: string): string;
 
     /// <summary>
-    /// Internal: Retrieves group ID by group path via GET /admin/realms/{realm}/groups (filtered by path).
+    /// Internal: group ID by path (TryFetchGroupByPath), '' when there is no such group.
     /// </summary>
     function GetGroupIDByPath(const AHTTPClient: THTTPClient; const AGroupPath: string): string;
 
@@ -229,6 +127,13 @@ type
     /// Populates ContainerID and ClientID in returned roles for automatic routing in assignment methods.
     /// </remarks>
     function GetClientRoles(const AHTTPClient: THTTPClient; const AContainerID: string; const AClientID: string = ''): TArray<TIAM4DRole>;
+    /// <summary>
+    /// Realm role ARoleName read by name (one request, not the list of the realm); same name, same
+    /// case, or EIAM4DRoleNotFoundException
+    /// </summary>
+    function FindRealmRole(const ARoleName: string): TIAM4DRole;
+    /// <summary>Client role ARoleName of AClientID read by name, as FindRealmRole</summary>
+    function FindClientRole(const AClientID, ARoleName: string): TIAM4DRole;
 
     /// <summary>
     /// Internal: Retrieves client roles assigned to user via GET /admin/realms/{realm}/users/{id}/role-mappings/clients/{id}.
@@ -239,6 +144,19 @@ type
     /// Internal: Assigns client roles to user via POST to role-mappings endpoint.
     /// </summary>
     procedure AssignClientRolesToUser(const AHTTPClient: THTTPClient; const AUserID: string; const AContainerID: string; const ARoles: TArray<TIAM4DRole>); overload;
+
+    /// <summary>
+    /// Internal: raises EIAM4DInvalidConfigurationException for the first role without ID, ContainerID
+    /// or ClientID (roles not read from Keycloak: the role mapping would answer 404).
+    /// </summary>
+    class procedure CheckClientRoles(const ARoles: TArray<TIAM4DRole>); static;
+
+    /// <summary>
+    /// Internal: one role-mapping POST per client of ARoles (checked by CheckClientRoles), in the order
+    /// of their first role.
+    /// </summary>
+    procedure AssignClientRolesByContainer(const AHTTPClient: THTTPClient; const AUserID: string;
+      const ARoles: TArray<TIAM4DRole>);
 
     /// <summary>
     /// Internal: Removes client roles from user via DELETE to role-mappings endpoint.
@@ -304,6 +222,8 @@ type
     procedure RevokeUserSession(const AUserID: string; const ASessionID: string);
     function GetUserFederatedIdentities(const AUserID: string): TArray<TIAM4DFederatedIdentity>;
     function IsUserFederated(const AUserID: string): Boolean;
+    procedure LinkFederatedIdentity(const AUserID: string; const AFederatedIdentity: TIAM4DFederatedIdentity);
+    procedure UnlinkFederatedIdentity(const AUserID: string; const AIdentityProvider: string);
     function GetUserRequiredActions(const AUserID: string): TArray<TIAM4DRequiredAction>;
     procedure SetUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
     procedure RemoveUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
@@ -330,26 +250,6 @@ type
     // Internal helper
     procedure SetUserEnabledState(const AUserID: string; const AEnabled: Boolean);
 
-  public
-    /// <summary>
-    /// Creates manager with custom auth provider.
-    /// </summary>
-    constructor Create(const AAuthProvider: IKeycloakAuthProvider; const ABaseURL: string; const ARealm: string); overload;
-
-    /// <summary>
-    /// Creates manager with IAM4D client (auto-extracts base URL and realm from issuer if not provided).
-    /// </summary>
-    constructor Create(const AClient: IIAM4DClient; const ABaseURL: string = ''; const ARealm: string = ''); overload;
-
-    /// <summary>
-    /// Creates manager with static access token and custom HTTP configuration.
-    /// </summary>
-    constructor Create(const AAccessToken: string; const ABaseURL: string; const ARealm: string; const AHTTPConfig: TIAM4DHTTPClientConfig); overload;
-
-    /// <summary>
-    /// Creates manager with static access token and default HTTP configuration.
-    /// </summary>
-    constructor Create(const AAccessToken: string; const ABaseURL: string; const ARealm: string); overload;
   end;
 
 implementation
@@ -359,137 +259,13 @@ uses
   System.StrUtils,
   IAMClient4D.Common.Constants;
 
-{ TClientBasedAuthProvider }
-
-constructor TClientBasedAuthProvider.Create(const AClient: IIAM4DClient);
+procedure RaiseAmbiguousEmail(const AEmail: string; ACount: Integer);
 begin
-  inherited Create;
-  if not Assigned(AClient) then
-    raise EIAM4DInvalidConfigurationException.Create('Client cannot be nil');
-  FClient := AClient;
-end;
-
-function TClientBasedAuthProvider.GetAccessToken: string;
-begin
-  Result := FClient.GetAccessTokenAsync.Run.WaitForResult();
-end;
-
-function TClientBasedAuthProvider.CreateHTTPClient: THTTPClient;
-begin
-  Result := FClient.CreateHTTPClient;
-end;
-
-{ TTokenBasedAuthProvider }
-
-constructor TTokenBasedAuthProvider.Create(
-  const AAccessToken: string;
-  const AHTTPConfig: TIAM4DHTTPClientConfig);
-begin
-  inherited Create;
-  if AAccessToken.IsEmpty then
-    raise EIAM4DInvalidConfigurationException.Create('Access token cannot be empty');
-  FAccessToken := AAccessToken;
-  FHTTPConfig := AHTTPConfig;
-end;
-
-constructor TTokenBasedAuthProvider.Create(const AAccessToken: string);
-begin
-  Create(AAccessToken, TIAM4DHTTPClientConfig.Default);
-end;
-
-function TTokenBasedAuthProvider.GetAccessToken: string;
-begin
-  Result := FAccessToken;
-end;
-
-function TTokenBasedAuthProvider.CreateHTTPClient: THTTPClient;
-begin
-  Result := TIAM4DHTTPClientFactory.CreateHTTPClient(FHTTPConfig);
+  raise EIAM4DInvalidUserDataException.Create(Format(
+    '%d users have the email %s (realm with duplicate emails allowed): search by username or ID', [ACount, AEmail]));
 end;
 
 { TIAM4DKeycloakUserManager }
-
-constructor TIAM4DKeycloakUserManager.Create(
-  const AAuthProvider: IKeycloakAuthProvider;
-  const ABaseURL: string;
-  const ARealm: string);
-begin
-  inherited Create;
-
-  if not Assigned(AAuthProvider) then
-    raise EIAM4DInvalidConfigurationException.Create('AuthProvider cannot be nil');
-
-  if ABaseURL.IsEmpty then
-    raise EIAM4DInvalidConfigurationException.Create('BaseURL cannot be empty');
-
-  if ARealm.IsEmpty then
-    raise EIAM4DInvalidConfigurationException.Create('Realm cannot be empty');
-
-  FAuthProvider := AAuthProvider;
-  FBaseURL := ABaseURL.TrimRight(['/']);
-  FRealm := ARealm;
-end;
-
-constructor TIAM4DKeycloakUserManager.Create(
-  const AClient: IIAM4DClient;
-  const ABaseURL: string;
-  const ARealm: string);
-var
-  LAuthProvider: IKeycloakAuthProvider;
-  LBaseURL, LRealm: string;
-begin
-  if not Assigned(AClient) then
-    raise EIAM4DInvalidConfigurationException.Create('Client cannot be nil');
-
-  LBaseURL := ABaseURL;
-  LRealm := ARealm;
-
-  if LBaseURL.IsEmpty or LRealm.IsEmpty then
-  begin
-    var LIssuer := AClient.Issuer;
-    if LIssuer.IsEmpty then
-      raise EIAM4DInvalidConfigurationException.Create('Client not configured. Call Configure first.');
-
-    var LRealmsPos := LIssuer.IndexOf('/realms/');
-    if LRealmsPos < 0 then
-      raise EIAM4DInvalidConfigurationException.Create('Invalid issuer format. Expected: {baseURL}/realms/{realm}');
-
-    LBaseURL := LIssuer.Substring(0, LRealmsPos);
-    LRealm := LIssuer.Substring(LRealmsPos + 8);
-  end;
-
-  LAuthProvider := TClientBasedAuthProvider.Create(AClient);
-
-  Create(LAuthProvider, LBaseURL, LRealm);
-end;
-
-constructor TIAM4DKeycloakUserManager.Create(
-  const AAccessToken: string;
-  const ABaseURL: string;
-  const ARealm: string;
-  const AHTTPConfig: TIAM4DHTTPClientConfig);
-var
-  LAuthProvider: IKeycloakAuthProvider;
-begin
-  LAuthProvider := TTokenBasedAuthProvider.Create(AAccessToken, AHTTPConfig);
-  Create(LAuthProvider, ABaseURL, ARealm);
-end;
-
-constructor TIAM4DKeycloakUserManager.Create(
-  const AAccessToken: string;
-  const ABaseURL: string;
-  const ARealm: string);
-var
-  LAuthProvider: IKeycloakAuthProvider;
-begin
-  LAuthProvider := TTokenBasedAuthProvider.Create(AAccessToken);
-  Create(LAuthProvider, ABaseURL, ARealm);
-end;
-
-function TIAM4DKeycloakUserManager.GetAdminURL: string;
-begin
-  Result := FBaseURL + '/admin/realms/' + FRealm;
-end;
 
 function TIAM4DKeycloakUserManager.GetUsersURL: string;
 begin
@@ -498,7 +274,7 @@ end;
 
 function TIAM4DKeycloakUserManager.GetUserURL(const AUserID: string): string;
 begin
-  Result := GetUsersURL + '/' + TNetEncoding.URL.Encode(AUserID);
+  Result := GetUsersURL + '/' + EncodePathSegment(AUserID);
 end;
 
 function TIAM4DKeycloakUserManager.GetRealmRolesURL: string;
@@ -511,101 +287,39 @@ begin
   Result := GetAdminURL + '/groups';
 end;
 
-function TIAM4DKeycloakUserManager.GetAccessToken: string;
+// Client lookup by clientId found nothing: a 404 like the other "not found" errors
+function ClientNotFound(const AClientID: string): EIAM4DHTTPNotFoundException;
 begin
-  Result := FAuthProvider.GetAccessToken;
-end;
-
-procedure TIAM4DKeycloakUserManager.EnsureResponseSuccess(
-  const AResponse: IHTTPResponse;
-  const AContext: string);
-var
-  LErrorMsg: string;
-begin
-  if AResponse.StatusCode in [IAM4D_HTTP_STATUS_OK, IAM4D_HTTP_STATUS_CREATED, IAM4D_HTTP_STATUS_NO_CONTENT] then
-    Exit;
-
-  if not AResponse.ContentAsString.Trim.IsEmpty then
-    LErrorMsg := AResponse.ContentAsString
-  else
-    LErrorMsg := AResponse.StatusText;
-
-  raise EIAM4DInvalidConfigurationException.CreateFmt(
-    '%s failed: %d - %s',
-    [AContext, AResponse.StatusCode, LErrorMsg]);
-end;
-
-procedure TIAM4DKeycloakUserManager.EnsureResponseSuccess(
-  const AResponse: IHTTPResponse;
-  const AContext: string;
-  const AURL: string;
-  const AMethod: string);
-var
-  LErrorMsg: string;
-  LResponsePreview: string;
-begin
-  if AResponse.StatusCode in [IAM4D_HTTP_STATUS_OK, IAM4D_HTTP_STATUS_CREATED, IAM4D_HTTP_STATUS_NO_CONTENT] then
-    Exit;
-
-  if not AResponse.ContentAsString.Trim.IsEmpty then
-  begin
-    if AResponse.ContentAsString.Length > IAM4D_MAX_ERROR_PREVIEW_LENGTH then
-      LResponsePreview := AResponse.ContentAsString.Substring(0, IAM4D_MAX_ERROR_PREVIEW_LENGTH) + '...'
-    else
-      LResponsePreview := AResponse.ContentAsString;
-  end
-  else
-    LResponsePreview := AResponse.StatusText;
-
-  LErrorMsg := Format(
-    '%s failed'#13#10 +
-    'Request: %s %s'#13#10 +
-    'Status: %d %s'#13#10 +
-    'Response: %s',
-    [AContext, AMethod, AURL, AResponse.StatusCode, AResponse.StatusText, LResponsePreview]);
-
-  raise EIAM4DInvalidConfigurationException.Create(LErrorMsg);
-end;
-
-function TIAM4DKeycloakUserManager.ExtractLocationID(const AResponse: IHTTPResponse): string;
-var
-  LLocation: string;
-  LLastSlashPos: Integer;
-begin
-  LLocation := AResponse.HeaderValue['Location'];
-  if LLocation.IsEmpty then
-    raise EIAM4DInvalidConfigurationException.Create('Location header missing from create response');
-
-  LLastSlashPos := LLocation.LastIndexOf('/');
-  if LLastSlashPos < 0 then
-    raise EIAM4DInvalidConfigurationException.Create('Invalid Location header format');
-
-  Result := LLocation.Substring(LLastSlashPos + 1);
+  Result := EIAM4DHTTPNotFoundException.CreateFromResponse(IAM4D_HTTP_STATUS_NOT_FOUND, '',
+    Format('Client "%s" not found', [AClientID]));
 end;
 
 { JSON Mapping }
 
-function TIAM4DKeycloakUserManager.UserToJSON(const AUser: TIAM4DUser; const AIncludeCredentials: Boolean = False): TJSONObject;
+function TIAM4DKeycloakUserManager.UserToJSON(const AUser: TIAM4DUser; const AIncludeCredentials: Boolean;
+  const AForUpdate: Boolean): TJSONObject;
 var
   LCredentials: TJSONArray;
   LCredential: TJSONObject;
   LActionsArray: TJSONArray;
   LAction: TIAM4DRequiredAction;
+  LOther: string;
 begin
   Result := TJSONObject.Create;
   try
     if not AUser.ID.IsEmpty then
       Result.AddPair('id', AUser.ID);
 
-    Result.AddPair('username', AUser.Username);
+    if not (AForUpdate and AUser.Username.IsEmpty) then
+      Result.AddPair('username', AUser.Username);
 
-    if not AUser.Email.IsEmpty then
+    if AForUpdate or not AUser.Email.IsEmpty then
       Result.AddPair('email', AUser.Email);
 
-    if not AUser.FirstName.IsEmpty then
+    if AForUpdate or not AUser.FirstName.IsEmpty then
       Result.AddPair('firstName', AUser.FirstName);
 
-    if not AUser.LastName.IsEmpty then
+    if AForUpdate or not AUser.LastName.IsEmpty then
       Result.AddPair('lastName', AUser.LastName);
 
     Result.AddPair('enabled', TJSONBool.Create(AUser.Enabled));
@@ -625,11 +339,14 @@ begin
       Result.AddPair('credentials', LCredentials);
     end;
 
-    if Length(AUser.RequiredActions) > 0 then
+    // The actions not in TIAM4DRequiredAction too: an update must not drop them
+    if AForUpdate or (Length(AUser.RequiredActions) > 0) or (Length(AUser.OtherRequiredActions) > 0) then
     begin
       LActionsArray := TJSONArray.Create;
       for LAction in AUser.RequiredActions do
         LActionsArray.Add(LAction.ToString);
+      for LOther in AUser.OtherRequiredActions do
+        LActionsArray.Add(LOther);
       Result.AddPair('requiredActions', LActionsArray);
     end;
 
@@ -644,7 +361,9 @@ function TIAM4DKeycloakUserManager.JSONToUser(const AJSON: TJSONObject): TIAM4DU
 var
   LActionsArray: TJSONArray;
   LActionsList: TList<TIAM4DRequiredAction>;
+  LOtherList: TList<string>;
   LActionStr: string;
+  LAction: TIAM4DRequiredAction;
 begin
   Result.ID := AJSON.GetValue<string>('id', '');
   Result.Username := AJSON.GetValue<string>('username', '');
@@ -654,33 +373,35 @@ begin
   Result.Enabled := AJSON.GetValue<Boolean>('enabled', False);
   Result.EmailVerified := AJSON.GetValue<Boolean>('emailVerified', False);
   Result.CreatedTimestamp := AJSON.GetValue<Int64>('createdTimestamp', 0);
+  Result.FederationLink := AJSON.GetValue<string>('federationLink', '');
 
   Result.AllAttributes := ParseAttributesFromJSON(AJSON);
 
+  // An action not in TIAM4DRequiredAction (Keycloak 24+ VERIFY_PROFILE, webauthn-register, a
+  // custom one) goes to OtherRequiredActions: reading the user must not fail
+  Result.RequiredActions := nil;
+  Result.OtherRequiredActions := nil;
   LActionsArray := TIAM4DJSONHelper.GetArray(AJSON, 'requiredActions');
   if LActionsArray <> nil then
   begin
     LActionsList := TList<TIAM4DRequiredAction>.Create;
+    LOtherList := TList<string>.Create;
     try
       for var LIndex := 0 to LActionsArray.Count - 1 do
       begin
         LActionStr := LActionsArray.Items[LIndex].Value;
-        try
-          LActionsList.Add(TIAM4DRequiredAction.FromString(LActionStr));
-        except
-          on E: EArgumentException do
-          begin
-            raise EIAM4DUnknownRequiredActionException.Create(LActionStr, Result.ID);
-          end;
-        end;
+        if TIAM4DRequiredAction.TryFromString(LActionStr, LAction) then
+          LActionsList.Add(LAction)
+        else
+          LOtherList.Add(LActionStr);
       end;
       Result.RequiredActions := LActionsList.ToArray;
+      Result.OtherRequiredActions := LOtherList.ToArray;
     finally
+      LOtherList.Free;
       LActionsList.Free;
     end;
-  end
-  else
-    Result.RequiredActions := nil;
+  end;
 end;
 
 function TIAM4DKeycloakUserManager.JSONToRole(const AJSON: TJSONObject): TIAM4DRole;
@@ -800,49 +521,84 @@ begin
   end;
 end;
 
-function TIAM4DKeycloakUserManager.FindGroupByPath(
-  const AGroups: TJSONArray;
-  const AGroupPath: string;
-  out AFoundGroup: TJSONObject): Boolean;
+function TIAM4DKeycloakUserManager.TryFetchGroupByPath(const AHTTPClient: THTTPClient; const AGroupPath: string;
+  out AGroup: TIAM4DGroup): Boolean;
+var
+  LPath, LURL, LSegment: string;
+  LResponse: IHTTPResponse;
+  LGroupObj: TJSONObject;
 begin
-  AFoundGroup := nil;
-  Result := False;
+  AGroup := Default(TIAM4DGroup);
+  LPath := AGroupPath;
+  if not LPath.StartsWith('/') then
+    LPath := '/' + LPath;
 
-  if not Assigned(AGroups) then
-    Exit;
+  // Segments encoded one by one, '/' kept as the separator (a '/' inside a name is '~/' in Keycloak 24+)
+  LURL := GetAdminURL + '/group-by-path';
+  for LSegment in LPath.Substring(1).Split(['/']) do
+    LURL := LURL + '/' + EncodePathSegment(LSegment);
 
+  LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
+  if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
+    Exit(False);
+  EnsureResponseSuccess(LResponse, 'Get group by path');
+
+  LGroupObj := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'group response');
+  try
+    AGroup := JSONToGroup(LGroupObj);
+  finally
+    LGroupObj.Free;
+  end;
+  // Group paths are case-sensitive in Keycloak
+  Result := SameStr(AGroup.Path, LPath);
+  if not Result then
+    AGroup := Default(TIAM4DGroup);
+end;
+
+procedure TIAM4DKeycloakUserManager.CollectGroups(const AHTTPClient: THTTPClient; const AGroups: TJSONArray;
+  const AList: TList<TIAM4DGroup>);
+var
+  LGroupObj: TJSONObject;
+  LSubGroups: TJSONValue;
+begin
   for var LIndex := 0 to AGroups.Count - 1 do
   begin
     if not (AGroups.Items[LIndex] is TJSONObject) then
       Continue;
+    LGroupObj := TJSONObject(AGroups.Items[LIndex]);
+    AList.Add(JSONToGroup(LGroupObj));
 
-    if FindGroupByPath(AGroups.Items[LIndex] as TJSONObject, AGroupPath, AFoundGroup) then
-      Exit(True);
+    LSubGroups := LGroupObj.Values['subGroups'];
+    if (LSubGroups is TJSONArray) and (TJSONArray(LSubGroups).Count > 0) then
+      CollectGroups(AHTTPClient, TJSONArray(LSubGroups), AList)
+    else if LGroupObj.GetValue<Integer>('subGroupCount', 0) > 0 then
+      CollectChildGroups(AHTTPClient, LGroupObj.GetValue<string>('id', ''), AList);
   end;
 end;
 
-function TIAM4DKeycloakUserManager.FindGroupByPath(
-  const AGroupObj: TJSONObject;
-  const AGroupPath: string;
-  out AFoundGroup: TJSONObject): Boolean;
+procedure TIAM4DKeycloakUserManager.CollectChildGroups(const AHTTPClient: THTTPClient; const AGroupID: string;
+  const AList: TList<TIAM4DGroup>);
 var
-  LSubGroups: TJSONValue;
+  LFirst, LCount: Integer;
+  LResponse: IHTTPResponse;
+  LJSONArray: TJSONArray;
 begin
-  AFoundGroup := nil;
-  Result := False;
+  // The children endpoint returns 10 groups unless max is set
+  LFirst := 0;
+  repeat
+    LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet,
+      Format('%s/%s/children?first=%d&max=%d', [GetGroupsURL, EncodePathSegment(AGroupID), LFirst, IAM4D_DEFAULT_PAGE_SIZE]));
+    EnsureResponseSuccess(LResponse, 'Get child groups');
 
-  if not Assigned(AGroupObj) then
-    Exit;
-
-  if SameText(AGroupObj.GetValue<string>('path', ''), AGroupPath) then
-  begin
-    AFoundGroup := AGroupObj;
-    Exit(True);
-  end;
-
-  LSubGroups := AGroupObj.Values['subGroups'];
-  if LSubGroups is TJSONArray then
-    Result := FindGroupByPath(TJSONArray(LSubGroups), AGroupPath, AFoundGroup);
+    LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
+    try
+      LCount := LJSONArray.Count;
+      CollectGroups(AHTTPClient, LJSONArray, AList);
+    finally
+      LJSONArray.Free;
+    end;
+    Inc(LFirst, LCount);
+  until LCount < IAM4D_DEFAULT_PAGE_SIZE;
 end;
 
 function TIAM4DKeycloakUserManager.RoleToJSON(const ARole: TIAM4DRole): TJSONObject;
@@ -860,104 +616,6 @@ begin
 end;
 
 { Helper Methods }
-
-function TIAM4DKeycloakUserManager.ExecuteJSONRequest(
-  const AHTTPClient: THTTPClient;
-  const AURL: string;
-  const AMethod: string;
-  const AJSON: TJSONObject;
-  const AContext: string): IHTTPResponse;
-var
-  LContent: TStringStream;
-begin
-  AHTTPClient.ContentType := IAM4D_CONTENT_TYPE_JSON;
-
-  LContent := TStringStream.Create(AJSON.ToString, TEncoding.UTF8);
-  try
-    if SameText(AMethod, IAM4D_HTTP_METHOD_POST) then
-      Result := AHTTPClient.Post(AURL, LContent)
-    else if SameText(AMethod, IAM4D_HTTP_METHOD_PUT) then
-      Result := AHTTPClient.Put(AURL, LContent)
-    else if SameText(AMethod, IAM4D_HTTP_METHOD_DELETE) then
-      Result := AHTTPClient.Delete(AURL, LContent)
-    else
-      raise EIAM4DInvalidConfigurationException.CreateFmt('Unsupported HTTP method: %s', [AMethod]);
-
-    EnsureResponseSuccess(Result, AContext, AURL, AMethod);
-  finally
-    LContent.Free;
-  end;
-end;
-
-function TIAM4DKeycloakUserManager.ExecuteJSONRequestWithLocation(
-  const AHTTPClient: THTTPClient;
-  const AURL: string;
-  const AJSON: TJSONObject;
-  const AContext: string): string;
-var
-  LResponse: IHTTPResponse;
-begin
-  LResponse := ExecuteJSONRequest(AHTTPClient, AURL, IAM4D_HTTP_METHOD_POST, AJSON, AContext);
-  Result := ExtractLocationID(LResponse);
-end;
-
-function TIAM4DKeycloakUserManager.ExecuteJSONArrayRequest(
-  const AHTTPClient: THTTPClient;
-  const AURL: string;
-  const AMethod: string;
-  const AJSONArray: TJSONArray;
-  const AContext: string): IHTTPResponse;
-var
-  LContent: TStringStream;
-begin
-  AHTTPClient.ContentType := IAM4D_CONTENT_TYPE_JSON;
-
-  LContent := TStringStream.Create(AJSONArray.ToString, TEncoding.UTF8);
-  try
-    if SameText(AMethod, IAM4D_HTTP_METHOD_POST) then
-      Result := AHTTPClient.Post(AURL, LContent)
-    else if SameText(AMethod, IAM4D_HTTP_METHOD_PUT) then
-      Result := AHTTPClient.Put(AURL, LContent)
-    else if SameText(AMethod, IAM4D_HTTP_METHOD_DELETE) then
-      Result := AHTTPClient.Delete(AURL, LContent)
-    else
-      raise EIAM4DInvalidConfigurationException.CreateFmt('Unsupported HTTP method: %s', [AMethod]);
-
-    EnsureResponseSuccess(Result, AContext, AURL, AMethod);
-  finally
-    LContent.Free;
-  end;
-end;
-
-function TIAM4DKeycloakUserManager.ExecuteWithAuth<T>(const AOperation: TFunc<THTTPClient, T>): T;
-var
-  LToken: string;
-  LHTTPClient: THTTPClient;
-begin
-  LToken := GetAccessToken;
-  LHTTPClient := FAuthProvider.CreateHTTPClient;
-  try
-    LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-    Result := AOperation(LHTTPClient);
-  finally
-    LHTTPClient.Free;
-  end;
-end;
-
-procedure TIAM4DKeycloakUserManager.ExecuteWithAuthVoid(const AOperation: TProc<THTTPClient>);
-var
-  LToken: string;
-  LHTTPClient: THTTPClient;
-begin
-  LToken := GetAccessToken;
-  LHTTPClient := FAuthProvider.CreateHTTPClient;
-  try
-    LHTTPClient.CustomHeaders[IAM4D_HTTP_HEADER_AUTHORIZATION] := IAM4D_HTTP_HEADER_AUTHORIZATION_BEARER + LToken;
-    AOperation(LHTTPClient);
-  finally
-    LHTTPClient.Free;
-  end;
-end;
 
 procedure TIAM4DKeycloakUserManager.ValidateBatchSize(const ACount: Integer; const AOperationName: string);
 begin
@@ -977,12 +635,21 @@ function TIAM4DKeycloakUserManager.CreateUser(const AUser: TIAM4DUser): string;
 var
   LUserJSON: TJSONObject;
 begin
+  // Same rules as SetPassword
+  if not AUser.TemporaryPassword.IsEmpty then
+    TIAM4DUserManagementValidator.ValidatePassword(AUser.TemporaryPassword);
+
   Result := ExecuteWithAuth<string>(
     function(AHTTPClient: THTTPClient): string
     begin
       LUserJSON := UserToJSON(AUser, True);
       try
-        Result := ExecuteJSONRequestWithLocation(AHTTPClient, GetUsersURL, LUserJSON, 'Create user');
+        try
+          Result := ExecuteJSONRequestWithLocation(AHTTPClient, GetUsersURL, LUserJSON, 'Create user');
+        except
+          on E: EIAM4DHTTPConflictException do
+            raise EIAM4DUserAlreadyExistsException.CreateFromConflict(E, AUser.Username, AUser.Email);
+        end;
       finally
         LUserJSON.Free;
       end;
@@ -997,7 +664,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONValue: TJSONValue;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID));
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUserURL(AUserID));
       EnsureResponseSuccess(LResponse, 'Get user');
 
       LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
@@ -1013,7 +680,7 @@ function TIAM4DKeycloakUserManager.GetUserByUsername(const AUsername: string): T
 var
   LURL: string;
 begin
-  TIAM4DUserManagementValidator.ValidateUsername(AUsername);
+  TIAM4DUserManagementValidator.ValidateUsernameLookup(AUsername);
 
   LURL := GetUsersURL + '?username=' + TNetEncoding.URL.Encode(AUsername) + '&exact=true';
 
@@ -1023,7 +690,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get user by username', LURL, IAM4D_HTTP_METHOD_GET);
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
@@ -1044,7 +711,7 @@ var
   LFound: Boolean;
   LUser: TIAM4DUser;
 begin
-  TIAM4DUserManagementValidator.ValidateUsername(AUsername);
+  TIAM4DUserManagementValidator.ValidateUsernameLookup(AUsername);
 
   LURL := GetUsersURL + '?username=' + TNetEncoding.URL.Encode(AUsername) + '&exact=true';
 
@@ -1057,7 +724,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Try get user by username', LURL, IAM4D_HTTP_METHOD_GET);
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
@@ -1085,7 +752,7 @@ begin
     var
       LUserJSON: TJSONObject;
     begin
-      LUserJSON := UserToJSON(AUser, False);
+      LUserJSON := UserToJSON(AUser, False, True);
       try
         ExecuteJSONRequest(AHTTPClient, GetUserURL(AUser.ID), IAM4D_HTTP_METHOD_PUT, LUserJSON, 'Update user');
       finally
@@ -1129,10 +796,11 @@ begin
         LResults[LIdx].ErrorMessage := '';
 
         try
+          RenewAuthorization(AHTTPClient);
           if LUser.ID.IsEmpty then
-            raise EIAM4DInvalidConfigurationException.CreateFmt('User %d: ID is required for update', [LIdx + 1]);
+            raise EIAM4DInvalidConfigurationException.Create(Format('User %d: ID is required for update', [LIdx + 1]));
 
-          LUserJSON := UserToJSON(LUser, False);
+          LUserJSON := UserToJSON(LUser, False, True);
           try
             ExecuteJSONRequest(
               AHTTPClient,
@@ -1166,7 +834,7 @@ begin
     var
       LResponse: IHTTPResponse;
     begin
-      LResponse := AHTTPClient.Delete(GetUserURL(AUserID));
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodDelete, GetUserURL(AUserID));
       EnsureResponseSuccess(LResponse, 'Delete user');
     end);
 end;
@@ -1207,6 +875,10 @@ begin
         LUserJSON := UserToJSON(AUsers[LIdx], True);
         try
           try
+            // Same rules as SetPasswords: a refused password is the error of its item
+            if not AUsers[LIdx].TemporaryPassword.IsEmpty then
+              TIAM4DUserManagementValidator.ValidatePassword(AUsers[LIdx].TemporaryPassword);
+            RenewAuthorization(AHTTPClient);
             LUserID := ExecuteJSONRequestWithLocation(
               AHTTPClient,
               GetUsersURL,
@@ -1265,7 +937,8 @@ begin
         LResults[LIdx].ErrorMessage := '';
 
         try
-          LResponse := AHTTPClient.Delete(GetUserURL(LUserID));
+          RenewAuthorization(AHTTPClient);
+          LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodDelete, GetUserURL(LUserID));
           EnsureResponseSuccess(LResponse, Format('Delete user %d/%d', [LIdx + 1, Length(AUserIDs)]));
           LResults[LIdx].Success := True;
         except
@@ -1288,6 +961,8 @@ var
   LURL: string;
   LParams: TStringList;
 begin
+  TIAM4DUserManagementValidator.ValidatePaging(ACriteria.FirstResult, ACriteria.MaxResults);
+
   LParams := TStringList.Create;
   try
     if not ACriteria.Username.IsEmpty then
@@ -1300,6 +975,8 @@ begin
       LParams.Add('lastName=' + TNetEncoding.URL.Encode(ACriteria.LastName));
     if not ACriteria.Search.IsEmpty then
       LParams.Add('search=' + TNetEncoding.URL.Encode(ACriteria.Search));
+    if ACriteria.FilterByEnabled then
+      LParams.Add('enabled=' + IfThen(ACriteria.Enabled, 'true', 'false'));
 
     LParams.Add('first=' + ACriteria.FirstResult.ToString);
     LParams.Add('max=' + ACriteria.MaxResults.ToString);
@@ -1316,7 +993,7 @@ begin
         LJSONArray: TJSONArray;
         LUsersList: TList<TIAM4DUser>;
       begin
-        LResponse := AHTTPClient.Get(LURL);
+        LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
         EnsureResponseSuccess(LResponse, 'Search users');
 
         LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
@@ -1347,7 +1024,7 @@ begin
       LResponse: IHTTPResponse;
       LCountText: string;
     begin
-      LResponse := AHTTPClient.Get(GetUsersURL + '/count');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUsersURL + '/count');
       EnsureResponseSuccess(LResponse, 'Get users count');
       LCountText := LResponse.ContentAsString.Trim;
       if not TryStrToInt(LCountText, Result) then
@@ -1418,6 +1095,7 @@ begin
         LResult[LIndex].ErrorMessage := '';
 
         try
+          RenewAuthorization(AHTTPClient);
           TIAM4DUserManagementValidator.ValidateUserID(LReset.UserID);
           TIAM4DUserManagementValidator.ValidatePassword(LReset.Password);
 
@@ -1479,7 +1157,8 @@ begin
     begin
       LContent := TStringStream.Create('', TEncoding.UTF8);
       try
-        LResponse := AHTTPClient.Put(GetUserURL(AUserID) + '/send-verify-email', LContent);
+        LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodPut,
+          GetUserURL(AUserID) + '/send-verify-email', LContent);
         EnsureResponseSuccess(LResponse, 'Send verify email');
       finally
         LContent.Free;
@@ -1496,7 +1175,7 @@ begin
       LJSONArray: TJSONArray;
       LRolesList: TList<TIAM4DRole>;
     begin
-      LResponse := AHTTPClient.Get(GetRealmRolesURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetRealmRolesURL);
       EnsureResponseSuccess(LResponse, 'Get realm roles');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
@@ -1525,7 +1204,8 @@ begin
       LJSONArray: TJSONArray;
       LRolesList: TList<TIAM4DRole>;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/role-mappings/realm');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet,
+        GetUserURL(AUserID) + '/role-mappings/realm');
       EnsureResponseSuccess(LResponse, 'Get user roles');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
@@ -1607,6 +1287,7 @@ begin
         end;
 
         try
+          RenewAuthorization(AHTTPClient);
           LRolesArray := TJSONArray.Create;
           try
             for var LRole in LAssignment.Roles do
@@ -1658,110 +1339,74 @@ begin
     end);
 end;
 
+function TIAM4DKeycloakUserManager.FindRealmRole(const ARoleName: string): TIAM4DRole;
+begin
+  Result := GetRoleByName(ARoleName);
+  // A database with a case-insensitive collation finds "Admin" for "admin": another role here
+  if not SameStr(Result.Name, ARoleName) then
+    raise EIAM4DRoleNotFoundException.Create(ARoleName);
+end;
+
+function TIAM4DKeycloakUserManager.FindClientRole(const AClientID, ARoleName: string): TIAM4DRole;
+begin
+  TIAM4DUserManagementValidator.ValidateClientID(AClientID);
+  TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+
+  Result := ExecuteWithAuth<TIAM4DRole>(
+    function(AHTTPClient: THTTPClient): TIAM4DRole
+    var
+      LClientUUID: string;
+      LResponse: IHTTPResponse;
+      LJSONValue: TJSONValue;
+    begin
+      LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
+      if LClientUUID.IsEmpty then
+        raise ClientNotFound(AClientID);
+
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet,
+        GetAdminURL + '/clients/' + EncodePathSegment(LClientUUID) + '/roles/' + EncodePathSegment(ARoleName));
+      if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
+        raise EIAM4DRoleNotFoundException.Create(ARoleName, AClientID);
+      EnsureResponseSuccess(LResponse, 'Get client role by name');
+      LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'client role response');
+      try
+        Result := JSONToRole(LJSONValue as TJSONObject, LClientUUID, AClientID);
+      finally
+        LJSONValue.Free;
+      end;
+      if not SameStr(Result.Name, ARoleName) then
+        raise EIAM4DRoleNotFoundException.Create(ARoleName, AClientID);
+    end);
+end;
+
 procedure TIAM4DKeycloakUserManager.AssignRoleByName(
   const AUserID: string;
   const ARoleName: string);
-var
-  LRealmRoles: TArray<TIAM4DRole>;
-  LRole: TIAM4DRole;
-  LFound: Boolean;
 begin
-  LRealmRoles := GetRealmRoles;
-
-  LFound := False;
-  for LRole in LRealmRoles do
-  begin
-    if SameText(LRole.Name, ARoleName) then
-    begin
-      LFound := True;
-      Break;
-    end;
-  end;
-
-  if not LFound then
-    raise EIAM4DException.CreateFmt('Realm role "%s" not found', [ARoleName]);
-
-  AssignRolesToUser(AUserID, [LRole]);
+  AssignRolesToUser(AUserID, [FindRealmRole(ARoleName)]);
 end;
 
 procedure TIAM4DKeycloakUserManager.RemoveRoleByName(
   const AUserID: string;
   const ARoleName: string);
-var
-  LRealmRoles: TArray<TIAM4DRole>;
-  LRole: TIAM4DRole;
-  LFound: Boolean;
 begin
-  LRealmRoles := GetRealmRoles;
-
-  LFound := False;
-  for LRole in LRealmRoles do
-  begin
-    if SameText(LRole.Name, ARoleName) then
-    begin
-      LFound := True;
-      Break;
-    end;
-  end;
-
-  if not LFound then
-    raise EIAM4DException.CreateFmt('Realm role "%s" not found', [ARoleName]);
-
-  RemoveRolesFromUser(AUserID, [LRole]);
+  RemoveRolesFromUser(AUserID, [FindRealmRole(ARoleName)]);
 end;
 
 procedure TIAM4DKeycloakUserManager.AssignClientRoleByClientID(
   const AUserID: string;
   const AClientID: string;
   const ARoleName: string);
-var
-  LClientRoles: TArray<TIAM4DRole>;
-  LRole: TIAM4DRole;
-  LFound: Boolean;
 begin
-  LClientRoles := GetClientRolesByClientID(AClientID);
-
-  LFound := False;
-  for LRole in LClientRoles do
-  begin
-    if SameText(LRole.Name, ARoleName) then
-    begin
-      LFound := True;
-      Break;
-    end;
-  end;
-
-  if not LFound then
-    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientID]);
-
-  AssignClientRolesToUser(AUserID, [LRole]);
+  AssignClientRolesToUser(AUserID, [FindClientRole(AClientID, ARoleName)]);
 end;
 
 procedure TIAM4DKeycloakUserManager.RemoveClientRoleByClientID(
   const AUserID: string;
   const AClientID: string;
   const ARoleName: string);
-var
-  LClientRoles: TArray<TIAM4DRole>;
-  LRole: TIAM4DRole;
-  LFound: Boolean;
 begin
-  LClientRoles := GetClientRolesByClientID(AClientID);
-
-  LFound := False;
-  for LRole in LClientRoles do
-  begin
-    if SameText(LRole.Name, ARoleName) then
-    begin
-      LFound := True;
-      Break;
-    end;
-  end;
-
-  if not LFound then
-    raise EIAM4DException.CreateFmt('Client role "%s" not found in client "%s"', [ARoleName, AClientID]);
-
-  RemoveClientRolesFromUserByClientID(AUserID, AClientID, [LRole]);
+  RemoveClientRolesFromUserByClientID(AUserID, AClientID, [FindClientRole(AClientID, ARoleName)]);
 end;
 
 function TIAM4DKeycloakUserManager.GetGroups: TArray<TIAM4DGroup>;
@@ -1773,16 +1418,14 @@ begin
       LJSONArray: TJSONArray;
       LGroupsList: TList<TIAM4DGroup>;
     begin
-      LResponse := AHTTPClient.Get(GetGroupsURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetGroupsURL);
       EnsureResponseSuccess(LResponse, 'Get groups');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
       try
         LGroupsList := TList<TIAM4DGroup>.Create;
         try
-          for var LIndex := 0 to LJSONArray.Count - 1 do
-            if LJSONArray.Items[LIndex] is TJSONObject then
-              LGroupsList.Add(JSONToGroup(LJSONArray.Items[LIndex] as TJSONObject));
+          CollectGroups(AHTTPClient, LJSONArray, LGroupsList);
           Result := LGroupsList.ToArray;
         finally
           LGroupsList.Free;
@@ -1802,7 +1445,7 @@ begin
       LJSONArray: TJSONArray;
       LGroupsList: TList<TIAM4DGroup>;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/groups');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUserURL(AUserID) + '/groups');
       EnsureResponseSuccess(LResponse, 'Get user groups');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
@@ -1832,7 +1475,8 @@ var
 begin
   LContent := TStringStream.Create('', TEncoding.UTF8);
   try
-    LResponse := AHTTPClient.Put(GetUserURL(AUserID) + '/groups/' + TNetEncoding.URL.Encode(AGroupID), LContent);
+    LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodPut,
+      GetUserURL(AUserID) + '/groups/' + EncodePathSegment(AGroupID), LContent);
     EnsureResponseSuccess(LResponse, 'Add user to group');
   finally
     LContent.Free;
@@ -1846,7 +1490,8 @@ procedure TIAM4DKeycloakUserManager.RemoveUserFromGroup(
 var
   LResponse: IHTTPResponse;
 begin
-  LResponse := AHTTPClient.Delete(GetUserURL(AUserID) + '/groups/' + TNetEncoding.URL.Encode(AGroupID));
+  LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodDelete,
+    GetUserURL(AUserID) + '/groups/' + EncodePathSegment(AGroupID));
   EnsureResponseSuccess(LResponse, 'Remove user from group');
 end;
 
@@ -1860,7 +1505,8 @@ begin
     begin
       LContent := TStringStream.Create('', TEncoding.UTF8);
       try
-        LResponse := AHTTPClient.Post(GetUserURL(AUserID) + '/logout', LContent);
+        LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodPost,
+          GetUserURL(AUserID) + '/logout', LContent);
         EnsureResponseSuccess(LResponse, 'Logout user');
       finally
         LContent.Free;
@@ -1878,7 +1524,8 @@ begin
       LJSONArray: TJSONArray;
       LIdentitiesList: TList<TIAM4DFederatedIdentity>;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/federated-identity');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet,
+        GetUserURL(AUserID) + '/federated-identity');
       EnsureResponseSuccess(LResponse, 'Get user federated identities');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'federated identities array response');
@@ -1906,7 +1553,8 @@ begin
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/federated-identity');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet,
+        GetUserURL(AUserID) + '/federated-identity');
       EnsureResponseSuccess(LResponse, 'Check if user is federated');
 
       if TIAM4DJSONUtils.TryParseJSONArray(LResponse.ContentAsString, LJSONArray) then
@@ -1920,6 +1568,49 @@ begin
     end);
 end;
 
+procedure TIAM4DKeycloakUserManager.LinkFederatedIdentity(const AUserID: string;
+  const AFederatedIdentity: TIAM4DFederatedIdentity);
+var
+  LError: string;
+begin
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+  if not AFederatedIdentity.IsValid(LError) then
+    raise EIAM4DInvalidConfigurationException.Create('Federated identity: ' + LError);
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LJSON: TJSONObject;
+    begin
+      LJSON := AFederatedIdentity.ToJSON;
+      try
+        ExecuteJSONRequest(AHTTPClient,
+          GetUserURL(AUserID) + '/federated-identity/' + EncodePathSegment(AFederatedIdentity.IdentityProvider),
+          IAM4D_HTTP_METHOD_POST, LJSON,
+          Format('Link user to identity provider "%s"', [AFederatedIdentity.IdentityProvider]));
+      finally
+        LJSON.Free;
+      end;
+    end);
+end;
+
+procedure TIAM4DKeycloakUserManager.UnlinkFederatedIdentity(const AUserID: string; const AIdentityProvider: string);
+begin
+  TIAM4DUserManagementValidator.ValidateUserID(AUserID);
+  if AIdentityProvider.Trim.IsEmpty then
+    raise EIAM4DInvalidConfigurationException.Create('Identity provider alias cannot be empty');
+
+  ExecuteWithAuthVoid(
+    procedure(AHTTPClient: THTTPClient)
+    var
+      LURL: string;
+    begin
+      LURL := GetUserURL(AUserID) + '/federated-identity/' + EncodePathSegment(AIdentityProvider);
+      EnsureResponseSuccess(TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodDelete, LURL),
+        Format('Unlink user from identity provider "%s"', [AIdentityProvider]), LURL, IAM4D_HTTP_METHOD_DELETE);
+    end);
+end;
+
 function TIAM4DKeycloakUserManager.GetUserRequiredActions(
   const AUserID: string): TArray<TIAM4DRequiredAction>;
 begin
@@ -1930,7 +1621,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONValue: TJSONValue;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID));
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUserURL(AUserID));
       EnsureResponseSuccess(LResponse, 'Get user required actions');
 
       LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
@@ -1953,20 +1644,16 @@ begin
       LActionsArray: TJSONArray;
       LUpdateJSON: TJSONObject;
     begin
-      LActionsArray := TJSONArray.Create;
+      // LUpdateJSON owns LActionsArray: freeing both was a double free (EInvalidPointer)
+      LUpdateJSON := TJSONObject.Create;
       try
+        LActionsArray := TJSONArray.Create;
+        LUpdateJSON.AddPair('requiredActions', LActionsArray);
         for var LAction in AActions do
           LActionsArray.Add(LAction.ToString);
-
-        LUpdateJSON := TJSONObject.Create;
-        try
-          LUpdateJSON.AddPair('requiredActions', LActionsArray);
-          ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Set user required actions');
-        finally
-          LUpdateJSON.Free;
-        end;
+        ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Set user required actions');
       finally
-        LActionsArray.Free;
+        LUpdateJSON.Free;
       end;
     end);
 end;
@@ -1982,18 +1669,20 @@ begin
       LJSONValue: TJSONValue;
       LUser: TIAM4DUser;
       LCurrentActions: TArray<TIAM4DRequiredAction>;
+      LOtherActions: TArray<string>;
       LNewActions: TList<TIAM4DRequiredAction>;
       LShouldRemove: Boolean;
       LActionsArray: TJSONArray;
       LUpdateJSON: TJSONObject;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID));
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUserURL(AUserID));
       EnsureResponseSuccess(LResponse, 'Get user for removing required actions');
 
       LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'user response');
       try
         LUser := JSONToUser(LJSONValue as TJSONObject);
         LCurrentActions := LUser.RequiredActions;
+        LOtherActions := LUser.OtherRequiredActions;
       finally
         LJSONValue.Free;
       end;
@@ -2016,20 +1705,19 @@ begin
             LNewActions.Add(LCurrentAction);
         end;
 
-        LActionsArray := TJSONArray.Create;
+        // LUpdateJSON owns LActionsArray: freeing both was a double free (EInvalidPointer)
+        LUpdateJSON := TJSONObject.Create;
         try
+          LActionsArray := TJSONArray.Create;
+          LUpdateJSON.AddPair('requiredActions', LActionsArray);
           for var LCurrentAction in LNewActions.ToArray do
             LActionsArray.Add(LCurrentAction.ToString);
-
-          LUpdateJSON := TJSONObject.Create;
-          try
-            LUpdateJSON.AddPair('requiredActions', LActionsArray);
-            ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Remove user required actions');
-          finally
-            LUpdateJSON.Free;
-          end;
+          // The PUT replaces the whole list: keep the actions not in TIAM4DRequiredAction
+          for var LOtherAction in LOtherActions do
+            LActionsArray.Add(LOtherAction);
+          ExecuteJSONRequest(AHTTPClient, GetUserURL(AUserID), 'PUT', LUpdateJSON, 'Remove user required actions');
         finally
-          LActionsArray.Free;
+          LUpdateJSON.Free;
         end;
       finally
         LNewActions.Free;
@@ -2049,18 +1737,19 @@ begin
     function(AHTTPClient: THTTPClient): TIAM4DUser
     var
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get user by email');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
       try
         if LJSONArray.Count = 0 then
-          raise EIAM4DUserNotFoundException.Create(AEmail)
-        else
-          Result := JSONToUser(LJSONArray.Items[0] as TJSONObject);
+          raise EIAM4DUserNotFoundException.Create(AEmail);
+        // Realm with duplicateEmailsAllowed: the email does not identify one user
+        if LJSONArray.Count > 1 then
+          RaiseAmbiguousEmail(AEmail, LJSONArray.Count);
+        Result := JSONToUser(LJSONArray.Items[0] as TJSONObject);
       finally
         LJSONArray.Free;
       end;
@@ -2083,16 +1772,17 @@ begin
     procedure(AHTTPClient: THTTPClient)
     var
       LResponse: IHTTPResponse;
-      LURL: string;
       LJSONArray: TJSONArray;
-      LResult: TIAM4DUserTryResult;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Try get user by email');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
       try
-        if LJSONArray.Count > 0 then
+        // Not found is a result, an email shared by several users an error (as GetUserByEmail)
+        if LJSONArray.Count > 1 then
+          RaiseAmbiguousEmail(AEmail, LJSONArray.Count);
+        if LJSONArray.Count = 1 then
         begin
           LResult.Found := True;
           LResult.User := JSONToUser(LJSONArray.Items[0] as TJSONObject);
@@ -2145,7 +1835,8 @@ begin
           LResult.User.ID := IAM4D_EMPTY_USER_ID;
 
           try
-            LResponse := AHTTPClient.Get(GetUserURL(LUserID));
+            RenewAuthorization(AHTTPClient);
+            LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUserURL(LUserID));
 
             if LResponse.StatusCode = IAM4D_HTTP_STATUS_OK then
             begin
@@ -2185,33 +1876,25 @@ function TIAM4DKeycloakUserManager.IsUserLocked(const AUserID: string): Boolean;
 var
   LURL: string;
 begin
-  LURL := GetAdminURL + '/attack-detection/brute-force/users/' + TNetEncoding.URL.Encode(AUserID);
+  LURL := GetAdminURL + '/attack-detection/brute-force/users/' + EncodePathSegment(AUserID);
 
   Result := ExecuteWithAuth<Boolean>(
     function(AHTTPClient: THTTPClient): Boolean
     var
       LResponse: IHTTPResponse;
-      LURL: string;
-      LJSONValue: TJSONValue;
-      LJSONObj: TJSONObject;
+      LJSON: TJSONObject;
     begin
-      try
-        LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
+      // No brute force record: not locked. Any other error (403, 5xx) is not an answer
+      if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
+        Exit(False);
+      EnsureResponseSuccess(LResponse, 'Get brute force status', LURL, IAM4D_HTTP_METHOD_GET);
 
-        if LResponse.StatusCode = IAM4D_HTTP_STATUS_OK then
-        begin
-          LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'brute force status response');
-          try
-            LJSONObj := LJSONValue as TJSONObject;
-            Result := LJSONObj.GetValue<Boolean>('disabled', False);
-          finally
-            LJSONValue.Free;
-          end;
-        end
-        else
-          Result := False;
-      except
-        Result := False;
+      LJSON := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'brute force status response');
+      try
+        Result := LJSON.GetValue<Boolean>('disabled', False);
+      finally
+        LJSON.Free;
       end;
     end);
 end;
@@ -2220,14 +1903,14 @@ procedure TIAM4DKeycloakUserManager.UnlockUser(const AUserID: string);
 var
   LURL: string;
 begin
-  LURL := GetAdminURL + '/attack-detection/brute-force/users/' + TNetEncoding.URL.Encode(AUserID);
+  LURL := GetAdminURL + '/attack-detection/brute-force/users/' + EncodePathSegment(AUserID);
 
   ExecuteWithAuthVoid(
     procedure(AHTTPClient: THTTPClient)
     var
       LResponse: IHTTPResponse;
     begin
-      LResponse := AHTTPClient.Delete(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodDelete, LURL);
       EnsureResponseSuccess(LResponse, 'Unlock user');
     end);
 end;
@@ -2272,7 +1955,7 @@ begin
       LJSONArray: TJSONArray;
       LSessionsList: TList<TIAM4DUserSession>;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get user sessions');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'sessions array response');
@@ -2304,7 +1987,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONArray: TJSONArray;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get user session count');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'sessions array response');
@@ -2319,18 +2002,32 @@ end;
 procedure TIAM4DKeycloakUserManager.RevokeUserSession(const AUserID: string; const ASessionID: string);
 var
   LURL: string;
+  LSession: TIAM4DUserSession;
+  LOwned: Boolean;
 begin
   TIAM4DUserManagementValidator.ValidateUserID(AUserID);
   TIAM4DUserManagementValidator.ValidateSessionID(ASessionID);
 
-  LURL := GetAdminURL + '/sessions/' + TNetEncoding.URL.Encode(ASessionID);
+  // DELETE /sessions/{id} ends any session of the realm: only one of AUserID is revoked
+  LOwned := False;
+  for LSession in GetUserSessions(AUserID) do
+    if LSession.SessionID = ASessionID then
+    begin
+      LOwned := True;
+      Break;
+    end;
+  if not LOwned then
+    raise EIAM4DHTTPNotFoundException.CreateFromResponse(IAM4D_HTTP_STATUS_NOT_FOUND, '',
+      Format('Session "%s" not found among the sessions of user "%s"', [ASessionID, AUserID]));
+
+  LURL := GetAdminURL + '/sessions/' + EncodePathSegment(ASessionID);
 
   ExecuteWithAuthVoid(
     procedure(AHTTPClient: THTTPClient)
     var
       LResponse: IHTTPResponse;
     begin
-      LResponse := AHTTPClient.Delete(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodDelete, LURL);
       EnsureResponseSuccess(LResponse, 'Revoke user session');
     end);
 end;
@@ -2374,7 +2071,7 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
 
-  LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName);
+  LURL := GetRealmRolesURL + '/' + EncodePathSegment(ARoleName);
 
   Result := ExecuteWithAuth<TIAM4DRole>(
     function(AHTTPClient: THTTPClient): TIAM4DRole
@@ -2382,7 +2079,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONValue: TJSONValue;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
 
       if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
         raise EIAM4DRoleNotFoundException.Create(ARoleName);
@@ -2404,7 +2101,7 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
 
-  LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName);
+  LURL := GetRealmRolesURL + '/' + EncodePathSegment(ARoleName);
 
   LResult.Found := False;
   LResult.Role := Default(TIAM4DRole);
@@ -2415,7 +2112,7 @@ begin
       LResponse: IHTTPResponse;
       LJSONValue: TJSONValue;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
 
       if LResponse.StatusCode = IAM4D_HTTP_STATUS_NOT_FOUND then
       begin
@@ -2449,7 +2146,8 @@ begin
       LJSONArray: TJSONArray;
       LRoleName: string;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/role-mappings/realm');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet,
+        GetUserURL(AUserID) + '/role-mappings/realm');
       EnsureResponseSuccess(LResponse, 'Get user roles for HasRole check');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'roles array response');
@@ -2460,7 +2158,7 @@ begin
           if LJSONArray.Items[LIndex] is TJSONObject then
           begin
             LRoleName := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('name', '');
-            if SameText(LRoleName, ARoleName) then
+            if SameStr(LRoleName, ARoleName) then
             begin
               Result := True;
               Break;
@@ -2478,8 +2176,9 @@ var
   LURL: string;
 begin
   TIAM4DUserManagementValidator.ValidateRoleName(ARoleName);
+  TIAM4DUserManagementValidator.ValidatePaging(AFirstResult, AMaxResults);
 
-  LURL := GetRealmRolesURL + '/' + TNetEncoding.URL.Encode(ARoleName) + '/users';
+  LURL := GetRealmRolesURL + '/' + EncodePathSegment(ARoleName) + '/users';
   LURL := LURL + '?first=' + AFirstResult.ToString + '&max=' + AMaxResults.ToString;
 
   Result := ExecuteWithAuth < TArray<TIAM4DUser> > (
@@ -2489,7 +2188,7 @@ begin
       LJSONArray: TJSONArray;
       LUsersList: TList<TIAM4DUser>;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get users with role');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
@@ -2510,69 +2209,32 @@ begin
 end;
 
 function TIAM4DKeycloakUserManager.GetGroupByPath(const APath: string): TIAM4DGroup;
-var
-  LURL: string;
 begin
   if APath.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('Group path cannot be empty');
 
-  LURL := GetGroupsURL;
-
   Result := ExecuteWithAuth<TIAM4DGroup>(
     function(AHTTPClient: THTTPClient): TIAM4DGroup
-    var
-      LResponse: IHTTPResponse;
-      LJSONArray: TJSONArray;
-      LGroupObj: TJSONObject;
     begin
-      LResponse := AHTTPClient.Get(LURL);
-      EnsureResponseSuccess(LResponse, 'Get groups for path search');
-
-      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
-      try
-        if not FindGroupByPath(LJSONArray, APath, LGroupObj) then
-          raise EIAM4DGroupNotFoundException.Create(APath);
-
-        Result := JSONToGroup(LGroupObj);
-      finally
-        LJSONArray.Free;
-      end;
+      if not TryFetchGroupByPath(AHTTPClient, APath, Result) then
+        raise EIAM4DGroupNotFoundException.Create(APath);
     end);
 end;
 
 function TIAM4DKeycloakUserManager.TryGetGroupByPath(const APath: string): TIAM4DGroupTryResult;
 var
-  LURL: string;
   LResult: TIAM4DGroupTryResult;
 begin
   if APath.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('Group path cannot be empty');
-
-  LURL := GetGroupsURL;
 
   LResult.Found := False;
   LResult.Group := Default(TIAM4DGroup);
 
   ExecuteWithAuthVoid(
     procedure(AHTTPClient: THTTPClient)
-    var
-      LResponse: IHTTPResponse;
-      LJSONArray: TJSONArray;
-      LGroupObj: TJSONObject;
     begin
-      LResponse := AHTTPClient.Get(LURL);
-      EnsureResponseSuccess(LResponse, 'Try get group by path');
-
-      LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
-      try
-        if FindGroupByPath(LJSONArray, APath, LGroupObj) then
-        begin
-          LResult.Found := True;
-          LResult.Group := JSONToGroup(LGroupObj);
-        end;
-      finally
-        LJSONArray.Free;
-      end;
+      LResult.Found := TryFetchGroupByPath(AHTTPClient, APath, LResult.Group);
     end);
 
   Result := LResult;
@@ -2590,7 +2252,7 @@ begin
       LJSONArray: TJSONArray;
       LPath: string;
     begin
-      LResponse := AHTTPClient.Get(GetUserURL(AUserID) + '/groups');
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, GetUserURL(AUserID) + '/groups');
       EnsureResponseSuccess(LResponse, 'Get user groups for membership check');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
@@ -2601,7 +2263,7 @@ begin
           if LJSONArray.Items[LIndex] is TJSONObject then
           begin
             LPath := (LJSONArray.Items[LIndex] as TJSONObject).GetValue<string>('path', '');
-            if SameText(LPath, AGroupPath) then
+            if SameStr(LPath, AGroupPath) then
             begin
               Result := True;
               Break;
@@ -2622,11 +2284,12 @@ var
   LUsersList: TList<TIAM4DUser>;
 begin
   TIAM4DUserManagementValidator.ValidateGroupID(AGroupID);
+  TIAM4DUserManagementValidator.ValidatePaging(AFirstResult, AMaxResults);
 
-  LURL := GetGroupsURL + '/' + TNetEncoding.URL.Encode(AGroupID) + '/members';
+  LURL := GetGroupsURL + '/' + EncodePathSegment(AGroupID) + '/members';
   LURL := LURL + '?first=' + AFirstResult.ToString + '&max=' + AMaxResults.ToString;
 
-  LResponse := AHTTPClient.Get(LURL);
+  LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
   EnsureResponseSuccess(LResponse, 'Get users in group');
 
   LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'users array response');
@@ -2654,9 +2317,9 @@ var
 begin
   TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
-  LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(AContainerID) + '/roles';
+  LURL := GetAdminURL + '/clients/' + EncodePathSegment(AContainerID) + '/roles';
 
-  LResponse := AHTTPClient.Get(LURL);
+  LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
   EnsureResponseSuccess(LResponse, 'Get client roles');
 
   LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'client roles array response');
@@ -2686,9 +2349,9 @@ begin
 
   TIAM4DUserManagementValidator.ValidateContainerID(AContainerID);
 
-  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AContainerID);
+  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + EncodePathSegment(AContainerID);
 
-  LResponse := AHTTPClient.Get(LURL);
+  LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
   EnsureResponseSuccess(LResponse, 'Get user client roles');
 
   LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'user client roles array response');
@@ -2723,7 +2386,7 @@ begin
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
-  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AContainerID);
+  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + EncodePathSegment(AContainerID);
 
   LRolesArray := TJSONArray.Create;
   try
@@ -2733,6 +2396,43 @@ begin
     ExecuteJSONArrayRequest(AHTTPClient, LURL, 'POST', LRolesArray, 'Assign client roles to user');
   finally
     LRolesArray.Free;
+  end;
+end;
+
+class procedure TIAM4DKeycloakUserManager.CheckClientRoles(const ARoles: TArray<TIAM4DRole>);
+var
+  LRole: TIAM4DRole;
+begin
+  for LRole in ARoles do
+    if LRole.ID.IsEmpty or LRole.ContainerID.IsEmpty or LRole.ClientID.IsEmpty then
+      raise EIAM4DInvalidConfigurationException.Create(Format(
+        'Role "%s" is missing ID, ContainerID or ClientID. Use GetClientRolesByClientID to retrieve roles ' +
+        'with complete client information.', [LRole.Name]));
+end;
+
+procedure TIAM4DKeycloakUserManager.AssignClientRolesByContainer(const AHTTPClient: THTTPClient;
+  const AUserID: string; const ARoles: TArray<TIAM4DRole>);
+var
+  LContainers: TList<string>;
+  LContainer: string;
+  LGroup: TArray<TIAM4DRole>;
+  LRole: TIAM4DRole;
+begin
+  LContainers := TList<string>.Create;
+  try
+    for LRole in ARoles do
+      if not LContainers.Contains(LRole.ContainerID) then
+        LContainers.Add(LRole.ContainerID);
+    for LContainer in LContainers do
+    begin
+      LGroup := nil;
+      for LRole in ARoles do
+        if LRole.ContainerID = LContainer then
+          LGroup := LGroup + [LRole];
+      AssignClientRolesToUser(AHTTPClient, AUserID, LContainer, LGroup);
+    end;
+  finally
+    LContainers.Free;
   end;
 end;
 
@@ -2752,7 +2452,7 @@ begin
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
-  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + TNetEncoding.URL.Encode(AContainerID);
+  LURL := GetUserURL(AUserID) + '/role-mappings/clients/' + EncodePathSegment(AContainerID);
 
   LRolesArray := TJSONArray.Create;
   try
@@ -2783,7 +2483,7 @@ begin
   LRoles := GetUserClientRoles(AHTTPClient, AUserID, AContainerID);
 
   for LRole in LRoles do
-    if SameText(LRole.Name, ARoleName) then
+    if SameStr(LRole.Name, ARoleName) then
       Exit(True);
 
   Result := False;
@@ -2800,7 +2500,7 @@ begin
 
   LURL := GetAdminURL + '/clients?clientId=' + TNetEncoding.URL.Encode(AClientID);
 
-  LResponse := AHTTPClient.Get(LURL);
+  LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
   EnsureResponseSuccess(LResponse, 'Get client by clientId');
 
   LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'clients array response');
@@ -2819,27 +2519,14 @@ end;
 
 function TIAM4DKeycloakUserManager.GetGroupIDByPath(const AHTTPClient: THTTPClient; const AGroupPath: string): string;
 var
-  LResponse: IHTTPResponse;
-  LURL: string;
-  LJSONArray: TJSONArray;
-  LGroupObj: TJSONObject;
+  LGroup: TIAM4DGroup;
 begin
   TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
 
-  LURL := GetGroupsURL;
-
-  LResponse := AHTTPClient.Get(LURL);
-  EnsureResponseSuccess(LResponse, 'Get groups for path lookup');
-
-  LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'groups array response');
-  try
+  if TryFetchGroupByPath(AHTTPClient, AGroupPath, LGroup) then
+    Result := LGroup.ID
+  else
     Result := '';
-
-    if FindGroupByPath(LJSONArray, AGroupPath, LGroupObj) then
-      Result := LGroupObj.GetValue<string>('id', '');
-  finally
-    LJSONArray.Free;
-  end;
 end;
 
 function TIAM4DKeycloakUserManager.GetClientRolesByClientID(const AClientID: string): TArray<TIAM4DRole>;
@@ -2854,7 +2541,7 @@ begin
       LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
       if LClientUUID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
+        raise ClientNotFound(AClientID);
 
       Result := GetClientRoles(AHTTPClient, LClientUUID, AClientID);
     end);
@@ -2877,7 +2564,7 @@ begin
       LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
       if LClientUUID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
+        raise ClientNotFound(AClientID);
 
       Result := GetUserClientRoles(AHTTPClient, AUserID, LClientUUID, AClientID);
     end);
@@ -2886,25 +2573,19 @@ end;
 procedure TIAM4DKeycloakUserManager.AssignClientRolesToUser(
   const AUserID: string;
   const ARoles: TArray<TIAM4DRole>);
-var
-  LContainerID: string;
 begin
   if AUserID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('UserID cannot be empty');
 
   TIAM4DUserManagementValidator.ValidateRolesArray(Length(ARoles));
 
-  if (Length(ARoles) > 0) and (ARoles[0].ContainerID.IsEmpty or ARoles[0].ClientID.IsEmpty) then
-    raise EIAM4DInvalidConfigurationException.CreateFmt(
-      'Role "%s" is missing ContainerID or ClientID. Use GetClientRolesByClientID to retrieve roles with complete client information.',
-      [ARoles[0].Name]);
-
-  LContainerID := ARoles[0].ContainerID;
+  // Every role, before any request: roles of several clients go each to its own client
+  CheckClientRoles(ARoles);
 
   ExecuteWithAuthVoid(
     procedure(AHTTPClient: THTTPClient)
     begin
-      AssignClientRolesToUser(AHTTPClient, AUserID, LContainerID, ARoles);
+      AssignClientRolesByContainer(AHTTPClient, AUserID, ARoles);
     end);
 end;
 
@@ -2922,7 +2603,6 @@ begin
     procedure(AHTTPClient: THTTPClient)
     var
       LIdx: Integer;
-      LContainerID: string;
       LAssignment: TIAM4DRoleAssignment;
     begin
       for LIdx := 0 to High(ARoleAssignments) do
@@ -2949,15 +2629,10 @@ begin
           Continue;
         end;
 
-        if LAssignment.Roles[0].ContainerID.IsEmpty or LAssignment.Roles[0].ClientID.IsEmpty then
-        begin
-          LResults[LIdx].ErrorMessage := Format('Role "%s" is missing ContainerID or ClientID', [LAssignment.Roles[0].Name]);
-          Continue;
-        end;
-
         try
-          LContainerID := LAssignment.Roles[0].ContainerID;
-          AssignClientRolesToUser(AHTTPClient, LAssignment.UserID, LContainerID, LAssignment.Roles);
+          CheckClientRoles(LAssignment.Roles);
+          RenewAuthorization(AHTTPClient);
+          AssignClientRolesByContainer(AHTTPClient, LAssignment.UserID, LAssignment.Roles);
           LResults[LIdx].Success := True;
         except
           on E: Exception do
@@ -2993,7 +2668,7 @@ begin
       LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
       if LClientUUID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
+        raise ClientNotFound(AClientID);
 
       RemoveClientRolesFromUser(AHTTPClient, AUserID, LClientUUID, ARoles);
     end);
@@ -3020,7 +2695,7 @@ begin
       LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
       if LClientUUID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
+        raise ClientNotFound(AClientID);
 
       Result := HasClientRole(AHTTPClient, AUserID, LClientUUID, ARoleName);
     end);
@@ -3042,7 +2717,7 @@ begin
       LClient: TIAM4DRealmClient;
       LRoles: TArray<TIAM4DRole>;
     begin
-      LResponse := AHTTPClient.Get(LURL);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get clients');
 
       LJSONArray := TIAM4DJSONUtils.SafeParseJSONArray(LResponse.ContentAsString, 'clients array response');
@@ -3087,10 +2762,10 @@ begin
       LClientUUID := GetClientUUIDByClientID(AHTTPClient, AClientID);
 
       if LClientUUID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Client "%s" not found', [AClientID]);
+        raise ClientNotFound(AClientID);
 
-      LURL := GetAdminURL + '/clients/' + TNetEncoding.URL.Encode(LClientUUID);
-      LResponse := AHTTPClient.Get(LURL);
+      LURL := GetAdminURL + '/clients/' + EncodePathSegment(LClientUUID);
+      LResponse := TIAM4DHTTPClientFactory.Execute(AHTTPClient, sHTTPMethodGet, LURL);
       EnsureResponseSuccess(LResponse, 'Get client details');
 
       LJSONValue := TIAM4DJSONUtils.SafeParseJSONObject(LResponse.ContentAsString, 'client response');
@@ -3121,7 +2796,7 @@ begin
       LGroupID := GetGroupIDByPath(AHTTPClient, AGroupPath);
 
       if LGroupID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
+        raise EIAM4DGroupNotFoundException.Create(AGroupPath);
 
       AddUserToGroup(AHTTPClient, AUserID, LGroupID);
     end);
@@ -3144,7 +2819,7 @@ begin
       LGroupID := GetGroupIDByPath(AHTTPClient, AGroupPath);
 
       if LGroupID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
+        raise EIAM4DGroupNotFoundException.Create(AGroupPath);
 
       RemoveUserFromGroup(AHTTPClient, AUserID, LGroupID);
     end);
@@ -3156,6 +2831,8 @@ function TIAM4DKeycloakUserManager.GetUsersInGroupByPath(
   const AMaxResults: Integer): TArray<TIAM4DUser>;
 begin
   TIAM4DUserManagementValidator.ValidateGroupPath(AGroupPath);
+  // Before the group lookup: no request for a call that cannot succeed
+  TIAM4DUserManagementValidator.ValidatePaging(AFirstResult, AMaxResults);
 
   Result := ExecuteWithAuth < TArray<TIAM4DUser> > (
     function(AHTTPClient: THTTPClient): TArray<TIAM4DUser>
@@ -3165,7 +2842,7 @@ begin
       LGroupID := GetGroupIDByPath(AHTTPClient, AGroupPath);
 
       if LGroupID.IsEmpty then
-        raise EIAM4DInvalidConfigurationException.CreateFmt('Group "%s" not found', [AGroupPath]);
+        raise EIAM4DGroupNotFoundException.Create(AGroupPath);
 
       Result := GetUsersInGroup(AHTTPClient, LGroupID, AFirstResult, AMaxResults);
     end);

@@ -34,6 +34,16 @@ type
     function GetUserByUsername(const AUsername: string): IAsyncPromise<TIAM4DUser>;
 
     /// <summary>
+    /// Looks up several users by username, one after the other (examples 7, 8, 9, 11, 12, 14 and 16)
+    /// </summary>
+    /// <remarks>
+    /// Fails with the error of the first lookup that fails (e.g. EIAM4DUserNotFoundException).
+    /// Cancel stops it before the next lookup: it ends as cancelled when the running one has ended,
+    /// so no request outlives the operation.
+    /// </remarks>
+    function GetUsersByUsernames(const AUsernames: TArray<string>): IAsyncPromise<TArray<TIAM4DUser>>;
+
+    /// <summary>
     /// Example 4: Update user profile and attributes
     /// </summary>
     function UpdateUserWithAttributes(const AUser: TIAM4dUser): IAsyncVoidPromise;
@@ -129,6 +139,27 @@ end;
 function TUserManagementSamples.GetUserByUsername(const AUsername: string): IAsyncPromise<TIAM4DUser>;
 begin
   Result := FUserManager.GetUserByUsernameAsync(AUsername);
+end;
+
+function TUserManagementSamples.GetUsersByUsernames(const AUsernames: TArray<string>): IAsyncPromise<TArray<TIAM4DUser>>;
+var
+  LUserManager: IIAM4DUserManagerAsync;
+begin
+  LUserManager := FUserManager;
+  Result := TAsyncCore.New<TArray<TIAM4DUser>>(
+    function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
+    var
+      LIndex: Integer;
+    begin
+      // On a pool thread: waiting here never blocks the main thread
+      SetLength(Result, Length(AUsernames));
+      for LIndex := 0 to High(AUsernames) do
+      begin
+        if AOperation.IsCancellationRequested then
+          raise EAsyncCancelException.Create;
+        Result[LIndex] := LUserManager.GetUserByUsernameAsync(AUsernames[LIndex]).Run.WaitForResult;
+      end;
+    end);
 end;
 
 function TUserManagementSamples.UpdateUserWithAttributes(const AUser: TIAM4dUser): IAsyncVoidPromise;

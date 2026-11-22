@@ -65,11 +65,13 @@ type
   /// <para><b>When to use:</b> VCL/FMX desktop applications where UI responsiveness is required.
   /// For REST services, use IIAM4DUserManager directly - async adds unnecessary overhead.</para>
   ///
-  /// <para><b>Thread safety:</b> Each operation creates a new HTTP client internally. The
-  /// wrapper itself is thread-safe for concurrent async operations.</para>
+  /// <para><b>Thread safety:</b> HTTP clients come from the pool of the sync manager. The
+  /// wrapper itself is thread-safe for concurrent async operations. Each operation holds its own
+  /// reference to the sync manager: the wrapper can be released (e.g. form closed) while operations run.</para>
   ///
   /// <para><b>Cancellation:</b> Batch operations (CreateUsersAsync, UpdateUsersAsync, etc.)
-  /// run atomically. For fine-grained cancellation, use individual operations in a loop.</para>
+  /// check Cancel between items: the items already done stay, the remaining ones get ErrorMessage
+  /// 'Operation cancelled'.</para>
   /// </remarks>
   /// <seealso cref="IIAM4DUserManagerAsync"/>
   /// <seealso cref="IIAM4DUserManager"/>
@@ -141,6 +143,9 @@ type
     // ========================================================================
     function GetUserFederatedIdentitiesAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DFederatedIdentity>>;
     function IsUserFederatedAsync(const AUserID: string): IAsyncPromise<Boolean>;
+    function LinkFederatedIdentityAsync(const AUserID: string;
+      const AFederatedIdentity: TIAM4DFederatedIdentity): IAsyncVoidPromise;
+    function UnlinkFederatedIdentityAsync(const AUserID: string; const AIdentityProvider: string): IAsyncVoidPromise;
 
     // ========================================================================
     // Required Actions Management
@@ -216,127 +221,149 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.CreateUserAsync(const AUser: TIAM4DUser): IAsyncPromise<string>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<string>(
     function(const AOperation: IAsyncOperation): string
     begin
-      Result := FSyncManager.CreateUser(AUser);
+      Result := LSyncManager.CreateUser(AUser);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.CreateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DUsersCreateResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LUsers := Copy(AUsers);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DUsersCreateResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DUsersCreateResult>
     begin
-      Result := FSyncManager.CreateUsers(AUsers, AOperation);
+      Result := LSyncManager.CreateUsers(LUsers, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserAsync(const AUserID: string): IAsyncPromise<TIAM4DUser>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DUser>(
     function(const AOperation: IAsyncOperation): TIAM4DUser
     begin
-      Result := FSyncManager.GetUser(AUserID);
+      Result := LSyncManager.GetUser(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUser>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DUser>(
     function(const AOperation: IAsyncOperation): TIAM4DUser
     begin
-      Result := FSyncManager.GetUserByUsername(AUsername);
+      Result := LSyncManager.GetUserByUsername(AUsername);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.TryGetUserByUsernameAsync(const AUsername: string): IAsyncPromise<TIAM4DUserTryResult>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DUserTryResult>(
     function(const AOperation: IAsyncOperation): TIAM4DUserTryResult
     begin
-      Result := FSyncManager.TryGetUserByUsername(AUsername);
+      Result := LSyncManager.TryGetUserByUsername(AUsername);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUser>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DUser>(
     function(const AOperation: IAsyncOperation): TIAM4DUser
     begin
-      Result := FSyncManager.GetUserByEmail(AEmail);
+      Result := LSyncManager.GetUserByEmail(AEmail);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.TryGetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUserTryResult>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DUserTryResult>(
     function(const AOperation: IAsyncOperation): TIAM4DUserTryResult
     begin
-      Result := FSyncManager.TryGetUserByEmail(AEmail);
+      Result := LSyncManager.TryGetUserByEmail(AEmail);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUsersByIDsAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DUserGetResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LUserIDs := Copy(AUserIDs);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DUserGetResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DUserGetResult>
     begin
-      Result := FSyncManager.GetUsersByIDs(AUserIDs, AOperation);
+      Result := LSyncManager.GetUsersByIDs(LUserIDs, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.UpdateUserAsync(const AUser: TIAM4DUser): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.UpdateUser(AUser);
+      LSyncManager.UpdateUser(AUser);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.UpdateUsersAsync(const AUsers: TArray<TIAM4DUser>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LUsers := Copy(AUsers);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
     begin
-      Result := FSyncManager.UpdateUsers(AUsers, AOperation);
+      Result := LSyncManager.UpdateUsers(LUsers, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.DeleteUserAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.DeleteUser(AUserID);
+      LSyncManager.DeleteUser(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.DeleteUsersAsync(const AUserIDs: TArray<string>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LUserIDs := Copy(AUserIDs);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
     begin
-      Result := FSyncManager.DeleteUsers(AUserIDs, AOperation);
+      Result := LSyncManager.DeleteUsers(LUserIDs, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.SearchUsersAsync(const ACriteria: TIAM4DUserSearchCriteria): IAsyncPromise<TArray<TIAM4DUser>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DUser> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
     begin
-      Result := FSyncManager.SearchUsers(ACriteria);
+      Result := LSyncManager.SearchUsers(ACriteria);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUsersCountAsync: IAsyncPromise<Integer>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Integer>(
     function(const AOperation: IAsyncOperation): Integer
     begin
-      Result := FSyncManager.GetUsersCount;
+      Result := LSyncManager.GetUsersCount;
     end);
 end;
 
@@ -346,37 +373,43 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.SetPasswordAsync(const AUserID: string; const APassword: string; const ATemporary: Boolean): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.SetPassword(AUserID, APassword, ATemporary);
+      LSyncManager.SetPassword(AUserID, APassword, ATemporary);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.SetPasswordsAsync(const APasswordResets: TArray<TIAM4DPasswordReset>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LPasswordResets := Copy(APasswordResets);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
     begin
-      Result := FSyncManager.SetPasswords(APasswordResets, AOperation);
+      Result := LSyncManager.SetPasswords(LPasswordResets, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.SendPasswordResetEmailAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.SendPasswordResetEmail(AUserID);
+      LSyncManager.SendPasswordResetEmail(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.SendVerifyEmailAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.SendVerifyEmail(AUserID);
+      LSyncManager.SendVerifyEmail(AUserID);
     end);
 end;
 
@@ -386,82 +419,97 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetRealmRolesAsync: IAsyncPromise<TArray<TIAM4DRole>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DRole> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
     begin
-      Result := FSyncManager.GetRealmRoles;
+      Result := LSyncManager.GetRealmRoles;
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserRolesAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DRole> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
     begin
-      Result := FSyncManager.GetUserRoles(AUserID);
+      Result := LSyncManager.GetUserRoles(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AssignRolesToUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LRoles := Copy(ARoles);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.AssignRolesToUser(AUserID, ARoles);
+      LSyncManager.AssignRolesToUser(AUserID, LRoles);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AssignRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LRoleAssignments := Copy(ARoleAssignments);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
     begin
-      Result := FSyncManager.AssignRolesToUsers(ARoleAssignments, AOperation);
+      Result := LSyncManager.AssignRolesToUsers(LRoleAssignments, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RemoveRolesFromUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LRoles := Copy(ARoles);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveRolesFromUser(AUserID, ARoles);
+      LSyncManager.RemoveRolesFromUser(AUserID, LRoles);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AssignRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.AssignRoleByName(AUserID, ARoleName);
+      LSyncManager.AssignRoleByName(AUserID, ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RemoveRoleByNameAsync(const AUserID: string; const ARoleName: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveRoleByName(AUserID, ARoleName);
+      LSyncManager.RemoveRoleByName(AUserID, ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AssignClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.AssignClientRoleByClientID(AUserID, AClientID, ARoleName);
+      LSyncManager.AssignClientRoleByClientID(AUserID, AClientID, ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RemoveClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveClientRoleByClientID(AUserID, AClientID, ARoleName);
+      LSyncManager.RemoveClientRoleByClientID(AUserID, AClientID, ARoleName);
     end);
 end;
 
@@ -471,37 +519,41 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetGroupsAsync: IAsyncPromise<TArray<TIAM4DGroup>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DGroup> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DGroup>
     begin
-      Result := FSyncManager.GetGroups;
+      Result := LSyncManager.GetGroups;
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserGroupsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DGroup>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DGroup> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DGroup>
     begin
-      Result := FSyncManager.GetUserGroups(AUserID);
+      Result := LSyncManager.GetUserGroups(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AddUserToGroupByPathAsync(const AUserID: string; const AGroupPath: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.AddUserToGroupByPath(AUserID, AGroupPath);
+      LSyncManager.AddUserToGroupByPath(AUserID, AGroupPath);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RemoveUserFromGroupByPathAsync(const AUserID: string; const AGroupPath: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveUserFromGroupByPath(AUserID, AGroupPath);
+      LSyncManager.RemoveUserFromGroupByPath(AUserID, AGroupPath);
     end);
 end;
 
@@ -511,37 +563,41 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.LogoutUserAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.LogoutUser(AUserID);
+      LSyncManager.LogoutUser(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserSessionsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DUserSession>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DUserSession> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DUserSession>
     begin
-      Result := FSyncManager.GetUserSessions(AUserID);
+      Result := LSyncManager.GetUserSessions(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserSessionCountAsync(const AUserID: string): IAsyncPromise<Integer>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Integer>(
     function(const AOperation: IAsyncOperation): Integer
     begin
-      Result := FSyncManager.GetUserSessionCount(AUserID);
+      Result := LSyncManager.GetUserSessionCount(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RevokeUserSessionAsync(const AUserID: string; const ASessionID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RevokeUserSession(AUserID, ASessionID);
+      LSyncManager.RevokeUserSession(AUserID, ASessionID);
     end);
 end;
 
@@ -551,19 +607,43 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserFederatedIdentitiesAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DFederatedIdentity>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DFederatedIdentity> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DFederatedIdentity>
     begin
-      Result := FSyncManager.GetUserFederatedIdentities(AUserID);
+      Result := LSyncManager.GetUserFederatedIdentities(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.IsUserFederatedAsync(const AUserID: string): IAsyncPromise<Boolean>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Boolean>(
     function(const AOperation: IAsyncOperation): Boolean
     begin
-      Result := FSyncManager.IsUserFederated(AUserID);
+      Result := LSyncManager.IsUserFederated(AUserID);
+    end);
+end;
+
+function TIAM4DKeycloakUserManagerAsync.LinkFederatedIdentityAsync(const AUserID: string;
+  const AFederatedIdentity: TIAM4DFederatedIdentity): IAsyncVoidPromise;
+begin
+  var LSyncManager := FSyncManager;
+  Result := TAsyncCore.New(
+    procedure(const AOperation: IAsyncOperation)
+    begin
+      LSyncManager.LinkFederatedIdentity(AUserID, AFederatedIdentity);
+    end);
+end;
+
+function TIAM4DKeycloakUserManagerAsync.UnlinkFederatedIdentityAsync(const AUserID: string;
+  const AIdentityProvider: string): IAsyncVoidPromise;
+begin
+  var LSyncManager := FSyncManager;
+  Result := TAsyncCore.New(
+    procedure(const AOperation: IAsyncOperation)
+    begin
+      LSyncManager.UnlinkFederatedIdentity(AUserID, AIdentityProvider);
     end);
 end;
 
@@ -573,28 +653,35 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserRequiredActionsAsync(const AUserID: string): IAsyncPromise<TArray<TIAM4DRequiredAction>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DRequiredAction> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRequiredAction>
     begin
-      Result := FSyncManager.GetUserRequiredActions(AUserID);
+      Result := LSyncManager.GetUserRequiredActions(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.SetUserRequiredActionsAsync(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>): IAsyncVoidPromise;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LActions := Copy(AActions);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.SetUserRequiredActions(AUserID, AActions);
+      LSyncManager.SetUserRequiredActions(AUserID, LActions);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RemoveUserRequiredActionsAsync(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>): IAsyncVoidPromise;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LActions := Copy(AActions);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveUserRequiredActions(AUserID, AActions);
+      LSyncManager.RemoveUserRequiredActions(AUserID, LActions);
     end);
 end;
 
@@ -604,19 +691,21 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.IsUserLockedAsync(const AUserID: string): IAsyncPromise<Boolean>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Boolean>(
     function(const AOperation: IAsyncOperation): Boolean
     begin
-      Result := FSyncManager.IsUserLocked(AUserID);
+      Result := LSyncManager.IsUserLocked(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.UnlockUserAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.UnlockUser(AUserID);
+      LSyncManager.UnlockUser(AUserID);
     end);
 end;
 
@@ -626,19 +715,21 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.DisableUserAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.DisableUser(AUserID);
+      LSyncManager.DisableUser(AUserID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.EnableUserAsync(const AUserID: string): IAsyncVoidPromise;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.EnableUser(AUserID);
+      LSyncManager.EnableUser(AUserID);
     end);
 end;
 
@@ -648,37 +739,41 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetRoleByNameAsync(const ARoleName: string): IAsyncPromise<TIAM4DRole>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DRole>(
     function(const AOperation: IAsyncOperation): TIAM4DRole
     begin
-      Result := FSyncManager.GetRoleByName(ARoleName);
+      Result := LSyncManager.GetRoleByName(ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.TryGetRoleByNameAsync(const ARoleName: string): IAsyncPromise<TIAM4DRoleTryResult>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DRoleTryResult>(
     function(const AOperation: IAsyncOperation): TIAM4DRoleTryResult
     begin
-      Result := FSyncManager.TryGetRoleByName(ARoleName);
+      Result := LSyncManager.TryGetRoleByName(ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.HasRoleAsync(const AUserID: string; const ARoleName: string): IAsyncPromise<Boolean>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Boolean>(
     function(const AOperation: IAsyncOperation): Boolean
     begin
-      Result := FSyncManager.HasRole(AUserID, ARoleName);
+      Result := LSyncManager.HasRole(AUserID, ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUsersWithRoleAsync(const ARoleName: string; const AFirstResult: Integer; const AMaxResults: Integer): IAsyncPromise<TArray<TIAM4DUser>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DUser> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
     begin
-      Result := FSyncManager.GetUsersWithRole(ARoleName, AFirstResult, AMaxResults);
+      Result := LSyncManager.GetUsersWithRole(ARoleName, AFirstResult, AMaxResults);
     end);
 end;
 
@@ -688,37 +783,41 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetGroupByPathAsync(const APath: string): IAsyncPromise<TIAM4DGroup>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DGroup>(
     function(const AOperation: IAsyncOperation): TIAM4DGroup
     begin
-      Result := FSyncManager.GetGroupByPath(APath);
+      Result := LSyncManager.GetGroupByPath(APath);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.TryGetGroupByPathAsync(const APath: string): IAsyncPromise<TIAM4DGroupTryResult>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DGroupTryResult>(
     function(const AOperation: IAsyncOperation): TIAM4DGroupTryResult
     begin
-      Result := FSyncManager.TryGetGroupByPath(APath);
+      Result := LSyncManager.TryGetGroupByPath(APath);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.IsMemberOfGroupAsync(const AUserID: string; const AGroupPath: string): IAsyncPromise<Boolean>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Boolean>(
     function(const AOperation: IAsyncOperation): Boolean
     begin
-      Result := FSyncManager.IsMemberOfGroup(AUserID, AGroupPath);
+      Result := LSyncManager.IsMemberOfGroup(AUserID, AGroupPath);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUsersInGroupByPathAsync(const AGroupPath: string; const AFirstResult: Integer; const AMaxResults: Integer): IAsyncPromise<TArray<TIAM4DUser>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DUser> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DUser>
     begin
-      Result := FSyncManager.GetUsersInGroupByPath(AGroupPath, AFirstResult, AMaxResults);
+      Result := LSyncManager.GetUsersInGroupByPath(AGroupPath, AFirstResult, AMaxResults);
     end);
 end;
 
@@ -728,73 +827,87 @@ end;
 
 function TIAM4DKeycloakUserManagerAsync.GetClientRolesByClientIDAsync(const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DRole> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
     begin
-      Result := FSyncManager.GetClientRolesByClientID(AClientID);
+      Result := LSyncManager.GetClientRolesByClientID(AClientID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetUserClientRolesByClientIDAsync(const AUserID: string; const AClientID: string): IAsyncPromise<TArray<TIAM4DRole>>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DRole> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DRole>
     begin
-      Result := FSyncManager.GetUserClientRolesByClientID(AUserID, AClientID);
+      Result := LSyncManager.GetUserClientRolesByClientID(AUserID, AClientID);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AssignClientRolesToUserAsync(const AUserID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LRoles := Copy(ARoles);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.AssignClientRolesToUser(AUserID, ARoles);
+      LSyncManager.AssignClientRolesToUser(AUserID, LRoles);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.AssignClientRolesToUsersAsync(const ARoleAssignments: TArray<TIAM4DRoleAssignment>): IAsyncPromise<TArray<TIAM4DOperationResult>>;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LRoleAssignments := Copy(ARoleAssignments);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New < TArray<TIAM4DOperationResult> > (
     function(const AOperation: IAsyncOperation): TArray<TIAM4DOperationResult>
     begin
-      Result := FSyncManager.AssignClientRolesToUsers(ARoleAssignments, AOperation);
+      Result := LSyncManager.AssignClientRolesToUsers(LRoleAssignments, AOperation);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.RemoveClientRolesFromUserByClientIDAsync(const AUserID: string; const AClientID: string; const ARoles: TArray<TIAM4DRole>): IAsyncVoidPromise;
 begin
+  // Own copies: the caller may change its arrays while the task runs
+  var LRoles := Copy(ARoles);
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New(
     procedure(const AOperation: IAsyncOperation)
     begin
-      FSyncManager.RemoveClientRolesFromUserByClientID(AUserID, AClientID, ARoles);
+      LSyncManager.RemoveClientRolesFromUserByClientID(AUserID, AClientID, LRoles);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.HasClientRoleByClientIDAsync(const AUserID: string; const AClientID: string; const ARoleName: string): IAsyncPromise<Boolean>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<Boolean>(
     function(const AOperation: IAsyncOperation): Boolean
     begin
-      Result := FSyncManager.HasClientRoleByClientID(AUserID, AClientID, ARoleName);
+      Result := LSyncManager.HasClientRoleByClientID(AUserID, AClientID, ARoleName);
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetClientsAsync: IAsyncPromise<TIAM4DRealmClientArray>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DRealmClientArray>(
     function(const AOperation: IAsyncOperation): TIAM4DRealmClientArray
     begin
-      Result := FSyncManager.GetClients;
+      Result := LSyncManager.GetClients;
     end);
 end;
 
 function TIAM4DKeycloakUserManagerAsync.GetClientByClientIDAsync(const AClientID: string): IAsyncPromise<TIAM4DRealmClient>;
 begin
+  var LSyncManager := FSyncManager;
   Result := TAsyncCore.New<TIAM4DRealmClient>(
     function(const AOperation: IAsyncOperation): TIAM4DRealmClient
     begin
-      Result := FSyncManager.GetClientByClientID(AClientID);
+      Result := LSyncManager.GetClientByClientID(AClientID);
     end);
 end;
 

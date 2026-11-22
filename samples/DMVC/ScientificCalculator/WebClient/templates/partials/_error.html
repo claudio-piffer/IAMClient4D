@@ -1,0 +1,38 @@
+{{# An unsuccessful view model r: r.error.kind, title, detail, challenge (WWW-Authenticate) #}}
+{{if r.error.kind|eq,"input"}}
+<div class="alert alert-warning mb-0" role="alert">
+  <i class="bi bi-pencil-square me-1"></i><strong>{{:t.errors.check_input}}</strong> &mdash; {{:r.error.detail}}
+  <div class="small mt-1">{{:t.errors.nothing_sent}}</div>
+</div>
+{{elseif r.error.kind|eq,"forbidden"}}
+<div class="alert alert-danger mb-0" role="alert">
+  <div><i class="bi bi-shield-lock me-1"></i><strong>HTTP {{:r.status}} {{:r.error.title}}</strong></div>
+  <div class="mt-1">{{:r.error.detail}}</div>
+  <div class="small mt-2">{{:t.errors.forbidden_hint_html$}}</div>
+  {{if r.error.challenge}}<div class="small font-monospace mt-1 text-break">WWW-Authenticate: {{:r.error.challenge}}</div>{{endif}}
+</div>
+{{elseif r.error.kind|eq,"unauthorized"}}
+<div class="alert alert-danger mb-0" role="alert">
+  <div><i class="bi bi-key me-1"></i><strong>HTTP {{:r.status}} {{:r.error.title}}</strong></div>
+  <div class="mt-1">{{:t.errors.token_refused}}{{if r.error.detail}} {{:r.error.detail}}{{endif}}</div>
+  <div class="small mt-2">{{:t.errors.unauthorized_hint}}</div>
+  {{if r.error.challenge}}<div class="small font-monospace mt-1 text-break">WWW-Authenticate: {{:r.error.challenge}}</div>{{endif}}
+</div>
+{{elseif r.error.kind|eq,"session"}}
+<div class="alert alert-warning mb-0" role="alert">
+  <i class="bi bi-hourglass-bottom me-1"></i><strong>{{:t.errors.session_expired}}</strong> &mdash; {{:r.error.detail}}
+  <div class="mt-2"><a class="btn btn-sm btn-primary" href="/login" hx-boost="false">{{:t.errors.sign_in_again}}</a></div>
+</div>
+{{elseif r.error.kind|eq,"unreachable"}}
+<div class="alert alert-secondary mb-0" role="alert">
+  <i class="bi bi-plug me-1"></i>{{:t.errors.unreachable_html$|replace,"{backend}",r.backendLabel|replace,"{url}",r.baseUrl}}
+  <div class="small mt-1">{{:r.error.detail}}</div>
+  <div class="small mt-1">{{:t.errors.start_it}}</div>
+</div>
+{{else}}
+<div class="alert alert-danger mb-0" role="alert">
+  <div><i class="bi bi-exclamation-octagon me-1"></i><strong>HTTP {{:r.status}} {{:r.error.title}}</strong></div>
+  {{if r.error.detail}}<div class="mt-1">{{:r.error.detail}}</div>{{endif}}
+  {{if r.error.kind|eq,"domain"}}<div class="small mt-2">{{:t.errors.domain}}</div>{{endif}}
+</div>
+{{endif}}

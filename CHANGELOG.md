@@ -5,6 +5,112 @@ All notable changes to IAMClient4D are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.0.0] - 2026-11-22
+
+### Highlights
+
+- Security review of the whole library: the id_token is fully validated, `iss` (RFC 9207) is checked, redirects are not followed, plain `http://` is refused outside the loopback, pins are enforced in strict mode, JWT and JWKS checks follow the RFCs strictly.
+- Mobile apps: login through a redirect on a private-use URI scheme (RFC 8252), with Custom Tabs on Android and `ASWebAuthenticationSession` on iOS.
+- Identity brokering: direct login with `kc_idp_hint`, and identity provider management through the Admin REST API with builders for Entra ID, Microsoft accounts, Google, Facebook, LinkedIn, GitHub, GitLab, generic OIDC, SAML and OAuth 2.0, SPID and CIE.
+- DMVCFramework 3.5 filter bundle that protects controllers and Minimal API routes; RFC 9068 (`at+jwt`) access tokens accepted.
+- Session API: options of one login (`prompt`, `max_age`, `acr_values`, `login_hint`), id_token claims, granted scopes, token revocation (RFC 7009), RP-Initiated Logout URL, password grant, HTTP client for protected APIs.
+- TaurusTLS (OpenSSL 3.x/4.x) crypto provider, ES256/ES384/ES512 verification, typed exceptions with error codes everywhere.
+- Builds for Win32, Win64, Linux64, Android, Android64 and iOS; a Docker environment (`Docker/`) runs every sample.
+
+### Breaking
+
+The [migration guide](docs/MIGRATION_3.0.md) explains each item and how to adapt the code.
+
+- Requirements: Delphi 12 or later (tested with Delphi 13); DMVCFramework 3.5.0-silicon-rc10 or later for the DMVC integration; Keycloak 25 or later, and with Keycloak 26.8.2 or later the Admin API client needs the `kc-admin-api` client scope.
+- `http://` to a host other than the loopback is refused for `BaseURL` and the external callback URL (`WithAllowInsecureHTTP` for test environments); a realm on `https` with an `http` endpoint in its discovery document is refused.
+- HTTP redirects are not followed by any client of the library: a 3xx is an error naming the `Location`.
+- The `iss` of the authorization response must match the issuer when the discovery document announces `authorization_response_iss_parameter_supported` (Keycloak 26 does).
+- The id_token is validated at the code exchange, at the refresh and in Client Credentials: signature through the JWKS, `iss`, `aud`, `azp`, `typ`, `exp`/`iat` with 300 s of tolerance, nonce, `auth_time` against `max_age`. A clock off by more than 5 minutes or an unreachable JWKS fails the login.
+- JWT: `alg` compared exactly, RSA keys below 2048 bits refused, `crit` refused, canonical base64url only, numeric time claims only, the `alg` of the JWK binding, encryption keys ignored, the issuer of the discovery checked.
+- TLS: pinned public keys are checked in `svmStrict` too, also for the JWKS; on Android the verdict of the platform counts; pinning on Linux raises `ENotSupportedException`. `IIAM4DSSLCertificateValidator.ValidateCertificate` receives the platform verdict, `crrStrictModeBypass` became `crrSystemValidationFailed`.
+- Network errors raise `EIAM4DNetworkTimeoutException`, `EIAM4DSSLCertificateException` or `EIAM4DNetworkUnreachableException` instead of the RTL `ENetHTTP*` exceptions.
+- A refresh refused with `invalid_grant` raises `EIAM4DRefreshTokenExpiredException` and clears the tokens; other refresh errors keep them.
+- A cancelled login ends as Cancelled (`OnFinally`, no `OnError`); OAuth2 error responses raise `EIAM4DOAuth2CallbackException`.
+- `TIAM4DPlatformUtils.OpenURL` opens only `http` and `https` URLs.
+- Admin API: HTTP errors raise typed exceptions (403, 404, 409, other 4xx, 5xx) instead of `EIAM4DInvalidConfigurationException`, "not found" is a 404 exception, `UpdateUser` replaces the profile (empty fields are cleared), names of roles and groups are case-sensitive, `GetGroups` returns the whole tree, duplicate emails, paging values and temporary passwords are validated.
+- Exception hierarchies: Admin API exceptions descend from the HTTP exceptions, `EIAM4DStorageCryptoException` descends from `EIAM4DException`; check the order of `except` blocks.
+- Async.Core: `RunWithTimeout` ends with `EAsyncTimeoutException`, `dmQueue` is always queued (`ForceQueue`), an exception in a callback no longer changes the state of the operation.
+- DMVC: `TIAM4DJWTMiddleware` is deprecated in favour of `IAM4DJWTBundle` (the middleware does not protect Minimal API routes); empty `Issuer`, `TokenHeaderName` or `Audience` (with audience validation) are configuration errors; OPTIONS and Swagger paths are authenticated; `AllowAnonymous` refuses invalid tokens; the payload `typ` must be `Bearer`; client roles come only from `Audience`/`ExpectedAzp`; roles, scopes, groups and claim names are case-sensitive; `GetCustomClaim` reads top-level keys; dates of `LoggedUser.CustomData` in ISO 8601 UTC; `CONTEXT_KEY_*_JSON` are no longer filled.
+- Interfaces with new methods (`IIAM4DClient`, `IIAM4DClientConfigBuilder`, `IIAM4DUserManager`, `IIAM4DUserManagerAsync`, `IIAM4DSSLCertificateValidator`) break their implementers; `TIAM4DLocalCallbackHandler.SetOnCodeReceived` receives code, state and `kc_action_status`.
+
+### Added
+
+- **Mobile apps**: callback mode `cbmAppRedirect` and `WithAppRedirect(URI)` for a private-use URI scheme; `TIAM4DAppRedirect.HandleURL`; `src/FMX` with `TIAM4DAppRedirectListener` (Android intent, iOS `OpenURL`), Android Custom Tabs and, on iOS, `TIAM4DIOSLoginBrowser` (`ilbSafari`, `ilbAuthenticationSession`).
+- **Login options**: `TIAM4DAuthRequestOptions` for one login (`acr_values`, `prompt`, `max_age`, `ui_locales`, `login_hint`, `kc_idp_hint`, other parameters); `WithPrompt`, `WithMaxAge`, `WithKeycloakAction` and `GetKeycloakActionStatus`; `WithCallbackPort`, `WithLoopbackRedirectHost` (`127.0.0.1`, RFC 8252 8.3), `WithAppActivation` (Windows); `ForAuthorizationCode` with a client secret.
+- **Session**: `GetIDTokenClaims` (`TIAM4DIDTokenClaims`), `GetGrantedScopes` / `HasGrantedScope`, `InvalidateAccessToken`, `RevokeTokens` / `RevokeTokensAsync` (RFC 7009), public `GenerateLogoutURL` (RP-Initiated Logout).
+- **Password grant**: `ForPassword` and `AuthenticatePassword(Async)`, with `EIAM4DInvalidCredentialsException`, `EIAM4DAccountNotFullySetUpException` and `EIAM4DAccountDisabledException`.
+- **`TIAM4DAuthorizedHTTPClient`**: HTTP client for an API protected by the tokens of an `IIAM4DClient` (bearer renewed when it expires, one retry after a 401, HTTPS only, no redirects).
+- **Discovery cache**: `TIAM4DDiscoveryCache`, one hour per realm URL and SSL mode.
+- **`TIAM4DPlatformUtils.OpenURLHandler`**: replaces the system browser (tests, embedded browsers).
+- **Identity brokering**: `WithIdentityProvider` and the `AIdpHint` arguments (`kc_idp_hint`, `IAM4D_IDP_HINT_NONE`); `IIAM4DIdentityProviderManager` (sync and async: providers, mappers, mapper types, `ImportConfig`, SP metadata, paging); builders for Entra ID, Microsoft, Google, Facebook, LinkedIn, GitHub (and Enterprise), GitLab, generic OIDC, SAML 2.0, OAuth 2.0, SPID and CIE, with secure defaults that `WithConfig` cannot turn off.
+- **Admin API**: `LinkFederatedIdentity` / `UnlinkFederatedIdentity`, `TIAM4DUser.FederationLink`, `EIAM4DHTTPNotFoundException`, `EIAM4DHTTPConflictException`.
+- **DMVCFramework 3.5**: `IAM4DJWTBundle`, `IAM4DJWTEndpointFilter` (Minimal API route groups), `IAM4DSwaggerSecurityHTTPFilter`, `[IAM4DPublic]`, `IIAM4DJWTAuthenticator` shared by several filters; OpenAPI 3 security injection; 503 with `Retry-After` when the identity provider is unavailable (`EIAM4DJWKSUnavailableException`); `JWKS_URL`, `PinnedPublicKeys`, `SSLValidator` and `AllowedHeaderTypes` in `TIAM4DJWTMiddlewareConfig`.
+- **JWT**: `SetAllowedHeaderTypes` (RFC 9068 `at+jwt`), `SetExpectedTokenType`, ES256/ES384/ES512 (`IAMClient4D.Security.JWT.Verifiers.ECDSA`), `TIAM4DJWKSProvider.SetJWKSUri`, `TIAM4DRSAPublicKey.MinModulusBits`.
+- **TaurusTLS (OpenSSL 3.x/4.x) crypto provider** (`IAM4D_TAURUSTLS`): RS*, PS* and ES* verification, AES-256-GCM token storage, public key cache.
+- **Storage**: `TIAM4DAESMemoryTokenStorageRawKey32.Create(ACryptoProvider, AAAD)` for a custom crypto provider; the granted scope stored with the tokens.
+- **Async.Core**: `dmInline` dispatch mode, `FromOperation`, `RegisterExceptionCloner` (exceptions copied with all their fields), `RunWithRetry` with `AShouldRetry` and `ExponentialJitter`, `ADispatchMode` on the combinators, `PendingTimerCount`.
+- **HTTP**: `TIAM4DHTTPClientFactory.Execute`, one request bounded by `ResponseTimeout`.
+- **Version constants**: `IAM4D_VERSION`, `IAM4D_VERSION_MAJOR`, `IAM4D_VERSION_MINOR`, `IAM4D_VERSION_PATCH`.
+- **Samples**: one Docker environment for all of them (`Docker/`: Keycloak 26.8 with SPID and CIE extensions, PostgreSQL, SPID and CIE simulators, TLS gateway); `samples/VCL/IdentityBrokering`, `samples/FMX/IdentityBrokering` (Android, iOS), `samples/DMVC/ScientificCalculator` (controller and Minimal API servers, web client); the VCL KeycloakClient sample shows the id_token claims, the granted scopes and the revocation, the web client signs out through the browser.
+- **Tests**: console suites `JWT`, `Crypto`, `TLS`, `HTTPTimeout`, `Async`, `KeycloakClient`, `DMVC/RuntimeTest` and `IdentityProvider` (against a real Keycloak), for Win32, Win64 and Linux64.
+
+### Changed
+
+- The `THTTPClient` of a client is a pool: the requests of one client run in parallel; `ResponseTimeout` bounds the whole request.
+- `Logout` sends the refresh token to the end session endpoint (back-channel POST) and always clears the tokens; the configured scopes are restored.
+- `Build` / `BuildAsync` configure on the calling thread without a fixed 30 s limit; the original exception is raised.
+- `GetUserInfo` refuses a `sub` other than the one of the id_token; `TIAM4DUserInfo.GetCustomClaims` is case-sensitive.
+- `state` and `nonce` come from the CSPRNG; the code of a callback is exchanged once; in external mode a failed exchange cannot be retried with the same state.
+- The JWKS of an issuer is replaced as a whole at every refresh; an unknown `kid` triggers at most one refresh every 30 s; a key is served from the cache while it is refreshed in the background.
+- Clients without pins share one JWKS provider per process.
+- Error messages are cut (512 characters) and URLs in messages carry no query.
+- Error codes: the JWT validator sets `ecJWTExpired`, `ecJWTNotYetValid` and `ecJWTAudienceMismatch`; a refused id_token keeps the code of the failed check (`ecTokenInvalid` when there is none); a wrong or missing `nonce` is `ecNonceValidationFailed`.
+- A discovery document that cannot be read (HTTP error or redirect, invalid JSON) raises `EIAM4DDiscoveryFailedException` (`ecDiscoveryFailed`) with its URL.
+- JWT header `typ` `application/jwt` is accepted.
+- DMVC: default HTTP timeouts 10 s / 15 s; a rejected token is logged at most once per `RejectedTokenWarningIntervalSec`; 403 answers say only "Insufficient permissions".
+- `WithScopes`, `WithTimeouts` and the SSL methods of the builder keep `TokenExpiryBufferSeconds`; a second `For*` resets the settings of the previous flow.
+- User-Agent of the HTTP clients: `IAMClient4D/3.0.0`.
+
+### Fixed
+
+- Linux64, Android and iOS builds (2.1 compiled for Windows only).
+- Pins in `svmAllowSelfSigned` refused every certificate (case of the hash).
+- Concurrent LockBox3 operations rejected valid tokens; TMS token storage and ECDSA verification never worked.
+- Login: an error response of the authorization server left the promise pending; a second login or `ConfigureAsync` left the first one pending; `Cancel` did not stop the callback server; `Stop` of the callback server could hang.
+- A refresh response without `refresh_token` or `scope` lost the session; a late refresh could overwrite a newer session.
+- Admin API: `GetUserByEmail`, `TryGetUserByEmail` and `IsUserLocked` never reached Keycloak; required actions freed twice; client roles assigned to the client of the first role; groups by path missed subgroups; a role with a space was not found; a batch used one token for all its items.
+- Async.Core: combinators blocked in console applications, services and DMVC servers; `Delay` and retries held a pool thread; `WhenAll` with a result-less operation never ended; `TAsyncTaskCompletionSource` leaked.
+- UTC time taken from the local time zone (an hour off at the end of daylight saving time).
+- `TIAM4DUser.Create` set `CreatedTimestamp` in seconds instead of milliseconds.
+- DMVC: `JWKS_URL`, `RolesClaimName` and `SubjectClaimName` were ignored; `RequireAnyRole` / `RequireAllRoles` read a claim Keycloak does not send; `SetExpectedAzp('')` did not reset.
+
+### Security
+
+- Callback server: `Host` header checked (DNS rebinding), callbacks with another state ignored, `no-store` pages.
+- Form bodies with secrets and passwords zeroed after sending.
+- An empty expected issuer refuses the token without contacting the issuer of the token.
+- `jti` replay check and registration in one step; the validated-token cache never outlives `iat` plus `SetIatMaxAge` or a removed key.
+- `RevokeUserSession` checks that the session belongs to the user; empty, `.` and `..` path segments refused before any request (`UnlockUser('')` unlocked the whole realm).
+- Identity provider builders: PKCE, signature and issuer checks on by default; trust email refused where the email is not verified (nOAuth).
+- LockBox3 IV seeded from the CSPRNG.
+- The copy of the storage key made by the builder is zeroed once the storage is created.
+
+### Removed
+
+- Unit `IAMClient4D.Common.TokenValidator` (`TIAM4DTokenValidator`, `IAM4D_DEFAULT_TOKEN_EXPIRATION_BUFFER_SECONDS`): the token storage checks the expiry.
+- `IAM4D_OAUTH2_CALLBACK_PORT_MIN` / `IAM4D_OAUTH2_CALLBACK_PORT_MAX` (never used).
+- `TValidatedTokenCacheEntry` (internal record, public by mistake).
+- `IEventWrapper` / `TEventWrapper` (internal helpers of `Async.Core`).
+- `TAsyncOperationController<T>.SetResult` (protected), replaced by `TrySetResult`.
+- Deprecated (warning W1000, removed in a later major version): `TIAM4DJWTMiddleware`, `CONTEXT_KEY_STD_JSON`, `CONTEXT_KEY_KC_JSON`, and the exceptions that are never raised (`EIAM4DAccessTokenExpiredException`, `EIAM4DInvalidAuthCodeException`, `EIAM4DPKCEValidationException`, `EIAM4DAuthorizationTimeoutException`, `EIAM4DEndpointsNotConfiguredException`, `EIAM4DUnknownRequiredActionException`, `EIAM4DTokenInvalidException`, `EIAM4DAuthorizationCancelledException`).
+
 ## [2.1.0] - 2026-03-21
 
 ### Added
@@ -330,6 +436,7 @@ end;
 
 ---
 
-[Unreleased]: https://github.com/claudio-piffer/IAMClient4D/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/claudio-piffer/IAMClient4D/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/claudio-piffer/IAMClient4D/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/claudio-piffer/IAMClient4D/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/claudio-piffer/IAMClient4D/releases/tag/v2.0.0

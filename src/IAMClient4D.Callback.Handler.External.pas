@@ -40,12 +40,12 @@ type
   /// Application must manually call CompleteAuthorizationFlow when receiving the callback.
   ///
   /// Typical flow (uniGUI):
-  /// 1. Call StartAuthorizationFlowAsync(False) to generate authorization URL
+  /// 1. Call InitializeAuthorizationFlow, then GenerateAuthURL for the authorization URL
   /// 2. Redirect browser to authorization URL
   /// 3. Keycloak authenticates user and redirects to external callback URL
   /// 4. External server receives HTTP request at configured endpoint
   /// 5. External server extracts code and state from query string
-  /// 6. External server calls CompleteAuthorizationFlow(code, state)
+  /// 6. External server calls CompleteAuthorizationFlow(code, state, iss) with the query parameters
   /// 7. Library validates state, exchanges code+PKCE for tokens, saves tokens
   ///
   /// Thread-safety: All public methods are thread-safe.
@@ -91,6 +91,12 @@ type
     /// Clears OAuth2 context after flow completion
     /// </summary>
     procedure ClearContext;
+
+    /// <summary>
+    /// The context of the flow. With the state of the flow it is also cleared, atomically: the same
+    /// callback twice (reload, two requests) exchanges the code once. Another state leaves it in place.
+    /// </summary>
+    function TakeContext(const AState: string): TIAM4DOAuthContext;
 
     property ExternalCallbackURL: string read FExternalCallbackURL;
   end;
@@ -221,6 +227,23 @@ begin
   try
     LContext := GetOAuthContext;
     Result := LContext.IsValid;
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TIAM4DExternalCallbackHandler.TakeContext(const AState: string): TIAM4DOAuthContext;
+var
+  LEmpty: TIAM4DOAuthContext;
+begin
+  FLock.Acquire;
+  try
+    Result := GetOAuthContext;
+    if Result.IsValid and (not AState.IsEmpty) and SecureStringEquals(AState, Result.State) then
+    begin
+      LEmpty.Clear;
+      SetOAuthContext(LEmpty);
+    end;
   finally
     FLock.Release;
   end;

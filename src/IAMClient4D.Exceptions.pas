@@ -23,6 +23,8 @@
 
 unit IAMClient4D.Exceptions;
 
+{$WARN SYMBOL_DEPRECATED OFF} // the classes are deprecated for their users, not inside their own unit
+
 interface
 
 uses
@@ -59,15 +61,19 @@ type
     ecTokenInvalid = 1003,
     /// <summary>Invalid username or password</summary>
     ecInvalidCredentials = 1010,
-    /// <summary>Authorization code is invalid or expired</summary>
+    /// <summary>Right credentials, but a required action is pending (e.g. UPDATE_PASSWORD)</summary>
+    ecAccountNotFullySetUp = 1011,
+    /// <summary>User account disabled (permanently or temporarily)</summary>
+    ecAccountDisabled = 1012,
+    /// <summary>Authorization code is invalid or expired (code of a deprecated exception, not raised)</summary>
     ecInvalidAuthorizationCode = 1020,
-    /// <summary>PKCE code verifier validation failed</summary>
+    /// <summary>PKCE code verifier validation failed (code of a deprecated exception, not raised)</summary>
     ecPKCEValidationFailed = 1021,
     /// <summary>State parameter mismatch (CSRF protection)</summary>
     ecStateMismatch = 1022,
-    /// <summary>User cancelled the authorization flow</summary>
+    /// <summary>User cancelled the authorization flow (not raised: a cancelled login ends as Cancelled)</summary>
     ecAuthorizationCancelled = 1030,
-    /// <summary>Authorization flow timed out</summary>
+    /// <summary>Authorization flow timed out (code of a deprecated exception, not raised)</summary>
     ecAuthorizationTimeout = 1031,
     /// <summary>Insufficient permissions for requested operation</summary>
     ecInsufficientPermissions = 1040,
@@ -80,7 +86,7 @@ type
     ecNetworkTimeout = 2001,
     /// <summary>Network host is unreachable</summary>
     ecNetworkUnreachable = 2002,
-    /// <summary>Connection refused by server</summary>
+    /// <summary>Connection refused by server (not raised: a refused connection is ecNetworkUnreachable)</summary>
     ecConnectionRefused = 2003,
     /// <summary>SSL/TLS certificate validation failed</summary>
     ecSSLCertificateError = 2010,
@@ -110,16 +116,18 @@ type
 
     /// <summary>Client configuration is invalid or incomplete</summary>
     ecInvalidConfiguration = 4001,
-    /// <summary>OIDC endpoints not configured (call ConfigureAsync first)</summary>
+    /// <summary>OIDC endpoints not configured (code of a deprecated exception, not raised)</summary>
     ecEndpointsNotConfigured = 4002,
     /// <summary>Well-known endpoint discovery failed</summary>
     ecDiscoveryFailed = 4003,
+    /// <summary>The crypto provider cannot be used (OpenSSL missing or older than 3.0)</summary>
+    ecCryptoProviderUnavailable = 4004,
 
     // ========================================================================
     // Storage Errors (5000-5999)
     // ========================================================================
 
-    /// <summary>Token storage is not initialized</summary>
+    /// <summary>Token storage is not initialized (not raised)</summary>
     ecStorageNotInitialized = 5001,
     /// <summary>Failed to encrypt token data</summary>
     ecStorageEncryptionFailed = 5002,
@@ -134,7 +142,7 @@ type
     ecJWTSignatureInvalid = 6001,
     /// <summary>JWT issuer mismatch</summary>
     ecJWTIssuerMismatch = 6002,
-    /// <summary>JWT audience mismatch</summary>
+    /// <summary>JWT audience (aud) missing or not the expected one</summary>
     ecJWTAudienceMismatch = 6003,
     /// <summary>JWT expired</summary>
     ecJWTExpired = 6004,
@@ -142,7 +150,7 @@ type
     ecJWTNotYetValid = 6005,
     /// <summary>JWKS key not found for kid</summary>
     ecJWKSKeyNotFound = 6010,
-    /// <summary>Nonce validation failed</summary>
+    /// <summary>Nonce of the ID token missing or not the one of the login</summary>
     ecNonceValidationFailed = 6020);
 
   /// <summary>
@@ -159,6 +167,11 @@ type
     FErrorCode: TIAM4DErrorCode;
     FContext: TDictionary<string, string>;
     function GetContext: TDictionary<string, string>;
+  protected
+    /// <summary>
+    /// Copy constructor used by Clone. Descendants with their own fields override it.
+    /// </summary>
+    constructor CreateCopy(ASource: EIAM4DException); virtual;
   public
     /// <summary>
     /// Creates exception with message and error code.
@@ -185,6 +198,14 @@ type
     function WithContext(const AKey, AValue: string): EIAM4DException;
 
     /// <summary>
+    /// Returns an independent copy: same class, message, error code, context and specific fields.
+    /// </summary>
+    /// <remarks>
+    /// Registered with Async.Core, so WaitForResult re-raises IAMClient4D exceptions without losing data.
+    /// </remarks>
+    function Clone: EIAM4DException;
+
+    /// <summary>
     /// Machine-readable error code for programmatic handling.
     /// </summary>
     property ErrorCode: TIAM4DErrorCode read FErrorCode;
@@ -197,6 +218,8 @@ type
     /// </remarks>
     property Context: TDictionary<string, string> read GetContext;
   end;
+
+  EIAM4DExceptionClass = class of EIAM4DException;
 
   // ==========================================================================
   // Security/Validation Exceptions (declared early for use in other exceptions)
@@ -224,7 +247,7 @@ type
   EIAM4DAccessTokenExpiredException = class(EIAM4DException)
   public
     constructor Create;
-  end;
+  end deprecated 'Not raised: GetAccessToken refreshes the token; a refused refresh raises EIAM4DRefreshTokenExpiredException';
 
   /// <summary>
   /// Raised when refresh token has expired.
@@ -244,7 +267,7 @@ type
   EIAM4DTokenInvalidException = class(EIAM4DException)
   public
     constructor Create(const AReason: string);
-  end;
+  end deprecated 'Not raised: an invalid token raises EIAM4DSecurityValidationException';
 
   /// <summary>
   /// Raised when username/password credentials are invalid.
@@ -259,12 +282,34 @@ type
   end;
 
   /// <summary>
+  /// Raised by the password grant when the credentials are right but the account has a pending
+  /// required action (Keycloak: "Account is not fully set up"), e.g. UPDATE_PASSWORD.
+  /// </summary>
+  /// <remarks>
+  /// Action: complete the required action (e.g. set a new password through the Admin API),
+  /// then log in again.
+  /// </remarks>
+  EIAM4DAccountNotFullySetUpException = class(EIAM4DException)
+  public
+    constructor Create;
+  end;
+
+  /// <summary>
+  /// Raised by the password grant when the user account is disabled. Keycloak 26 does not tell a
+  /// temporary brute force lock apart ("Invalid user credentials": EIAM4DInvalidCredentialsException).
+  /// </summary>
+  EIAM4DAccountDisabledException = class(EIAM4DException)
+  public
+    constructor Create(const AReason: string);
+  end;
+
+  /// <summary>
   /// Raised when OAuth2 authorization code is invalid or expired.
   /// </summary>
   EIAM4DInvalidAuthCodeException = class(EIAM4DException)
   public
     constructor Create(const AReason: string);
-  end;
+  end deprecated 'Not raised: a refused code exchange raises EIAM4DException';
 
   /// <summary>
   /// Raised when PKCE code verifier validation fails.
@@ -272,7 +317,7 @@ type
   EIAM4DPKCEValidationException = class(EIAM4DException)
   public
     constructor Create;
-  end;
+  end deprecated 'Not raised: the identity provider checks PKCE and refuses the code exchange (EIAM4DException)';
 
   /// <summary>
   /// Raised when OAuth2 state parameter doesn't match (CSRF attack).
@@ -306,7 +351,7 @@ type
   EIAM4DAuthorizationCancelledException = class(EIAM4DException)
   public
     constructor Create;
-  end;
+  end deprecated 'Not raised: a cancelled login ends as Cancelled (OnFinally, no OnError)';
 
   /// <summary>
   /// Raised when authorization flow times out waiting for callback.
@@ -314,20 +359,9 @@ type
   EIAM4DAuthorizationTimeoutException = class(EIAM4DException)
   public
     constructor Create(ATimeoutSeconds: Integer);
-  end;
+  end deprecated 'Not raised: the authorization flow waits until it completes or is cancelled';
 
-  /// <summary>
-  /// Raised when user has insufficient permissions for requested operation.
-  /// </summary>
-  EIAM4DInsufficientPermissionsException = class(EIAM4DException)
-  private
-    FRequiredRole: string;
-    FOperation: string;
-  public
-    constructor Create(const AOperation, ARequiredRole: string);
-    property RequiredRole: string read FRequiredRole;
-    property Operation: string read FOperation;
-  end;
+  // EIAM4DInsufficientPermissionsException (HTTP 403): declared after EIAM4DHTTPClientErrorException
 
   // ==========================================================================
   // Network/Communication Exceptions
@@ -344,6 +378,8 @@ type
   private
     FEndpoint: string;
     FTimeoutMs: Integer;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(const AEndpoint: string; ATimeoutMs: Integer);
     property Endpoint: string read FEndpoint;
@@ -355,7 +391,9 @@ type
   /// </summary>
   EIAM4DNetworkUnreachableException = class(EIAM4DException)
   public
-    constructor Create(const AHost: string);
+    constructor Create(const AHost: string); overload;
+    /// <summary>ADetail: the error of the HTTP client (connection refused, name not resolved...)</summary>
+    constructor Create(const AHost, ADetail: string); overload;
   end;
 
   /// <summary>
@@ -364,6 +402,8 @@ type
   EIAM4DSSLCertificateException = class(EIAM4DException)
   private
     FCertificateIssue: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(const ACertificateIssue: string);
     property CertificateIssue: string read FCertificateIssue;
@@ -375,16 +415,54 @@ type
   /// <remarks>
   /// Non-recoverable with retry (except 408 Request Timeout, 429 Too Many Requests).
   /// Contains full response body for detailed error analysis.
+  /// Keycloak Admin API: 403, 404 and 409 raise the descendants below, the other 4xx this class.
   /// </remarks>
   EIAM4DHTTPClientErrorException = class(EIAM4DException)
   private
     FStatusCode: Integer;
     FResponseBody: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(AStatusCode: Integer; const AResponseBody: string);
+    /// <summary>
+    /// Error response of a request; AMessage describes it (e.g. method, URL, status).
+    /// </summary>
+    constructor CreateFromResponse(AStatusCode: Integer; const AResponseBody, AMessage: string); virtual;
     property StatusCode: Integer read FStatusCode;
     property ResponseBody: string read FResponseBody;
   end;
+
+  EIAM4DHTTPClientErrorExceptionClass = class of EIAM4DHTTPClientErrorException;
+
+  /// <summary>
+  /// Raised when user has insufficient permissions for requested operation (HTTP 403).
+  /// </summary>
+  /// <remarks>
+  /// Operation and RequiredRole are empty when raised from an HTTP response: the message names the request.
+  /// </remarks>
+  EIAM4DInsufficientPermissionsException = class(EIAM4DHTTPClientErrorException)
+  private
+    FRequiredRole: string;
+    FOperation: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
+  public
+    constructor Create(const AOperation, ARequiredRole: string);
+    constructor CreateFromResponse(AStatusCode: Integer; const AResponseBody, AMessage: string); override;
+    property RequiredRole: string read FRequiredRole;
+    property Operation: string read FOperation;
+  end;
+
+  /// <summary>
+  /// Raised for HTTP 404: the requested resource (user, role, identity provider, ...) does not exist.
+  /// </summary>
+  EIAM4DHTTPNotFoundException = class(EIAM4DHTTPClientErrorException);
+
+  /// <summary>
+  /// Raised for HTTP 409: the request conflicts with an existing resource (e.g. duplicate name or alias).
+  /// </summary>
+  EIAM4DHTTPConflictException = class(EIAM4DHTTPClientErrorException);
 
   /// <summary>
   /// Raised for HTTP 5xx server errors (Keycloak unavailable/error).
@@ -397,10 +475,19 @@ type
   private
     FStatusCode: Integer;
     FRetryAfterSeconds: Integer;
+    FResponseBody: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(AStatusCode: Integer; ARetryAfterSeconds: Integer = 0);
+    /// <summary>
+    /// Error response of a request; AMessage describes it (e.g. method, URL, status).
+    /// </summary>
+    constructor CreateFromResponse(AStatusCode: Integer; const AResponseBody, AMessage: string;
+      ARetryAfterSeconds: Integer = 0);
     property StatusCode: Integer read FStatusCode;
     property RetryAfterSeconds: Integer read FRetryAfterSeconds;
+    property ResponseBody: string read FResponseBody;
   end;
 
   // ==========================================================================
@@ -410,23 +497,40 @@ type
   /// <summary>
   /// Raised when user is not found in identity provider.
   /// </summary>
-  EIAM4DUserNotFoundException = class(EIAM4DException)
+  /// <remarks>
+  /// User, role and group "not found" exceptions are EIAM4DHTTPNotFoundException (StatusCode 404),
+  /// whether Keycloak answered 404 or the name was missing from a list; ErrorCode tells them apart.
+  /// </remarks>
+  EIAM4DUserNotFoundException = class(EIAM4DHTTPNotFoundException)
   private
     FUserIdentifier: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(const AUserIdentifier: string);
     property UserIdentifier: string read FUserIdentifier;
   end;
 
   /// <summary>
-  /// Raised when attempting to create user that already exists.
+  /// Raised by CreateUser when Keycloak answers 409: a user with the same username or email exists.
   /// </summary>
-  EIAM4DUserAlreadyExistsException = class(EIAM4DException)
+  /// <remarks>
+  /// An EIAM4DHTTPConflictException (StatusCode 409, ResponseBody of Keycloak): handlers of the
+  /// conflict still catch it. ConflictingField is 'email' when Keycloak names the email, otherwise
+  /// 'username'. CreateUsers reports the conflict in the ErrorMessage of the item.
+  /// </remarks>
+  EIAM4DUserAlreadyExistsException = class(EIAM4DHTTPConflictException)
   private
     FConflictingField: string;
     FValue: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(const AConflictingField, AValue: string);
+    /// <summary>
+    /// The 409 answer (AConflict) of a user creation, for the user with AUsername and AEmail.
+    /// </summary>
+    constructor CreateFromConflict(AConflict: EIAM4DHTTPClientErrorException; const AUsername, AEmail: string);
     property ConflictingField: string read FConflictingField;
     property Value: string read FValue;
   end;
@@ -440,17 +544,19 @@ type
   end;
 
   /// <summary>
-  /// Raised when role is not found.
+  /// Raised when a realm or client role is not found (StatusCode 404, ErrorCode ecRoleNotFound).
   /// </summary>
-  EIAM4DRoleNotFoundException = class(EIAM4DException)
+  EIAM4DRoleNotFoundException = class(EIAM4DHTTPNotFoundException)
   public
-    constructor Create(const ARoleName: string);
+    constructor Create(const ARoleName: string); overload;
+    /// <summary>Client role ARoleName missing from the client AClientID.</summary>
+    constructor Create(const ARoleName, AClientID: string); overload;
   end;
 
   /// <summary>
-  /// Raised when group is not found.
+  /// Raised when group is not found (StatusCode 404, ErrorCode ecGroupNotFound).
   /// </summary>
-  EIAM4DGroupNotFoundException = class(EIAM4DException)
+  EIAM4DGroupNotFoundException = class(EIAM4DHTTPNotFoundException)
   public
     constructor Create(const AGroupPath: string);
   end;
@@ -476,10 +582,11 @@ type
   EIAM4DEndpointsNotConfiguredException = class(EIAM4DException)
   public
     constructor Create;
-  end;
+  end deprecated 'Not raised: an unconfigured client raises EIAM4DInvalidConfigurationException or EIAM4DException';
 
   /// <summary>
-  /// Raised when OIDC well-known endpoint discovery fails.
+  /// Raised when the discovery document of the realm cannot be read: HTTP error or redirect,
+  /// invalid JSON (ErrorCode ecDiscoveryFailed). Network errors raise the network exceptions.
   /// </summary>
   EIAM4DDiscoveryFailedException = class(EIAM4DException)
   public
@@ -503,15 +610,16 @@ type
   // ==========================================================================
 
   /// <summary>
-  /// Raised when JWT signature verification fails.
+  /// Raised by TIAM4DJWTValidator when the JWT signature does not verify with the key of its kid.
   /// </summary>
   EIAM4DJWTSignatureInvalidException = class(EIAM4DSecurityValidationException)
   public
-    constructor Create(const AAlgorithm: string);
+    constructor Create(const AAlgorithm: string); overload;
+    constructor Create(const AKeyID, AAlgorithm: string); overload;
   end;
 
   /// <summary>
-  /// Raised when JWT issuer doesn't match expected value.
+  /// Raised by TIAM4DJWTValidator when the iss claim is not the expected issuer.
   /// </summary>
   EIAM4DJWTIssuerMismatchException = class(EIAM4DSecurityValidationException)
   public
@@ -519,28 +627,32 @@ type
   end;
 
   /// <summary>
-  /// Raised when an unknown required action is encountered during JSON parsing.
+  /// Unknown required action (not in the TIAM4DRequiredAction enumeration).
   /// </summary>
   /// <remarks>
-  /// This exception indicates that Keycloak returned a required action that is not
-  /// defined in the TIAM4DRequiredAction enumeration. This may happen when:
-  /// - Keycloak is upgraded and introduces new required actions
-  /// - Custom required actions are configured in Keycloak
-  /// Action: Update the TIAM4DRequiredAction enum to include the new action.
+  /// No longer raised when a user is read: an action Keycloak returns that is not in
+  /// TIAM4DRequiredAction (e.g. VERIFY_PROFILE, webauthn-register, a custom action of the
+  /// realm) goes to TIAM4DUser.OtherRequiredActions. Kept for compatibility.
   /// </remarks>
   EIAM4DUnknownRequiredActionException = class(EIAM4DException)
   private
     FActionName: string;
     FUserID: string;
+  protected
+    constructor CreateCopy(ASource: EIAM4DException); override;
   public
     constructor Create(const AActionName: string; const AUserID: string = '');
     property ActionName: string read FActionName;
     property UserID: string read FUserID;
-  end;
+  end deprecated 'Not raised: unknown required actions go to TIAM4DUser.OtherRequiredActions';
 
   /// <summary>
-  /// Raised when JWKS key is not found for specified kid.
+  /// Raised by TIAM4DJWKSProvider (and so by TIAM4DJWTValidator) when the JWKS of the issuer has no
+  /// key for the kid of the token, also when the kid is in the negative cache.
   /// </summary>
+  /// <remarks>
+  /// An identity provider that cannot be reached raises EIAM4DJWKSUnavailableException instead.
+  /// </remarks>
   EIAM4DJWKSKeyNotFoundException = class(EIAM4DSecurityValidationException)
   public
     constructor Create(const AKeyID, AIssuer: string);
@@ -608,6 +720,9 @@ type
 
 implementation
 
+uses
+  Async.Core;
+
 { EIAM4DException }
 
 constructor EIAM4DException.Create(const AMessage: string; AErrorCode: TIAM4DErrorCode);
@@ -623,6 +738,23 @@ begin
   inherited CreateFmt(AMessage, AArgs);
   FErrorCode := AErrorCode;
   FContext := nil;
+end;
+
+constructor EIAM4DException.CreateCopy(ASource: EIAM4DException);
+var
+  LPair: TPair<string, string>;
+begin
+  inherited Create(ASource.Message);
+  HelpContext := ASource.HelpContext;
+  FErrorCode := ASource.FErrorCode;
+  if Assigned(ASource.FContext) then
+    for LPair in ASource.FContext do
+      Context.AddOrSetValue(LPair.Key, LPair.Value);
+end;
+
+function EIAM4DException.Clone: EIAM4DException;
+begin
+  Result := EIAM4DExceptionClass(ClassType).CreateCopy(Self);
 end;
 
 destructor EIAM4DException.Destroy;
@@ -670,6 +802,20 @@ end;
 constructor EIAM4DInvalidCredentialsException.Create;
 begin
   inherited Create('Invalid username or password', ecInvalidCredentials);
+end;
+
+{ EIAM4DAccountNotFullySetUpException }
+
+constructor EIAM4DAccountNotFullySetUpException.Create;
+begin
+  inherited Create('Account is not fully set up: a required action is pending', ecAccountNotFullySetUp);
+end;
+
+{ EIAM4DAccountDisabledException }
+
+constructor EIAM4DAccountDisabledException.Create(const AReason: string);
+begin
+  inherited CreateFmt('User account is disabled: %s', [AReason], ecAccountDisabled);
 end;
 
 { EIAM4DInvalidAuthCodeException }
@@ -731,23 +877,59 @@ end;
 
 constructor EIAM4DInsufficientPermissionsException.Create(const AOperation, ARequiredRole: string);
 begin
-  inherited CreateFmt('Insufficient permissions for operation "%s" (required role: %s)',
-    [AOperation, ARequiredRole], ecInsufficientPermissions);
+  inherited CreateFromResponse(403, '', Format('Insufficient permissions for operation "%s" (required role: %s)',
+    [AOperation, ARequiredRole]));
+  FErrorCode := ecInsufficientPermissions;
   FOperation := AOperation;
   FRequiredRole := ARequiredRole;
   WithContext('operation', AOperation);
   WithContext('required_role', ARequiredRole);
 end;
 
+constructor EIAM4DInsufficientPermissionsException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DInsufficientPermissionsException then
+  begin
+    FOperation := EIAM4DInsufficientPermissionsException(ASource).FOperation;
+    FRequiredRole := EIAM4DInsufficientPermissionsException(ASource).FRequiredRole;
+  end;
+end;
+
+constructor EIAM4DInsufficientPermissionsException.CreateFromResponse(AStatusCode: Integer;
+  const AResponseBody, AMessage: string);
+begin
+  inherited;
+  FErrorCode := ecInsufficientPermissions;
+end;
+
 { EIAM4DNetworkTimeoutException }
 
 constructor EIAM4DNetworkTimeoutException.Create(const AEndpoint: string; ATimeoutMs: Integer);
+var
+  LEndpoint: string;
+  LQuery: Integer;
 begin
-  inherited CreateFmt('Network timeout after %d ms calling %s', [ATimeoutMs, AEndpoint], ecNetworkTimeout);
-  FEndpoint := AEndpoint;
+  // Without query and fragment: a GET may carry id_token_hint or other values that do not belong in a log
+  LEndpoint := AEndpoint;
+  LQuery := LEndpoint.IndexOfAny(['?', '#']);
+  if LQuery >= 0 then
+    LEndpoint := LEndpoint.Substring(0, LQuery);
+  inherited CreateFmt('Network timeout after %d ms calling %s', [ATimeoutMs, LEndpoint], ecNetworkTimeout);
+  FEndpoint := LEndpoint;
   FTimeoutMs := ATimeoutMs;
-  WithContext('endpoint', AEndpoint);
+  WithContext('endpoint', LEndpoint);
   WithContext('timeout_ms', IntToStr(ATimeoutMs));
+end;
+
+constructor EIAM4DNetworkTimeoutException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DNetworkTimeoutException then
+  begin
+    FEndpoint := EIAM4DNetworkTimeoutException(ASource).FEndpoint;
+    FTimeoutMs := EIAM4DNetworkTimeoutException(ASource).FTimeoutMs;
+  end;
 end;
 
 { EIAM4DNetworkUnreachableException }
@@ -755,6 +937,12 @@ end;
 constructor EIAM4DNetworkUnreachableException.Create(const AHost: string);
 begin
   inherited CreateFmt('Network host unreachable: %s', [AHost], ecNetworkUnreachable);
+  WithContext('host', AHost);
+end;
+
+constructor EIAM4DNetworkUnreachableException.Create(const AHost, ADetail: string);
+begin
+  inherited CreateFmt('Network host unreachable: %s (%s)', [AHost, ADetail], ecNetworkUnreachable);
   WithContext('host', AHost);
 end;
 
@@ -767,6 +955,13 @@ begin
   WithContext('certificate_issue', ACertificateIssue);
 end;
 
+constructor EIAM4DSSLCertificateException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DSSLCertificateException then
+    FCertificateIssue := EIAM4DSSLCertificateException(ASource).FCertificateIssue;
+end;
+
 { EIAM4DHTTPClientErrorException }
 
 constructor EIAM4DHTTPClientErrorException.Create(AStatusCode: Integer; const AResponseBody: string);
@@ -775,6 +970,25 @@ begin
   FStatusCode := AStatusCode;
   FResponseBody := AResponseBody;
   WithContext('status_code', IntToStr(AStatusCode));
+end;
+
+constructor EIAM4DHTTPClientErrorException.CreateFromResponse(AStatusCode: Integer;
+  const AResponseBody, AMessage: string);
+begin
+  inherited Create(AMessage, ecHTTPClientError);
+  FStatusCode := AStatusCode;
+  FResponseBody := AResponseBody;
+  WithContext('status_code', IntToStr(AStatusCode));
+end;
+
+constructor EIAM4DHTTPClientErrorException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DHTTPClientErrorException then
+  begin
+    FStatusCode := EIAM4DHTTPClientErrorException(ASource).FStatusCode;
+    FResponseBody := EIAM4DHTTPClientErrorException(ASource).FResponseBody;
+  end;
 end;
 
 { EIAM4DHTTPServerErrorException }
@@ -789,24 +1003,86 @@ begin
     WithContext('retry_after_seconds', IntToStr(ARetryAfterSeconds));
 end;
 
+constructor EIAM4DHTTPServerErrorException.CreateFromResponse(AStatusCode: Integer;
+  const AResponseBody, AMessage: string; ARetryAfterSeconds: Integer);
+begin
+  inherited Create(AMessage, ecHTTPServerError);
+  FStatusCode := AStatusCode;
+  FRetryAfterSeconds := ARetryAfterSeconds;
+  FResponseBody := AResponseBody;
+  WithContext('status_code', IntToStr(AStatusCode));
+  if ARetryAfterSeconds > 0 then
+    WithContext('retry_after_seconds', IntToStr(ARetryAfterSeconds));
+end;
+
+constructor EIAM4DHTTPServerErrorException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DHTTPServerErrorException then
+  begin
+    FStatusCode := EIAM4DHTTPServerErrorException(ASource).FStatusCode;
+    FRetryAfterSeconds := EIAM4DHTTPServerErrorException(ASource).FRetryAfterSeconds;
+    FResponseBody := EIAM4DHTTPServerErrorException(ASource).FResponseBody;
+  end;
+end;
+
 { EIAM4DUserNotFoundException }
 
 constructor EIAM4DUserNotFoundException.Create(const AUserIdentifier: string);
 begin
-  inherited CreateFmt('User not found: %s', [AUserIdentifier], ecUserNotFound);
+  inherited CreateFromResponse(404, '', Format('User not found: %s', [AUserIdentifier]));
+  FErrorCode := ecUserNotFound;
   FUserIdentifier := AUserIdentifier;
   WithContext('user_identifier', AUserIdentifier);
+end;
+
+constructor EIAM4DUserNotFoundException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DUserNotFoundException then
+    FUserIdentifier := EIAM4DUserNotFoundException(ASource).FUserIdentifier;
 end;
 
 { EIAM4DUserAlreadyExistsException }
 
 constructor EIAM4DUserAlreadyExistsException.Create(const AConflictingField, AValue: string);
 begin
-  inherited CreateFmt('User already exists - %s: %s', [AConflictingField, AValue], ecUserAlreadyExists);
+  inherited CreateFromResponse(409, '', Format('User already exists - %s: %s', [AConflictingField, AValue]));
+  FErrorCode := ecUserAlreadyExists;
   FConflictingField := AConflictingField;
   FValue := AValue;
   WithContext('conflicting_field', AConflictingField);
   WithContext('value', AValue);
+end;
+
+constructor EIAM4DUserAlreadyExistsException.CreateFromConflict(AConflict: EIAM4DHTTPClientErrorException;
+  const AUsername, AEmail: string);
+begin
+  inherited CreateFromResponse(AConflict.StatusCode, AConflict.ResponseBody, AConflict.Message);
+  FErrorCode := ecUserAlreadyExists;
+  // Keycloak: "User exists with same username", "... same email", "... same username or email"
+  if AConflict.ResponseBody.ToLower.Contains('same email') then
+  begin
+    FConflictingField := 'email';
+    FValue := AEmail;
+  end
+  else
+  begin
+    FConflictingField := 'username';
+    FValue := AUsername;
+  end;
+  WithContext('conflicting_field', FConflictingField);
+  WithContext('value', FValue);
+end;
+
+constructor EIAM4DUserAlreadyExistsException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DUserAlreadyExistsException then
+  begin
+    FConflictingField := EIAM4DUserAlreadyExistsException(ASource).FConflictingField;
+    FValue := EIAM4DUserAlreadyExistsException(ASource).FValue;
+  end;
 end;
 
 { EIAM4DInvalidUserDataException }
@@ -820,15 +1096,25 @@ end;
 
 constructor EIAM4DRoleNotFoundException.Create(const ARoleName: string);
 begin
-  inherited CreateFmt('Role not found: %s', [ARoleName], ecRoleNotFound);
+  inherited CreateFromResponse(404, '', Format('Role not found: %s', [ARoleName]));
+  FErrorCode := ecRoleNotFound;
   WithContext('role_name', ARoleName);
+end;
+
+constructor EIAM4DRoleNotFoundException.Create(const ARoleName, AClientID: string);
+begin
+  inherited CreateFromResponse(404, '', Format('Role not found: %s (client %s)', [ARoleName, AClientID]));
+  FErrorCode := ecRoleNotFound;
+  WithContext('role_name', ARoleName);
+  WithContext('client_id', AClientID);
 end;
 
 { EIAM4DGroupNotFoundException }
 
 constructor EIAM4DGroupNotFoundException.Create(const AGroupPath: string);
 begin
-  inherited CreateFmt('Group not found: %s', [AGroupPath], ecGroupNotFound);
+  inherited CreateFromResponse(404, '', Format('Group not found: %s', [AGroupPath]));
+  FErrorCode := ecGroupNotFound;
   WithContext('group_path', AGroupPath);
 end;
 
@@ -876,12 +1162,19 @@ begin
   WithContext('algorithm', AAlgorithm);
 end;
 
+constructor EIAM4DJWTSignatureInvalidException.Create(const AKeyID, AAlgorithm: string);
+begin
+  inherited CreateFmt('JWT signature verification failed (kid="%s", alg="%s").', [AKeyID, AAlgorithm],
+    ecJWTSignatureInvalid);
+  WithContext('key_id', AKeyID);
+  WithContext('algorithm', AAlgorithm);
+end;
+
 { EIAM4DJWTIssuerMismatchException }
 
 constructor EIAM4DJWTIssuerMismatchException.Create(const AExpected, AActual: string);
 begin
-  inherited CreateFmt('JWT issuer mismatch (expected: %s, actual: %s)',
-    [AExpected, AActual], ecJWTIssuerMismatch);
+  inherited CreateFmt('Invalid issuer. Expected "%s", got "%s".', [AExpected, AActual], ecJWTIssuerMismatch);
   WithContext('expected_issuer', AExpected);
   WithContext('actual_issuer', AActual);
 end;
@@ -890,7 +1183,8 @@ end;
 
 constructor EIAM4DJWKSKeyNotFoundException.Create(const AKeyID, AIssuer: string);
 begin
-  inherited CreateFmt('JWKS key not found (kid: %s, issuer: %s)', [AKeyID, AIssuer], ecJWKSKeyNotFound);
+  inherited CreateFmt('Public key with kid "%s" not found in JWKS for issuer "%s".', [AKeyID, AIssuer],
+    ecJWKSKeyNotFound);
   WithContext('key_id', AKeyID);
   WithContext('issuer', AIssuer);
 end;
@@ -952,5 +1246,23 @@ begin
   if not AUserID.IsEmpty then
     WithContext('user_id', AUserID);
 end;
+
+constructor EIAM4DUnknownRequiredActionException.CreateCopy(ASource: EIAM4DException);
+begin
+  inherited;
+  if ASource is EIAM4DUnknownRequiredActionException then
+  begin
+    FActionName := EIAM4DUnknownRequiredActionException(ASource).FActionName;
+    FUserID := EIAM4DUnknownRequiredActionException(ASource).FUserID;
+  end;
+end;
+
+initialization
+  // Lets Async.Core re-raise IAMClient4D exceptions with all their fields
+  TAsyncCore.RegisterExceptionCloner(EIAM4DException,
+    function(const ASource: Exception): Exception
+    begin
+      Result := EIAM4DException(ASource).Clone;
+    end);
 
 end.

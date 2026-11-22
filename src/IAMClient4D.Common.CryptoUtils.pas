@@ -60,8 +60,17 @@ type
 implementation
 
 uses
+  {$IF Defined(IOS)}
+  // CSPRNG.pas does not compile for iOS (POSIX and MACOS are both defined, two GetCSPRNGProvider)
+  iOSapi.Security;
+  {$ELSEIF Defined(MACOS)}
+  // Same problem on macOS: the Posix provider reads /dev/urandom
+  CSPRNG.Provider.Posix,
+  CSPRNG.Interfaces;
+  {$ELSE}
   CSPRNG,
   CSPRNG.Interfaces;
+  {$ENDIF}
 
 function HMAC_SHA256(const Key, Data: TBytes): TBytes;
 begin
@@ -88,9 +97,19 @@ begin
   if ACount <= 0 then
     raise EIAM4DCryptoUtilsException.Create('Count must be a value > 0');
 
+  {$IF Defined(IOS)}
   SetLength(Result, ACount);
+  if SecRandomCopyBytes(kSecRandomDefault, ACount, @Result[0]) <> errSecSuccess then
+    raise EIAM4DCryptoUtilsException.Create('Unable to generate random bytes using SecRandomCopyBytes');
+  {$ELSE}
+  {$IF Defined(MACOS)}
+  var LCSPRNGProvider: ICSPRNGProvider := TCSPRNGProviderPosix.Create;
+  {$ELSE}
   var LCSPRNGProvider: ICSPRNGProvider := GetCSPRNGProvider;
+  {$ENDIF}
+  SetLength(Result, ACount);
   Result := LCSPRNGProvider.GetBytes(ACount);
+  {$ENDIF}
 end;
 
 end.

@@ -1,0 +1,30 @@
+{{# Fragment: the history; r.data = userName, count, items [operation, expression, outcome, performedAt] #}}
+{{if r.ok}}
+<div class="panel p-0 overflow-hidden">
+  <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2 border-bottom">
+    <span class="text-secondary small">{{:t.history.count_of|replace,"{count}",r.data.count}} <strong>{{:r.data.userName}}</strong></span>
+    <button class="btn btn-sm btn-outline-danger ms-auto" type="button"
+            hx-delete="/history" hx-target="#history-table" hx-confirm="{{:t.history.clear_confirm|replace,"{backend}",r.backendLabel}}"
+            hx-disabled-elt="this"><i class="bi bi-trash3 me-1"></i>{{:t.history.clear}}</button>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead><tr><th scope="col" class="ps-3">{{:t.history.when}}</th><th scope="col">{{:t.history.operation}}</th><th scope="col">{{:t.history.expression}}</th><th scope="col">{{:t.history.outcome}}</th></tr></thead>
+      <tbody>
+      {{for item in r.data.items}}
+        <tr>
+          <td class="ps-3 text-secondary text-nowrap"><time datetime="{{:item.performedAt}}">{{:item.performedAt}}</time></td>
+          <td><span class="badge text-bg-secondary brand-mono">{{:item.operation}}</span></td>
+          <td class="font-monospace text-break">{{:item.expression}}</td>
+          <td class="font-monospace text-break">{{:item.outcome}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="4" class="ps-3 py-4 text-secondary">{{:t.history.empty_html$}}</td></tr>
+      {{endfor}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{else}}
+{{include "../partials/_error.html"}}
+{{endif}}

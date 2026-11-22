@@ -1,0 +1,47 @@
+{{extends "../baselayout.html"}}
+
+{{block "title"}}{{:t.layout.advanced}}{{endblock}}
+
+{{block "body"}}
+<header class="page-header page-header-compact">
+  <h1>{{:t.layout.advanced}}</h1>
+  <p class="lead">{{:t.advanced.lead_html$}}</p>
+  {{if !can_advanced}}
+  <div class="alert alert-warning mt-3 mb-0">
+    <i class="bi bi-shield-lock me-1"></i>{{:t.advanced.no_role_html$}}
+  </div>
+  {{endif}}
+</header>
+
+<div class="row g-4">
+  <section class="col-lg-6">
+    <form class="panel op-form" hx-post="/advanced/statistics" hx-target="#stats-result" hx-disabled-elt="find button">
+      <div class="panel-title"><i class="bi bi-bar-chart"></i>{{:t.advanced.statistics}} <span class="op-path">POST /api/statistics/describe</span></div>
+      <label class="form-label" for="stats-values">{{:t.advanced.values}}</label>
+      <textarea class="form-control font-monospace" id="stats-values" name="values" rows="3" required>2 4 4 4 5 5 7 9</textarea>
+      <div class="form-text">{{:t.advanced.values_hint}}</div>
+      <div class="form-check form-switch mt-2">
+        <input class="form-check-input" type="checkbox" role="switch" id="stats-sample" name="sample">
+        <label class="form-check-label" for="stats-sample">{{:t.advanced.sample}}</label>
+      </div>
+      <button class="btn btn-primary mt-3" type="submit">{{:t.advanced.describe}}</button>
+    </form>
+    <div id="stats-result" class="op-result mt-3" aria-live="polite"></div>
+  </section>
+
+  <section class="col-lg-6">
+    <form class="panel op-form" hx-post="/advanced/quadratic" hx-target="#quad-result" hx-disabled-elt="find button">
+      <div class="panel-title"><i class="bi bi-bezier2"></i>{{:t.advanced.quadratic}} <span class="op-path">POST /api/equations/quadratic</span></div>
+      <p class="equation mb-2"><em>a</em>x&sup2; + <em>b</em>x + <em>c</em> = 0</p>
+      <div class="row g-2">
+        <div class="col-4"><label class="form-label" for="quad-a">a</label><input class="form-control" id="quad-a" name="a" value="1" inputmode="decimal" required data-number></div>
+        <div class="col-4"><label class="form-label" for="quad-b">b</label><input class="form-control" id="quad-b" name="b" value="-3" inputmode="decimal" required data-number></div>
+        <div class="col-4"><label class="form-label" for="quad-c">c</label><input class="form-control" id="quad-c" name="c" value="2" inputmode="decimal" required data-number></div>
+      </div>
+      <div class="form-text">{{:t.advanced.quadratic_hint_html$}}</div>
+      <button class="btn btn-primary mt-3" type="submit">{{:t.advanced.solve}}</button>
+    </form>
+    <div id="quad-result" class="op-result mt-3" aria-live="polite"></div>
+  </section>
+</div>
+{{endblock}}

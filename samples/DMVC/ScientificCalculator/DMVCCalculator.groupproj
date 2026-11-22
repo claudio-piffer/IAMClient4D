@@ -1,0 +1,60 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{A62752C2-E024-4365-8364-83C5CBB4B237}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="ControllersServer\CalculatorControllersServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="MinimalAPIServer\CalculatorMinimalAPIServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="WebClient\CalculatorWebClient.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="CalculatorControllersServer">
+        <MSBuild Projects="ControllersServer\CalculatorControllersServer.dproj"/>
+    </Target>
+    <Target Name="CalculatorControllersServer:Clean">
+        <MSBuild Projects="ControllersServer\CalculatorControllersServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CalculatorControllersServer:Make">
+        <MSBuild Projects="ControllersServer\CalculatorControllersServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CalculatorMinimalAPIServer">
+        <MSBuild Projects="MinimalAPIServer\CalculatorMinimalAPIServer.dproj"/>
+    </Target>
+    <Target Name="CalculatorMinimalAPIServer:Clean">
+        <MSBuild Projects="MinimalAPIServer\CalculatorMinimalAPIServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CalculatorMinimalAPIServer:Make">
+        <MSBuild Projects="MinimalAPIServer\CalculatorMinimalAPIServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CalculatorWebClient">
+        <MSBuild Projects="WebClient\CalculatorWebClient.dproj"/>
+    </Target>
+    <Target Name="CalculatorWebClient:Clean">
+        <MSBuild Projects="WebClient\CalculatorWebClient.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CalculatorWebClient:Make">
+        <MSBuild Projects="WebClient\CalculatorWebClient.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="CalculatorControllersServer;CalculatorMinimalAPIServer;CalculatorWebClient"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="CalculatorControllersServer:Clean;CalculatorMinimalAPIServer:Clean;CalculatorWebClient:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="CalculatorControllersServer:Make;CalculatorMinimalAPIServer:Make;CalculatorWebClient:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

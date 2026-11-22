@@ -49,10 +49,9 @@ type
   public
     /// <summary>
     /// Returns JWT claims from current request context.
+    /// Each call parses the claims of the request: keep the result in a local variable.
     /// THREAD-SAFETY: Each HTTP request has its own TWebContext instance.
     /// The Context.Data dictionary is isolated per-request and does not require synchronization.
-    /// Cache keys (CACHE_KEY, KC_CACHE_KEY) are stored in the same Context.Data and are
-    /// therefore request-scoped and thread-safe.
     /// </summary>
     function JWT: TIAM4DJWTClaims;
 
@@ -93,27 +92,36 @@ type
     function GetCustomClaimAsDateTime(const AClaimName: string): TDateTime;
 
     /// <summary>
-    /// Throws HTTP 401 if user is not authenticated.
+    /// Throws HTTP 401 if user is not authenticated, with a WWW-Authenticate Bearer challenge
+    /// (error="invalid_token" when a token was sent), or 503 with Retry-After when the token
+    /// could not be validated because the identity provider is unavailable.
     /// </summary>
     procedure RequireAuthentication;
 
     /// <summary>
     /// Throws HTTP 403 if user doesn't have at least one of the specified roles.
+    /// Checks LoggedUser.Roles: RolesClaimName claim, Keycloak realm roles and client roles of Audience/ExpectedAzp.
+    /// Roles are compared case-sensitively, as Keycloak names them, and as DMVC's
+    /// RequireRoleEndpointFilter does on the same LoggedUser.Roles.
+    /// Every 403 of these helpers carries WWW-Authenticate: Bearer error="insufficient_scope" (RFC 6750 3.1)
+    /// and the message "Insufficient permissions": the roles, groups or scope required are logged
+    /// (warning), never sent to the client. RequireScope keeps the scope in the challenge (RFC 6750 3).
     /// </summary>
     procedure RequireAnyRole(const ARoles: TArray<string>);
 
     /// <summary>
-    /// Throws HTTP 403 if user doesn't have all of the specified roles.
+    /// Throws HTTP 403 if user doesn't have all of the specified roles (same roles as RequireAnyRole).
     /// </summary>
     procedure RequireAllRoles(const ARoles: TArray<string>);
 
     /// <summary>
-    /// Throws HTTP 403 if user doesn't have the specified scope.
+    /// Throws HTTP 403 if user doesn't have the specified scope (challenge with scope="AScope").
     /// </summary>
     procedure RequireScope(const AScope: string);
 
     /// <summary>
     /// Returns Keycloak-specific claims (realm_access, resource_access, groups).
+    /// Each call parses the claims of the request: keep the result in a local variable.
     /// THREAD-SAFETY: Same as JWT() method - request-scoped and thread-safe.
     /// </summary>
     function Keycloak: TIAM4DKeycloakClaims;
@@ -143,9 +151,51 @@ type
 implementation
 
 uses
-  System.Hash,
   MVCFramework.Commons,
+  MVCFramework.Logger,
   IAMClient4D.DMVC.Common;
+
+const
+  // The only text of a 403 the client gets: the required roles, groups and scopes are the
+  // access policy of the API (logged, not sent)
+  FORBIDDEN_MESSAGE = 'Insufficient permissions';
+
+type
+  TClaimReader = record
+    // A claim name is a key, not a JSON path: TJSONObject.TryGetValue<T>(Path) splits it on '.' and '['
+    // (e.g. https://app.example.com/tenant, the custom claims of Auth0 and Okta)
+    class function TryGet<T>(AClaims: TJSONObject; const AName: string; out AValue: T): Boolean; static;
+  end;
+
+class function TClaimReader.TryGet<T>(AClaims: TJSONObject; const AName: string; out AValue: T): Boolean;
+var
+  LValue: TJSONValue;
+begin
+  LValue := AClaims.Values[AName];
+  Result := Assigned(LValue) and LValue.TryGetValue<T>(AValue);
+end;
+
+function HasUserRole(AContext: TWebContext; const ARole: string): Boolean;
+var
+  LRole: string;
+begin
+  for LRole in AContext.LoggedUser.Roles do
+    if LRole = ARole then
+      Exit(True);
+  Result := False;
+end;
+
+// RFC 6750 3.1: 403 for a valid token lacking the privileges.
+// ADetail (what was required) goes to the log only; the scope stays in the challenge (RFC 6750 3)
+procedure RaiseForbidden(AContext: TWebContext; const ADetail: string; const AScope: string = '');
+begin
+  LogW('403 for "' + SanitizeLogText(AContext.LoggedUser.UserName) + '" [' +
+    SanitizeLogText(AContext.Request.HTTPMethodAsString + ' ' + AContext.Request.PathInfo) + ']: ' +
+    SanitizeLogText(ADetail));
+  AContext.Response.SetCustomHeader('WWW-Authenticate',
+    BearerChallenge(AContext.Data[CONTEXT_KEY_REALM], 'insufficient_scope', FORBIDDEN_MESSAGE, AScope));
+  raise EMVCException.Create(HTTP_STATUS.Forbidden, FORBIDDEN_MESSAGE);
+end;
 
 { TIAM4DJWTHelper }
 
@@ -156,7 +206,7 @@ uses
 procedure TIAM4DJWTHelper.ExecuteWithClaims(const AProc: TProc<TJSONObject>);
 var
   LClaimsJSON: string;
-  LJsonObj: TJSONObject;
+  LJsonValue: TJSONValue;
 begin
   if not Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
     Exit;
@@ -165,66 +215,27 @@ begin
   if LClaimsJSON.IsEmpty then
     Exit;
 
-  LJsonObj := TJSONObject.ParseJSONValue(LClaimsJSON) as TJSONObject;
-  if not Assigned(LJsonObj) then
-    Exit;
-
+  // nil when the text is not JSON; "as TJSONObject" would raise on a JSON value that is not an object
+  LJsonValue := TJSONObject.ParseJSONValue(LClaimsJSON);
   try
-    AProc(LJsonObj);
+    if LJsonValue is TJSONObject then
+      AProc(TJSONObject(LJsonValue));
   finally
-    LJsonObj.Free;
+    LJsonValue.Free;
   end;
 end;
 
 function TIAM4DJWTHelper.JWT: TIAM4DJWTClaims;
 var
-  LCurrentHash: Integer;
-  LCachedHash: Integer;
-  LJsonObj: TJSONObject;
   LClaims: TIAM4DJWTClaims;
 begin
   LClaims := TIAM4DJWTClaims.Empty;
-
-  if Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
-  begin
-    LCurrentHash := THashBobJenkins.GetHashValue(Self.Data[CONTEXT_KEY_JWT_CLAIMS]);
-
-    if Self.Data.ContainsKey(CACHE_KEY) and
-      TryStrToInt(Self.Data[CACHE_KEY], LCachedHash) and
-      (LCurrentHash = LCachedHash) then
-    begin
-      LJsonObj := TJSONObject.ParseJSONValue(Self.Data[CONTEXT_KEY_JWT_CLAIMS]) as TJSONObject;
-      if Assigned(LJsonObj) then
-      begin
-        try
-          Result := TIAM4DJWTClaims.ParseFromPayload(LJsonObj);
-
-          if Self.Data.ContainsKey(CONTEXT_KEY_JWT_TOKEN) then
-            Result.RawToken := Self.Data[CONTEXT_KEY_JWT_TOKEN];
-
-          Exit;
-        finally
-          LJsonObj.Free;
-        end;
-      end;
-    end;
-  end;
-
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
       LClaims := TIAM4DJWTClaims.ParseFromPayload(LJsonObj);
-
-      if Self.Data.ContainsKey(CONTEXT_KEY_JWT_TOKEN) then
-        LClaims.RawToken := Self.Data[CONTEXT_KEY_JWT_TOKEN];
-
-      if Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
-        Self.Data[CACHE_KEY] := LCurrentHash.ToString;
+      LClaims.RawToken := Self.Data[CONTEXT_KEY_JWT_TOKEN];
     end);
-
-  if not Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
-    Self.Data.Remove(CACHE_KEY);
-
   Result := LClaims;
 end;
 
@@ -247,7 +258,7 @@ begin
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
-      if not LJsonObj.TryGetValue<string>(AClaimName, LValue) then
+      if not TClaimReader.TryGet<string>(LJsonObj, AClaimName, LValue) then
         LValue := ADefault;
     end);
   Result := LValue;
@@ -263,7 +274,7 @@ begin
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
-      LFound := LJsonObj.TryGetValue<string>(AClaimName, LValue);
+      LFound := TClaimReader.TryGet<string>(LJsonObj, AClaimName, LValue);
     end);
   Result := LFound;
   AValue := LValue;
@@ -277,7 +288,7 @@ begin
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
-      if not LJsonObj.TryGetValue<Integer>(AClaimName, LValue) then
+      if not TClaimReader.TryGet<Integer>(LJsonObj, AClaimName, LValue) then
         LValue := ADefault;
     end);
   Result := LValue;
@@ -291,7 +302,7 @@ begin
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
-      if not LJsonObj.TryGetValue<Boolean>(AClaimName, LValue) then
+      if not TClaimReader.TryGet<Boolean>(LJsonObj, AClaimName, LValue) then
         LValue := ADefault;
     end);
   Result := LValue;
@@ -306,7 +317,7 @@ begin
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
-      if LJsonObj.TryGetValue<Int64>(AClaimName, LUnixTime) then
+      if TClaimReader.TryGet<Int64>(LJsonObj, AClaimName, LUnixTime) then
         LValue := UnixToDateTime(LUnixTime, True);
     end);
   Result := LValue;
@@ -314,83 +325,66 @@ end;
 
 function TIAM4DJWTHelper.Keycloak: TIAM4DKeycloakClaims;
 var
-  LCurrentHash: Integer;
-  LCachedHash: Integer;
-  LJsonObj: TJSONObject;
   LClaims: TIAM4DKeycloakClaims;
 begin
   LClaims := TIAM4DKeycloakClaims.Empty;
-
-  if Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
-  begin
-    LCurrentHash := THashBobJenkins.GetHashValue(Self.Data[CONTEXT_KEY_JWT_CLAIMS]);
-
-    if Self.Data.ContainsKey(KC_CACHE_KEY) and
-      TryStrToInt(Self.Data[KC_CACHE_KEY], LCachedHash) and
-      (LCurrentHash = LCachedHash) then
-    begin
-      LJsonObj := TJSONObject.ParseJSONValue(Self.Data[CONTEXT_KEY_JWT_CLAIMS]) as TJSONObject;
-      if Assigned(LJsonObj) then
-      begin
-        try
-          Result := TIAM4DKeycloakClaims.ParseFromPayload(LJsonObj);
-          Exit;
-        finally
-          LJsonObj.Free;
-        end;
-      end;
-    end;
-  end;
-
   ExecuteWithClaims(
     procedure(LJsonObj: TJSONObject)
     begin
       LClaims := TIAM4DKeycloakClaims.ParseFromPayload(LJsonObj);
-
-      if Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
-        Self.Data[KC_CACHE_KEY] := LCurrentHash.ToString;
     end);
-
-  if not Self.Data.ContainsKey(CONTEXT_KEY_JWT_CLAIMS) then
-    Self.Data.Remove(KC_CACHE_KEY);
-
   Result := LClaims;
 end;
 
 procedure TIAM4DJWTHelper.RequireAuthentication;
+var
+  LStatus: string;
 begin
-  if not IsAuthenticated then
-    raise EMVCException.Create(HTTP_STATUS.Unauthorized, 'Authentication required');
+  if IsAuthenticated then
+    Exit;
+
+  LStatus := Self.Data[CONTEXT_KEY_AUTH_STATUS];
+  // Token not judged: the identity provider could not be reached
+  if LStatus = AUTH_STATUS_UNAVAILABLE then
+  begin
+    if Self.Data[CONTEXT_KEY_RETRY_AFTER] <> '' then
+      Self.Response.SetCustomHeader('Retry-After', Self.Data[CONTEXT_KEY_RETRY_AFTER]);
+    raise EMVCException.Create(HTTP_STATUS.ServiceUnavailable, 'Token validation temporarily unavailable');
+  end;
+
+  // RFC 6750 3.1: error code only when a token was sent
+  if LStatus = AUTH_STATUS_INVALID_TOKEN then
+    Self.Response.SetCustomHeader('WWW-Authenticate',
+      BearerChallenge(Self.Data[CONTEXT_KEY_REALM], 'invalid_token', 'Invalid or expired JWT token'))
+  else
+    Self.Response.SetCustomHeader('WWW-Authenticate', BearerChallenge(Self.Data[CONTEXT_KEY_REALM], '', ''));
+  raise EMVCException.Create(HTTP_STATUS.Unauthorized, 'Authentication required');
 end;
 
 procedure TIAM4DJWTHelper.RequireAnyRole(const ARoles: TArray<string>);
 var
-  LClaims: TIAM4DJWTClaims;
-  LRolesList: string;
+  LRole: string;
 begin
   RequireAuthentication;
-  LClaims := JWT;
-  if not LClaims.HasAnyRole(ARoles) then
-  begin
-    LRolesList := string.Join(', ', ARoles);
-    raise EMVCException.Create(HTTP_STATUS.Forbidden,
-      Format('Insufficient permissions: user must have at least one of these roles: [%s]', [LRolesList]));
-  end;
+  // LoggedUser.Roles, as DMVC's RequireRoleEndpointFilter (which is case-sensitive, this is not):
+  // Keycloak does not emit a top-level "roles" claim by default
+  for LRole in ARoles do
+    if HasUserRole(Self, LRole) then
+      Exit;
+
+  RaiseForbidden(Self, Format('Insufficient permissions: user must have at least one of these roles: [%s]',
+    [string.Join(', ', ARoles)]));
 end;
 
 procedure TIAM4DJWTHelper.RequireAllRoles(const ARoles: TArray<string>);
 var
-  LClaims: TIAM4DJWTClaims;
-  LRolesList: string;
+  LRole: string;
 begin
   RequireAuthentication;
-  LClaims := JWT;
-  if not LClaims.HasAllRoles(ARoles) then
-  begin
-    LRolesList := string.Join(', ', ARoles);
-    raise EMVCException.Create(HTTP_STATUS.Forbidden,
-      Format('Insufficient permissions: user must have all of these roles: [%s]', [LRolesList]));
-  end;
+  for LRole in ARoles do
+    if not HasUserRole(Self, LRole) then
+      RaiseForbidden(Self, Format('Insufficient permissions: user must have all of these roles: [%s]',
+        [string.Join(', ', ARoles)]));
 end;
 
 procedure TIAM4DJWTHelper.RequireScope(const AScope: string);
@@ -400,8 +394,7 @@ begin
   RequireAuthentication;
   LClaims := JWT;
   if not LClaims.HasScope(AScope) then
-    raise EMVCException.Create(HTTP_STATUS.Forbidden,
-      Format('Insufficient permissions: required scope "%s" not found', [AScope]));
+    RaiseForbidden(Self, Format('Insufficient permissions: required scope "%s" not found', [AScope]), AScope);
 end;
 
 procedure TIAM4DJWTHelper.RequireRealmRole(const ARole: string);
@@ -412,24 +405,19 @@ begin
 
   LKeycloak := Keycloak;
   if not LKeycloak.RealmAccess.HasRole(ARole) then
-    raise EMVCException.Create(HTTP_STATUS.Forbidden,
-      Format('Insufficient permissions: required realm role "%s" not found', [ARole]));
+    RaiseForbidden(Self, Format('Insufficient permissions: required realm role "%s" not found', [ARole]));
 end;
 
 procedure TIAM4DJWTHelper.RequireAnyRealmRole(const ARoles: TArray<string>);
 var
   LKeycloak: TIAM4DKeycloakClaims;
-  LRolesList: string;
 begin
   RequireAuthentication;
 
   LKeycloak := Keycloak;
   if not LKeycloak.RealmAccess.HasAnyRole(ARoles) then
-  begin
-    LRolesList := string.Join(', ', ARoles);
-    raise EMVCException.Create(HTTP_STATUS.Forbidden,
-      Format('Insufficient permissions: user must have at least one of these realm roles: [%s]', [LRolesList]));
-  end;
+    RaiseForbidden(Self, Format('Insufficient permissions: user must have at least one of these realm roles: [%s]',
+      [string.Join(', ', ARoles)]));
 end;
 
 procedure TIAM4DJWTHelper.RequireGroup(const AGroup: string);
@@ -440,8 +428,7 @@ begin
 
   LKeycloak := Keycloak;
   if not LKeycloak.HasGroup(AGroup) then
-    raise EMVCException.Create(HTTP_STATUS.Forbidden,
-      Format('Insufficient permissions: required group membership "%s" not found', [AGroup]));
+    RaiseForbidden(Self, Format('Insufficient permissions: required group membership "%s" not found', [AGroup]));
 end;
 
 function TIAM4DJWTHelper.IsPublicEndpoint: Boolean;

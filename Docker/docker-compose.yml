@@ -1,8 +1,8 @@
 #  ---------------------------------------------------------------------------
-#  Unit Name  : docker-compose.yaml
+#  Unit Name  : docker-compose.yml
 #  Project    : IAMClient4D
 #  Author     : Claudio Piffer
-#  Copyright  : Copyright (c) 2018-2025 Claudio Piffer
+#  Copyright  : Copyright (c) 2018-2026 Claudio Piffer
 #  License    : Apache License, Version 2.0, January 2004
 #  Source URL : https://github.com/claudio-piffer/IAMClient4D
 #
@@ -18,117 +18,197 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #  ---------------------------------------------------------------------------
+#
+#  Keycloak for every sample of IAMClient4D (see README.md): use start.cmd / start.sh.
+#  Local development only, not a production setup.
+#
+#  - keycloak: Keycloak with the SPID and CIE ID extensions (keycloak/Dockerfile, shared with
+#    tests/IdentityProvider/docker), http://localhost:18180/auth, realm iamclient4d imported
+#    from config/keycloak/realm/realm.json when it does not exist yet.
+#  - db: PostgreSQL, data in the volume iamclient4d-db-data (kept by stop, removed by
+#    delete-volumes).
+#  - profile "brokering": spid-saml-check demo identity provider (SPID, port 18443) and the
+#    same tool relabelled as CIE simulator (port 18444).
+#  - profile "tls": nginx in front of Keycloak with a self-signed certificate, for HTTPS and
+#    for a phone on the LAN (https://DOMAIN_NAME:24443/auth).
+#
+#  Passwords (Keycloak admin, PostgreSQL) are generated in secrets/ by setup-secrets. Optional
+#  settings: .env next to this file (see .env.example).
+#  ---------------------------------------------------------------------------
+
+name: iamclient4d
 
 services:
-    db:
-        image: "postgres:18-alpine"
-        container_name: ${APP_NAME_PREFIX}-db
-        restart: unless-stopped
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "200m"
-        healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U postgres"]
-            interval: 10s
-            timeout: 5s
-            retries: 5
-        environment:
-            DB_PASS_FILE: /run/secrets/pg_keycloak_password.txt
-            POSTGRES_PASSWORD_FILE: /run/secrets/pg_admin_password.txt
-        volumes:
-            - ./config/db:/docker-entrypoint-initdb.d/
-            - db-data:/var/lib/postgresql/data
-            - db-larc:/pg_log_archive
-            - ./secrets/pg_admin_password.txt:/run/secrets/pg_admin_password.txt:ro
-            - ./secrets/pg_keycloak_password.txt:/run/secrets/pg_keycloak_password.txt:ro
-        networks:
-            - iam-db-network
-    iam:
-        image: "quay.io/keycloak/keycloak:26.4"
-        container_name: ${APP_NAME_PREFIX}-iam
-        restart: unless-stopped
-        logging:
-            driver: "json-file"
-            options:
-                max-size: "200m"
-        depends_on:
-            - db
-        healthcheck:
-            test: ["CMD-SHELL", "curl -f http://localhost:8080/auth/health/ready || exit 1"]
-            interval: 10s
-            timeout: 5s
-            retries: 5                
-        command: start --import-realm
-        environment:
-          # DATABASE
-          KC_DB: postgres
-          KC_DB_URL: jdbc:postgresql://db:5432/keycloak
-          KC_DB_USERNAME: keycloak
-          KC_DB_PASSWORD: ${IAM_DB_PASS}
-          KC_DB_SCHEMA: keycloak
+  db:
+    image: postgres:18-alpine
+    container_name: iamclient4d-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_admin_password
+    secrets:
+      - pg_admin_password
+      - pg_keycloak_password
+    volumes:
+      # Creates the keycloak database and user at the first start (empty volume)
+      - ./config/db:/docker-entrypoint-initdb.d:ro
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
-          # HTTP/HTTPS & REVERSE PROXY
-          KC_HTTP_ENABLED: true
-          KC_HTTP_RELATIVE_PATH: /auth/
-          KC_HOSTNAME: ${DOMAIN_NAME}
-          KC_HOSTNAME_PORT: ${GATEWAY_PORT}
-          KC_PROXY_HEADERS: xforwarded
-          KC_PROXY: edge
-          KC_HOSTNAME_STRICT: true
+  keycloak:
+    build:
+      context: ./keycloak
+      args:
+        KC_VERSION: ${KC_VERSION:-26.8.2}
+        SPID_VERSION: ${SPID_VERSION:-26.8.1}
+        CIE_VERSION: ${CIE_VERSION:-26.8.1}
+        # No value: from the environment, otherwise the Dockerfile default
+        SPID_SHA256:
+        CIE_SHA256:
+    image: iam4d/keycloak-spid-cie:${KC_VERSION:-26.8.2}
+    container_name: iamclient4d-keycloak
+    restart: unless-stopped
+    # Passwords read from the secrets, which never end up in the environment of the container
+    entrypoint:
+      - /bin/bash
+      - -c
+      - >-
+        export KC_DB_PASSWORD="$$(< /run/secrets/pg_keycloak_password)"
+        KC_BOOTSTRAP_ADMIN_PASSWORD="$$(< /run/secrets/kc_admin_password)" &&
+        exec /opt/keycloak/bin/kc.sh start-dev --import-realm
+    secrets:
+      - pg_keycloak_password
+      - kc_admin_password
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_SCHEMA: keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${IAM_ADMIN_USER:-admin}
+      KC_HTTP_RELATIVE_PATH: /auth
+      # URL of the browser and of the samples, also for requests from other containers
+      # (the simulators download the SP metadata from http://keycloak:8080/auth); the start
+      # script sets IAM_PUBLIC_URL to the gateway URL with the profile tls
+      KC_HOSTNAME: ${IAM_PUBLIC_URL:-http://localhost:${KC_PORT:-18180}/auth}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      # Placeholder in the realm file (spid-test endpoints)
+      SPID_CHECK_PORT: ${SPID_CHECK_PORT:-18443}
+    volumes:
+      - ./config/keycloak/realm:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:${KC_PORT:-18180}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # No curl in the image: plain HTTP over bash /dev/tcp on the management port
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /auth/health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 300s
 
-          # HEALTH & METRICS
-          KC_HEALTH_ENABLED: true
-          KC_METRICS_ENABLED: true
+  # SPID demo identity provider on http://localhost:SPID_CHECK_PORT/demo (users: /demo/users).
+  # At start: new signing key, its certificate set on spid-test, SPID SP metadata of the realm
+  # registered (spid-saml-check/entrypoint.sh, register.sh); healthy once registered.
+  spid-saml-check:
+    profiles: [brokering]
+    image: italia/spid-saml-check:${SPID_CHECK_VERSION:-2.2.5}
+    container_name: iamclient4d-spid-saml-check
+    restart: unless-stopped
+    entrypoint: ["bash", "/iam4d/entrypoint.sh"]
+    secrets:
+      - kc_admin_password
+    environment:
+      NODE_HTTPS_PORT: ${SPID_CHECK_PORT:-18443}
+      KEYCLOAK_URL: http://keycloak:8080/auth
+      IAM4D_REALM: iamclient4d
+      SP_METADATA_URL: http://keycloak:8080/auth/realms/iamclient4d/spid-sp-metadata
+      KC_ADMIN: ${IAM_ADMIN_USER:-admin}
+      KC_ADMIN_PASSWORD_FILE: /run/secrets/kc_admin_password
+    volumes:
+      - ./spid-saml-check:/iam4d:ro
+    ports:
+      - "127.0.0.1:${SPID_CHECK_PORT:-18443}:${SPID_CHECK_PORT:-18443}"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/iam4d-registered"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
 
-          # BOOTSTRAP ADMIN
-          KC_BOOTSTRAP_ADMIN_USERNAME: ${IAM_ADMIN_USER}
-          KC_BOOTSTRAP_ADMIN_PASSWORD: ${IAM_ADMIN_PASS}
+  # CIE simulator: the same demo identity provider on http://localhost:CIE_CHECK_PORT/demo,
+  # relabelled. Not the CIE ID service. The application creates the cie provider from
+  # http://cie-simulator:CIE_CHECK_PORT/demo/metadata.xml (the name Keycloak reaches); its CIE SP
+  # metadata is registered whenever it changes.
+  cie-simulator:
+    profiles: [brokering]
+    image: italia/spid-saml-check:${SPID_CHECK_VERSION:-2.2.5}
+    container_name: iamclient4d-cie-simulator
+    restart: unless-stopped
+    entrypoint: ["bash", "/iam4d/entrypoint.sh"]
+    secrets:
+      - kc_admin_password
+    environment:
+      NODE_HTTPS_PORT: ${CIE_CHECK_PORT:-18444}
+      IAM4D_PROFILE: cie
+      KEYCLOAK_URL: http://keycloak:8080/auth
+      IAM4D_REALM: iamclient4d
+      SP_METADATA_URL: http://keycloak:8080/auth/realms/iamclient4d/cieid-sp-metadata
+      KC_ADMIN: ${IAM_ADMIN_USER:-admin}
+      KC_ADMIN_PASSWORD_FILE: /run/secrets/kc_admin_password
+    volumes:
+      - ./spid-saml-check:/iam4d:ro
+    ports:
+      - "127.0.0.1:${CIE_CHECK_PORT:-18444}:${CIE_CHECK_PORT:-18444}"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs -o /dev/null http://localhost:$${NODE_HTTPS_PORT}/demo/metadata.xml"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
 
-          # IMPORT REALM
-          KC_FILE: /opt/keycloak/data/import/realm.json
-          KC_OVERRIDE: false
+  # HTTPS in front of Keycloak, on every interface (a phone on the LAN): self-signed
+  # certificate for DOMAIN_NAME generated at the first start in config/nginx/ssl/certs
+  gateway:
+    profiles: [tls]
+    build: ./gateway
+    image: iam4d/gateway:1
+    container_name: iamclient4d-gateway
+    restart: unless-stopped
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:-localhost}
+      GATEWAY_PORT: ${GATEWAY_PORT:-24443}
+    volumes:
+      - ./config/nginx/templates:/etc/nginx/templates:ro
+      - ./config/nginx/ssl/certs:/etc/nginx/ssl/certs
+    ports:
+      - "${GATEWAY_PORT:-24443}:${GATEWAY_PORT:-24443}"
+    depends_on:
+      keycloak:
+        condition: service_healthy
 
-          # LOGGING
-          KC_LOG: console
-          KC_LOG_LEVEL: info
-          KC_LOG_CONSOLE_COLOR: true     
-        volumes:
-            - ./config/keycloak/realm:/opt/keycloak/data/import
-        networks:
-            - iam-db-network
-            - iam-network
-    gateway:
-        image: nginx:stable-alpine
-        container_name: ${APP_NAME_PREFIX}-gateway
-        restart: unless-stopped
-        environment:
-          DOMAIN_NAME: ${DOMAIN_NAME}
-          GATEWAY_PORT: ${GATEWAY_PORT}
-          SSL_TRUSTED_CERT: ${SSL_TRUSTED_CERT}
-          ENABLE_SSL_STAPLING: ${ENABLE_SSL_STAPLING}
-          ENABLE_SSL_STAPLING_VERIFY: ${ENABLE_SSL_STAPLING_VERIFY}
-        ports:
-          - ${GATEWAY_PORT}:${GATEWAY_PORT}
-        volumes:
-           - ./config/nginx/templates:/etc/nginx/templates:ro
-           - ./config/nginx/includes:/etc/nginx/includes
-           - ./config/nginx/ssl:/etc/nginx/ssl:ro
-           - ./config/nginx/entrypoint.sh:/entrypoint.sh:ro          
-        depends_on:
-          - iam
-        networks:
-          - iam-network
-        command: ["/bin/sh", "/entrypoint.sh"]          
+secrets:
+  pg_admin_password:
+    file: ./secrets/pg_admin_password.txt
+  pg_keycloak_password:
+    file: ./secrets/pg_keycloak_password.txt
+  kc_admin_password:
+    file: ./secrets/kc_admin_password.txt
+
 volumes:
-    db-data:
-        name: ${IAM_DB_VOLUME_NAME}
-        external: true
-    db-larc:
-        external: true
-        name: ${IAM_DB_LARC_VOLUME_NAME}
-networks:
-  iam-network:
-    name: ${IAM_NETWORK_NAME}
-  iam-db-network:
-    name: ${IAM_DB_NETWORK_NAME}
+  db-data:
+    name: iamclient4d-db-data

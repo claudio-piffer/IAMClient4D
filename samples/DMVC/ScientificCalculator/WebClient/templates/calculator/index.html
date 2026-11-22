@@ -1,0 +1,133 @@
+{{extends "../baselayout.html"}}
+
+{{block "title"}}{{:t.layout.calculator}}{{endblock}}
+
+{{block "body"}}
+<header class="page-header page-header-compact">
+  <h1>{{:t.layout.calculator}}</h1>
+  <p class="lead">{{:t.calculator.lead_html$|replace,"{backend}",backend_label}}</p>
+  {{if !can_calculate}}<div class="alert alert-warning mt-3 mb-0"><i class="bi bi-shield-lock me-1"></i>{{:t.calculator.no_role_html$}}</div>{{endif}}
+</header>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <ul class="nav nav-pills mb-3" role="tablist">
+      <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-elementary" type="button" role="tab" aria-controls="tab-elementary" aria-selected="true">{{:t.calculator.elementary}}</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-trig" type="button" role="tab" aria-controls="tab-trig" aria-selected="false">{{:t.calculator.trigonometry}}</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-numbers" type="button" role="tab" aria-controls="tab-numbers" aria-selected="false">{{:t.calculator.number_theory}}</button></li>
+    </ul>
+
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="tab-elementary" role="tabpanel">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <form class="panel op-form" hx-post="/calculator/power" hx-target="#result" hx-disabled-elt="find button">
+              <div class="panel-title"><i class="bi bi-superscript"></i>{{:t.calculator.power}} <span class="op-path">/api/elementary/power</span></div>
+              <div class="row g-2">
+                <div class="col-6"><label class="form-label" for="pow-base">{{:t.calculator.base}}</label><input class="form-control" id="pow-base" name="base" value="2" inputmode="decimal" required data-number></div>
+                <div class="col-6"><label class="form-label" for="pow-exp">{{:t.calculator.exponent}}</label><input class="form-control" id="pow-exp" name="exponent" value="10" inputmode="decimal" required data-number></div>
+              </div>
+              <button class="btn btn-primary mt-3" type="submit">x<sup>y</sup></button>
+            </form>
+          </div>
+          <div class="col-md-6">
+            <form class="panel op-form" hx-post="/calculator/root" hx-target="#result" hx-disabled-elt="find button">
+              <div class="panel-title"><i class="bi bi-slash-lg"></i>{{:t.calculator.root}} <span class="op-path">/api/elementary/root</span></div>
+              <div class="row g-2">
+                <div class="col-6"><label class="form-label" for="root-value">{{:t.calculator.value}}</label><input class="form-control" id="root-value" name="value" value="-27" inputmode="decimal" required data-number></div>
+                <div class="col-6"><label class="form-label" for="root-degree">{{:t.calculator.degree}}</label><input class="form-control" id="root-degree" name="degree" value="3" inputmode="numeric" required></div>
+              </div>
+              <button class="btn btn-primary mt-3" type="submit"><sup>n</sup>&radic;x</button>
+            </form>
+          </div>
+          <div class="col-md-6">
+            <form class="panel op-form" hx-post="/calculator/log" hx-target="#result" hx-disabled-elt="find button">
+              <div class="panel-title"><i class="bi bi-activity"></i>{{:t.calculator.logarithm}} <span class="op-path">/api/elementary/log</span></div>
+              <div class="row g-2">
+                <div class="col-6"><label class="form-label" for="log-value">{{:t.calculator.value}}</label><input class="form-control" id="log-value" name="value" value="1000" inputmode="decimal" required data-number></div>
+                <div class="col-6"><label class="form-label" for="log-base">{{:t.calculator.base}}</label><input class="form-control" id="log-base" name="base" value="10" inputmode="decimal" required data-number></div>
+              </div>
+              <button class="btn btn-primary mt-3" type="submit">log<sub>b</sub> x</button>
+            </form>
+          </div>
+          <div class="col-md-6">
+            <form class="panel op-form" hx-post="/calculator/factorial" hx-target="#result" hx-disabled-elt="find button">
+              <div class="panel-title"><i class="bi bi-exclamation-lg"></i>{{:t.calculator.factorial}} <span class="op-path">/api/elementary/factorial/{n}</span></div>
+              <label class="form-label" for="fact-n">{{:t.calculator.factorial_n}}</label><input class="form-control" id="fact-n" name="n" value="20" inputmode="numeric" required>
+              <button class="btn btn-primary mt-3" type="submit">n!</button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tab-trig" role="tabpanel">
+        <form class="panel op-form" hx-post="/calculator/trigonometry" hx-target="#result" hx-disabled-elt="find button">
+          <div class="panel-title"><i class="bi bi-triangle"></i>{{:t.calculator.trigonometry}} <span class="op-path">/api/trigonometry/{fn}</span></div>
+          <div class="row g-2 align-items-end">
+            <div class="col-sm-4">
+              <label class="form-label" for="trig-fn">{{:t.calculator.function}}</label>
+              <select class="form-select" id="trig-fn" name="fn">
+                <option value="sin" selected>sin</option><option value="cos">cos</option><option value="tan">tan</option>
+                <option value="asin">asin</option><option value="acos">acos</option><option value="atan">atan</option>
+              </select>
+            </div>
+            <div class="col-sm-4"><label class="form-label" for="trig-value">{{:t.calculator.value}}</label><input class="form-control" id="trig-value" name="value" value="30" inputmode="decimal" required data-number></div>
+            <div class="col-sm-4">
+              <div class="btn-group w-100" role="group" aria-label="{{:t.calculator.angle_unit}}">
+                <input type="radio" class="btn-check" name="unit" id="unit-deg" value="deg" checked><label class="btn btn-outline-secondary" for="unit-deg">deg</label>
+                <input type="radio" class="btn-check" name="unit" id="unit-rad" value="rad"><label class="btn btn-outline-secondary" for="unit-rad">rad</label>
+              </div>
+            </div>
+          </div>
+          <p class="form-text mb-0">{{:t.calculator.trig_hint}}</p>
+          <button class="btn btn-primary mt-3" type="submit">{{:t.calculator.calculate}}</button>
+        </form>
+      </div>
+
+      <div class="tab-pane fade" id="tab-numbers" role="tabpanel">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <form class="panel op-form" hx-post="/calculator/prime" hx-target="#result" hx-disabled-elt="find button">
+              <div class="panel-title"><i class="bi bi-123"></i>{{:t.calculator.prime_factors}} <span class="op-path">/api/number-theory/prime/{n}</span></div>
+              <label class="form-label" for="prime-n">{{:t.calculator.prime_n_html$}}</label><input class="form-control" id="prime-n" name="n" value="600851475143" inputmode="numeric" required>
+              <button class="btn btn-primary mt-3" type="submit">{{:t.calculator.factorize}}</button>
+            </form>
+          </div>
+          <div class="col-md-6">
+            <form class="panel op-form" hx-post="/calculator/combinatorics" hx-target="#result" hx-disabled-elt="find button">
+              <div class="panel-title"><i class="bi bi-diagram-2"></i>{{:t.calculator.combinatorics}} <span class="op-path">/api/number-theory/combinatorics</span></div>
+              <div class="row g-2">
+                <div class="col-6"><label class="form-label" for="comb-n">n</label><input class="form-control" id="comb-n" name="n" value="52" inputmode="numeric" required></div>
+                <div class="col-6"><label class="form-label" for="comb-k">k</label><input class="form-control" id="comb-k" name="k" value="5" inputmode="numeric" required></div>
+              </div>
+              <button class="btn btn-primary mt-3" type="submit">{{:t.calculator.combinatorics_button}}</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-flex flex-wrap align-items-center gap-2 mt-3 small text-secondary">
+      {{:t.calculator.insert_constant}}
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-insert="pi">&pi;</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-insert="e">e</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-insert="tau">&tau;</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-insert="phi">&phi;</button>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <section class="panel sticky-lg-top result-panel">
+      <div class="panel-title"><i class="bi bi-display"></i>{{:t.calculator.result}}</div>
+      <div id="result" aria-live="polite">
+        <p class="text-secondary mb-0">{{:t.calculator.result_empty}}</p>
+      </div>
+      <hr>
+      <div class="panel-title"><i class="bi bi-clock-history"></i>{{:t.calculator.recent}} <a class="ms-auto small fw-normal" href="/history">{{:t.calculator.all}}</a></div>
+      <div id="recent" hx-get="/history/recent" hx-trigger="load, historyChanged from:body">
+        <span class="spinner-border spinner-border-sm text-secondary" aria-hidden="true"></span>
+      </div>
+    </section>
+  </div>
+</div>
+{{endblock}}

@@ -1,0 +1,24 @@
+{{# Fragment: GET /api/info of each server; servers.items = view models (Calculator.Web.ApiClient) #}}
+<div class="vstack gap-2">
+{{for s in servers.items}}
+  <div class="panel d-flex align-items-start gap-3">
+    {{if s.ok}}<span class="status-dot status-up mt-2" title="{{:t.servers.up}}"></span>{{else}}<span class="status-dot status-down mt-2" title="{{:t.servers.down}}"></span>{{endif}}
+    <div class="flex-grow-1 min-w-0">
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <strong>{{:s.backendLabel}}</strong>
+        <span class="font-monospace small text-secondary">{{:s.baseUrl}}</span>
+        {{if s.backend|eq,backend}}<span class="badge text-bg-primary">{{:t.servers.in_use}}</span>{{endif}}
+      </div>
+      {{if s.ok}}
+      <div class="small text-secondary mt-1">
+        {{:s.data.name}} &middot; {{:t.servers.style}} <code>{{:s.data.style}}</code> &middot; {{:s.elapsedMs}} ms
+        &middot; <a href="{{:s.baseUrl}}{{:s.data.swaggerUi}}" target="_blank" rel="noopener" hx-boost="false">Swagger UI <i class="bi bi-box-arrow-up-right"></i></a>
+      </div>
+      <div class="small text-secondary">{{:t.servers.audience}} <code>{{:s.data.audience}}</code>, {{:t.servers.roles}} {{for role in s.data.roles}}<code>{{:role}}</code> {{endfor}}</div>
+      {{else}}
+      <div class="small text-danger mt-1">{{if s.error.kind|eq,"unreachable"}}{{:t.servers.unreachable}}{{else}}{{:s.error.title}}{{endif}}{{if s.error.detail}}: {{:s.error.detail}}{{endif}}</div>
+      {{endif}}
+    </div>
+  </div>
+{{endfor}}
+</div>

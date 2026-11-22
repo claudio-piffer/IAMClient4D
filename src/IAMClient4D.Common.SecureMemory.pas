@@ -85,6 +85,15 @@ procedure SecureZero(var A: TBytes);
 /// </remarks>
 procedure SecureZeroString(var S: string);
 
+/// <summary>
+/// Wipes the lines of a list (e.g. a form with a password or a secret) and clears it.
+/// </summary>
+/// <remarks>
+/// SECURITY: Only a line held by the list alone is overwritten in place (an AddPair line is a
+/// new string); a line shared with another variable, or a constant, is just released.
+/// </remarks>
+procedure SecureZeroStrings(const AStrings: TStrings);
+
 implementation
 
 {$O-} // Disable optimization for security-critical functions
@@ -204,6 +213,24 @@ begin
 
     S := '';
   end;
+end;
+
+procedure SecureZeroStrings(const AStrings: TStrings);
+var
+  LIndex: Integer;
+  LLine: string;
+begin
+  if not Assigned(AStrings) then
+    Exit;
+  for LIndex := 0 to AStrings.Count - 1 do
+  begin
+    LLine := AStrings[LIndex];
+    // Held by the list and by LLine only: the memory belongs to the list
+    if (Length(LLine) > 0) and (StringRefCount(LLine) = 2) then
+      FillChar(PChar(LLine)^, Length(LLine) * SizeOf(Char), 0);
+    LLine := '';
+  end;
+  AStrings.Clear;
 end;
 
 {$O+} // Re-enable optimization

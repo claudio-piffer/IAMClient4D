@@ -1,0 +1,27 @@
+{{# Result of the quadratic equation: r.data = equation, discriminant, kind (two-real, one-real,
+   complex), roots [{re, im, text}]; r.a, r.b, r.c, r.realRoots = for the plot #}}
+<div class="result">
+  {{include "../partials/_call.html"}}
+  {{if r.ok}}
+  <div class="display">
+    <div class="display-expression">{{:r.data.equation}}</div>
+    <div class="d-flex flex-wrap gap-3 mt-1">
+      {{for root in r.data.roots}}
+      <div>
+        <span class="text-secondary">x{{:root.@@index}} =</span>
+        <span class="display-value display-value-sm">{{:root.text}}</span>
+      </div>
+      {{endfor}}
+    </div>
+    <div class="small text-secondary mt-2">&Delta; = {{:r.data.discriminant|num}} &middot;
+      {{if r.data.kind|eq,"two-real"}}{{:t.results.two_real}}{{elseif r.data.kind|eq,"one-real"}}{{:t.results.one_real}}{{else}}{{:t.results.complex}}{{endif}}</div>
+  </div>
+  <div class="chart-box mt-3">
+    <canvas data-chart="quadratic" data-a="{{:r.a}}" data-b="{{:r.b}}" data-c="{{:r.c}}"
+            data-roots="{{:r.realRoots}}"
+            aria-label="{{:t.results.parabola}}" role="img"></canvas>
+  </div>
+  {{else}}
+  {{include "../partials/_error.html"}}
+  {{endif}}
+</div>

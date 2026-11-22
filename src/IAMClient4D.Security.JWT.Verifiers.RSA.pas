@@ -44,8 +44,10 @@ type
   /// Algorithms: RS256 (SHA-256), RS384 (SHA-384), RS512 (SHA-512).
   /// Padding: EMSA-PKCS1-v1_5 encoding scheme (RFC 3447).
   /// Crypto provider: Configurable (default: LockBox3).
-  /// Key format: JWK with 'n' (modulus) and 'e' (exponent) parameters in Base64URL.
-  /// Thread-safety: Create separate instance per thread (not thread-safe).
+  /// Key format: JWK with 'n' (modulus) and 'e' (exponent) parameters in Base64URL;
+  /// keys failing TIAM4DRSAPublicKey.IsValid are rejected, leading zero bytes of 'n' ignored.
+  /// Signature: exactly k bytes (modulus size). Algorithm names are case-sensitive.
+  /// Thread-safety: stateless, safe for concurrent use when the crypto provider is.
   /// Security: Production-ready implementation with proper PKCS#1 v1.5 verification.
   /// </remarks>
   TRSAJWTSignatureVerifier = class(TInterfacedObject, IIAM4DJWTSignatureVerifier)
@@ -166,11 +168,11 @@ var
   LHashSHA2: THashSHA2;
   LVersion: THashSHA2.TSHA2Version;
 begin
-  if SameText(AAlg, 'RS256') then
+  if AAlg = 'RS256' then
     LVersion := THashSHA2.TSHA2Version.SHA256
-  else if SameText(AAlg, 'RS384') then
+  else if AAlg = 'RS384' then
     LVersion := THashSHA2.TSHA2Version.SHA384
-  else if SameText(AAlg, 'RS512') then
+  else if AAlg = 'RS512' then
     LVersion := THashSHA2.TSHA2Version.SHA512
   else
     raise EIAM4DSecurityValidationException.CreateFmt('Unsupported RSA algorithm: %s', [AAlg]);
@@ -185,7 +187,7 @@ end;
 
 function TRSAJWTSignatureVerifier.GetDigestInfoPrefix(const AAlg: string): TBytes;
 begin
-  if SameText(AAlg, 'RS256') then
+  if AAlg = 'RS256' then
   begin
     SetLength(Result, 19);
     Result[0] := $30;
@@ -208,7 +210,7 @@ begin
     Result[17] := $04;
     Result[18] := $20;
   end
-  else if SameText(AAlg, 'RS384') then
+  else if AAlg = 'RS384' then
   begin
     SetLength(Result, 19);
     Result[0] := $30;
@@ -231,7 +233,7 @@ begin
     Result[17] := $04;
     Result[18] := $30;
   end
-  else if SameText(AAlg, 'RS512') then
+  else if AAlg = 'RS512' then
   begin
     SetLength(Result, 19);
     Result[0] := $30;
@@ -308,12 +310,16 @@ begin
   Result := False;
 
   try
-    if not (SameText(AAlg, 'RS256') or SameText(AAlg, 'RS384') or SameText(AAlg, 'RS512')) then
+    // Case-sensitive (RFC 7515 4.1.1)
+    if not ((AAlg = 'RS256') or (AAlg = 'RS384') or (AAlg = 'RS512')) then
       Exit;
 
-    if not ExtractRSAPublicKeyBytes(APublicKeyJWK, LModulus, LExponent) then
+    if not ExtractRSAPublicKeyBytes(APublicKeyJWK, LModulus, LExponent) or
+       not TIAM4DRSAPublicKey.IsValid(LModulus, LExponent) then
       Exit;
 
+    // k excludes leading zero bytes of n (e.g. a sign byte)
+    LModulus := TIAM4DRSAPublicKey.Stripped(LModulus);
     LModulusLen := Length(LModulus);
     if Length(ASignatureBytes) <> LModulusLen then
       Exit;

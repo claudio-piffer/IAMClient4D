@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<%VersionInfoPListKeys%>
+<%ExtraInfoPListKeys%>
+<%StoryboardInfoPListKey%>
+	<!-- Redirect of the login on a private-use URI scheme (RFC 8252 7.1): it.iam4d.identitybrokering:/oauth2callback -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>it.iam4d.identitybrokering</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>it.iam4d.identitybrokering</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -48,7 +48,8 @@ type
   /// </summary>
   /// <remarks>
   /// Provides AES-256 in CBC mode with random IV generation.
-  /// IV seed: 16 random bytes automatically prepended to ciphertext.
+  /// IV seed: 8 CSPRNG bytes prepended to the ciphertext (IV = seed || 8 zero bytes);
+  /// the ciphertext is as long as the plaintext.
   /// Thread-safety: Not thread-safe. Create separate instance per thread.
   /// Memory: Destructor securely clears key material.
   /// Library: Uses TurboPower LockBox for AES implementation.
@@ -127,12 +128,17 @@ begin
 end;
 
 procedure TMinimalSelector.SetIVSeed(Mem: TMemoryStream);
+const
+  // LockBox3 emits the first 8 bytes of the IV and zero-fills the rest (uTPLb_StreamToBlock)
+  IV_SEED_SIZE = 8;
 var
   LSeed: TBytes;
 begin
-  LSeed := TIAM4DCryptoUtils.GenerateSecureRandomBytes(16);
-  Mem.Position := Mem.Size;
-  Mem.WriteBuffer(LSeed[0], 16);
+  // Replaces the seed LockBox3 took from its global LCG (predictable, unsynchronized);
+  // bytes appended after the IV were never used
+  LSeed := TIAM4DCryptoUtils.GenerateSecureRandomBytes(IV_SEED_SIZE);
+  Mem.Position := 0;
+  Mem.WriteBuffer(LSeed[0], IV_SEED_SIZE);
 end;
 
 function TMinimalSelector.hasOnSetIVHandler(var Proc: TSetMemStreamProc): boolean;

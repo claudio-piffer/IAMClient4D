@@ -43,26 +43,15 @@ uses
 
 type
   /// <summary>
-  /// Cached validated JWT token entry with claims.
-  /// </summary>
-  TValidatedTokenCacheEntry = record
-    /// <summary>Claims serialized as JSON string</summary>
-    ClaimsJSON: string;
-    /// <summary>Token expiration time (exp claim) in UTC</summary>
-    ExpirationTime: TDateTime;
-    /// <summary>Timestamp when token was cached (UTC)</summary>
-    CachedAt: TDateTime;
-    /// <summary>Last access timestamp for LRU eviction (UTC)</summary>
-    LastUsedAt: TDateTime;
-  end;
-
-  /// <summary>
   /// JWT validator implementation for token signature and claims validation.
   /// </summary>
   /// <remarks>
   /// Validates signature and claims (exp/nbf/iss and optionally aud). Uses TIAM4DJWKSProvider for
   /// thread-safe JWKS handling with auto-discovery, caching, and key rotation support.
-  /// Security hardening: Algorithm allow-list, optional typ='JWT' check, configurable clock skew.
+  /// Issuer: required. Keys are looked up (and discovered) only for the expected issuer, never for the
+  /// token iss; with an empty expected issuer every token is rejected without network requests.
+  /// Security hardening: Algorithm allow-list (case-sensitive), key alg (when present) equal to the token alg,
+  /// optional typ='JWT' check, configurable clock skew.
   /// Thread-safety: All operations are thread-safe via internal JWKS provider.
   /// </remarks>
   TIAM4DJWTValidator = class(TInterfacedObject, IIAM4DJWTValidator, IIAM4DJWTValidatorConfigurable)
@@ -80,6 +69,20 @@ type
     DEFAULT_TOKEN_CACHE_CLEANUP_INTERVAL = 60;
     /// <summary>Default pre-expiry buffer: remove tokens N seconds before actual expiry</summary>
     DEFAULT_TOKEN_CACHE_PRE_EXPIRY_BUFFER = 30;
+    /// <summary>A cached token is validated again after this many seconds: a key removed from the JWKS
+    /// stops being accepted within this time</summary>
+    MAX_TOKEN_CACHE_ENTRY_AGE_SECONDS = 300;
+  type
+    /// <summary>Validated token: parsed claims (owned, never modified) and the end of the hit window (UTC):
+    /// exp minus the pre-expiry buffer, iat plus the max age, at most MAX_TOKEN_CACHE_ENTRY_AGE_SECONDS.</summary>
+    TTokenCacheEntry = class
+    public
+      Claims: TJSONObject;
+      ValidUntil: TDateTime;
+      // LRU: updated with TInterlocked under the read lock
+      LastUsedTicks: Int64;
+      destructor Destroy; override;
+    end;
   private
     FExpectedIssuer: string;
     FExpectedAudience: string;
@@ -90,11 +93,12 @@ type
 
     FSignatureVerifier: IIAM4DJWTSignatureVerifier;
     FJWKSProvider: IIAM4DJWKSProvider;
-    FSSLValidator: TIAM4DSSLCertificateValidator;
     FHTTPConfig: TIAM4DHTTPClientConfig;
 
-    FAllowedAlgs: TArray<string>; // allow-list (es. ['RS256','PS256'])
-    FStrictTyp: Boolean; // se True richiede typ='JWT' nell'header
+    FAllowedAlgs: TArray<string>; // allow-list (e.g. ['RS256','PS256'])
+    FStrictTyp: Boolean; // True: header typ must be one of FAllowedHeaderTypes
+    FAllowedHeaderTypes: TArray<string>; // normalized: lower case, without 'application/'
+    FExpectedTokenType: string; // typ claim of the payload ('' = not checked)
 
     // Replay prevention (jti cache)
     FJtiValidationEnabled: Boolean;
@@ -108,7 +112,7 @@ type
 
     // Validated token cache (avoids re-validation of same token)
     FTokenCacheEnabled: Boolean;
-    FTokenCache: TDictionary<string, TValidatedTokenCacheEntry>;
+    FTokenCache: TObjectDictionary<string, TTokenCacheEntry>;
     FTokenCacheLock: TLightweightMREW;
     FMaxTokenCacheEntries: Integer;
     FTokenCacheCleanupInterval: Integer; // seconds
@@ -120,6 +124,13 @@ type
     function InternalVerifySignature(const ASigningInput: string; const ASignatureBytes: TBytes; const APublicKeyJWK: TJSONObject; const AAlg: string): Boolean;
 
     function IsAlgAllowed(const AAlg: string): Boolean;
+    function IsHeaderTypeAllowed(const ATyp: string): Boolean;
+    /// <summary>
+    /// True for a canonical base64url segment: alphabet A-Z a-z 0-9 - _, no padding, no length
+    /// of 4n+1, unused bits of the last character zero (the decoder skips other characters and
+    /// drops those bits, so different strings would give the same token).
+    /// </summary>
+    class function IsBase64URLSegment(const ASegment: string): Boolean; static;
     /// <summary>
     /// Normalizes issuer URL by removing trailing slash for consistent comparison.
     /// </summary>
@@ -131,14 +142,16 @@ type
 
     // JTI cache management
     procedure CleanupExpiredJtiEntries;
-    function IsJtiAlreadyUsed(const AJti: string): Boolean;
-    procedure AddJtiToCache(const AJti: string);
+    function TryRegisterJti(const AJti: string; AExpiryUTC: TDateTime): Boolean;
 
     // Token validation cache management
     function TryGetCachedToken(const AToken: string; out AClaims: TJSONObject): Boolean;
     procedure AddTokenToCache(const AToken: string; const AClaims: TJSONObject);
     procedure CleanupExpiredTokens;
-    procedure EvictOldestToken;
+    /// <summary>Drops the least recently used entries until ACount are free</summary>
+    procedure EvictOldestTokens(ACount: Integer);
+    /// <summary>Cache key of a token: its SHA-256, not the token of several KB</summary>
+    class function TokenCacheKey(const AToken: string): string; static;
 
     // Constant-time claim comparison helpers (prevents timing attacks)
     function SecureCompareIssuer(const AIssuer, AExpected: string): Boolean;
@@ -237,15 +250,34 @@ type
       const ASSLValidationMode: TIAM4DSSLValidationMode = svmStrict); overload;
 
     /// <summary>
-    /// Destroys validator and clears JWKS cache.
+    /// Destroys the validator with its token and jti caches; the JWKS provider keeps its keys.
     /// </summary>
     destructor Destroy; override;
 
-    /// <summary>Sets the algorithm allow-list (e.g., ['RS256','PS256']). Empty list rejects all tokens.</summary>
+    /// <summary>Sets the algorithm allow-list (e.g., ['RS256','PS256']), matched case-sensitively. Empty list rejects all tokens.</summary>
     procedure SetAllowedAlgs(const AAlgs: TArray<string>);
 
     /// <summary>Enables/disables strict typ='JWT' header validation.</summary>
     procedure SetStrictTyp(const AValue: Boolean);
+
+    /// <summary>
+    /// Header typ values accepted while StrictTyp is on (default ['JWT']), case-insensitive, the
+    /// 'application/' prefix optional (RFC 7515 4.1.9). ['JWT', 'at+jwt'] accepts the access
+    /// tokens of RFC 9068 too (Keycloak: client option "Use 'at+jwt' as access token header
+    /// type"); ['at+jwt'] only those. Keep ['JWT'] for ID tokens: an at+jwt is not one.
+    /// </summary>
+    /// <exception cref="EArgumentException">Empty list or empty value</exception>
+    procedure SetAllowedHeaderTypes(const ATypes: TArray<string>);
+
+    /// <summary>
+    /// Expected value of the typ claim of the payload (explicit typing, RFC 8725 3.11): Keycloak
+    /// writes 'Bearer' in access tokens and 'ID' in ID tokens. Empty (default): not checked.
+    /// </summary>
+    /// <remarks>
+    /// A token with another typ is refused, so an ID token is not accepted as an access token.
+    /// A token without the typ claim (identity providers other than Keycloak) is not refused.
+    /// </remarks>
+    procedure SetExpectedTokenType(const AValue: string);
 
     /// <summary>Sets expected Client ID in azp claim (empty string = not validated).</summary>
     procedure SetExpectedAzp(const AValue: string);
@@ -263,9 +295,10 @@ type
     /// <param name="AEnabled">True to enable jti validation</param>
     /// <param name="ATTLSeconds">Cache TTL in seconds (how long to remember used jtis)</param>
     /// <remarks>
-    /// When enabled, tokens with previously seen jti claims will be rejected.
-    /// The cache is automatically cleaned up to remove expired entries.
-    /// Thread-safe: Uses internal locking for cache access.
+    /// When enabled, tokens with previously seen jti claims will be rejected: a token is accepted once,
+    /// also by parallel requests (check and add are atomic). A jti is remembered until the token
+    /// expires (exp plus clock skew), and for at least ATTLSeconds. Past 100000 remembered jtis every
+    /// token is refused. The validated token cache is not used while jti validation is enabled.
     /// </remarks>
     procedure SetJtiValidation(const AEnabled: Boolean; const ATTLSeconds: Integer = 3600);
 
@@ -288,8 +321,12 @@ type
     /// Enables/disables validated token caching (default: enabled).
     /// </summary>
     /// <remarks>
-    /// When enabled, successfully validated tokens are cached until expiration.
-    /// Subsequent requests with the same token skip signature verification and claims parsing.
+    /// When enabled, successfully validated tokens are cached until exp minus the pre-expiry buffer,
+    /// iat plus the max age (SetIatMaxAge), and for at most 5 minutes: then the token is validated
+    /// again, so a key removed from the JWKS stops being accepted. The policy setters clear the cache.
+    /// Subsequent requests with the same token skip signature verification and claims parsing:
+    /// a hit returns a copy of the cached claims under the shared (read) lock.
+    /// Not used while jti validation is enabled.
     /// Thread-safe: Uses TLightweightMREW for optimal read-heavy performance.
     /// </remarks>
     procedure SetTokenCacheEnabled(const AValue: Boolean);
@@ -298,7 +335,8 @@ type
     /// Sets maximum number of cached validated tokens (default: 10000).
     /// </summary>
     /// <remarks>
-    /// When cache is full, LRU (Least Recently Used) eviction is applied.
+    /// When the cache is full the expired entries are dropped, then an eighth of the entries,
+    /// least recently used first. Entries are keyed by the SHA-256 of the token.
     /// </remarks>
     procedure SetMaxTokenCacheEntries(const AValue: Integer);
 
@@ -325,14 +363,61 @@ type
     procedure ClearTokenCache;
   end;
 
+/// <summary>
+/// Reads a NumericDate claim (exp, nbf, iat, auth_time: RFC 7519 2, seconds since the epoch, also
+/// with a fraction). False when the claim is absent or null. A value that is not a JSON number,
+/// not finite or out of range raises EIAM4DSecurityValidationException. ARoundUp rounds a
+/// fraction up (nbf: never earlier than the issuer said), otherwise down (exp, iat, auth_time).
+/// </summary>
+function TryGetNumericDateClaim(const AClaims: TJSONObject; const AName: string; out AValue: Int64;
+  ARoundUp: Boolean = False): Boolean;
+
 implementation
 
 uses
+  System.Hash,
+  System.Math,
+  System.Generics.Defaults,
   IAMClient4D.Common.Constants,
   IAMClient4D.Common.SecureMemory,
   IAMClient4D.Security.JWT.Verifiers.Universal,
   IAMClient4D.Security.JWT.JWKS,
   IAMClient4D.Exceptions;
+
+const
+  // 9999-12-31T23:59:59Z: the last second UnixToDateTime and the date formats handle
+  MAX_NUMERIC_DATE = 253402300799;
+
+function TryGetNumericDateClaim(const AClaims: TJSONObject; const AName: string; out AValue: Int64;
+  ARoundUp: Boolean): Boolean;
+var
+  LValue: TJSONValue;
+  LSeconds: Double;
+begin
+  AValue := 0;
+  Result := False;
+  if not Assigned(AClaims) then
+    Exit;
+  LValue := AClaims.GetValue(AName);
+  if (LValue = nil) or (LValue is TJSONNull) then
+    Exit;
+  // A string, a boolean or an object is not a NumericDate, even when it reads as a number
+  if not (LValue is TJSONNumber) then
+    raise EIAM4DSecurityValidationException.CreateFmt('Claim %s is not a number (NumericDate).', [AName]);
+  try
+    LSeconds := TJSONNumber(LValue).AsDouble;
+  except
+    on EConvertError do
+      raise EIAM4DSecurityValidationException.CreateFmt('Claim %s is not a valid NumericDate.', [AName]);
+  end;
+  if IsNan(LSeconds) or IsInfinite(LSeconds) or (LSeconds < 0) or (LSeconds > MAX_NUMERIC_DATE) then
+    raise EIAM4DSecurityValidationException.CreateFmt('Claim %s is out of range for a NumericDate.', [AName]);
+  // Trunc gives an Int64 (Floor and Ceil an Integer, past 2038 they overflow); the value is >= 0
+  AValue := Trunc(LSeconds);
+  if ARoundUp and (Frac(LSeconds) > 0) then
+    Inc(AValue);
+  Result := True;
+end;
 
 { TIAM4DJWTValidator }
 
@@ -353,9 +438,6 @@ begin
   else
     FJWKSProvider := TIAM4DJWKSProvider.Create(FHTTPConfig);
 
-  FSSLValidator := TIAM4DSSLCertificateValidator.Create;
-  FSSLValidator.SetValidationMode(FHTTPConfig.SSLValidationMode);
-
   FExpectedIssuer := AExpectedIssuer;
   FExpectedAudience := AExpectedAudience;
   FAudienceValidationEnabled := True;
@@ -365,6 +447,8 @@ begin
 
   FAllowedAlgs := FSignatureVerifier.GetSupportedAlgorithms;
   FStrictTyp := True;
+  FAllowedHeaderTypes := ['jwt'];
+  FExpectedTokenType := '';
 
   FJtiValidationEnabled := False;
   FJtiCache := TDictionary<string, TDateTime>.Create;
@@ -377,7 +461,7 @@ begin
 
   // Initialize token validation cache (enabled by default)
   FTokenCacheEnabled := True;
-  FTokenCache := TDictionary<string, TValidatedTokenCacheEntry>.Create;
+  FTokenCache := TObjectDictionary<string, TTokenCacheEntry>.Create([doOwnsValues]);
   FMaxTokenCacheEntries := DEFAULT_MAX_TOKEN_CACHE_ENTRIES;
   FTokenCacheCleanupInterval := DEFAULT_TOKEN_CACHE_CLEANUP_INTERVAL;
   FTokenCachePreExpiryBuffer := DEFAULT_TOKEN_CACHE_PRE_EXPIRY_BUFFER;
@@ -456,7 +540,6 @@ end;
 
 destructor TIAM4DJWTValidator.Destroy;
 begin
-  FreeAndNil(FSSLValidator);
   FreeAndNil(FJtiCache);
   FreeAndNil(FJtiCacheLock);
   FreeAndNil(FTokenCache);
@@ -490,7 +573,7 @@ end;
 
 function TIAM4DJWTValidator.GetUtcNow: TDateTime;
 begin
-  Result := TTimeZone.Local.ToUniversalTime(Now());
+  Result := TDateTime.NowUTC;
 end;
 
 procedure TIAM4DJWTValidator.SetClockSkewSeconds(const AValue: Integer);
@@ -501,22 +584,18 @@ begin
     raise EIAM4DSecurityValidationException.CreateFmt(
       'Clock skew seconds must be <= %d (5 minutes). Higher values weaken security.', [MAX_CLOCK_SKEW_SECONDS]);
   FClockSkewSeconds := AValue;
+  ClearTokenCache;
 end;
 
 function TIAM4DJWTValidator.IsAlgAllowed(const AAlg: string): Boolean;
-
-  function SameTextArrayContains(const Arr: TArray<string>; const Value: string): Boolean;
-  var
-    LS: string;
-  begin
-    Result := False;
-    for LS in Arr do
-      if SameText(LS, Value) then
-        Exit(True);
-  end;
-
+var
+  LAllowed: string;
 begin
-  Result := SameTextArrayContains(FAllowedAlgs, AAlg);
+  // RFC 7515 4.1.1: alg values are case-sensitive
+  for LAllowed in FAllowedAlgs do
+    if LAllowed = AAlg then
+      Exit(True);
+  Result := False;
 end;
 
 function TIAM4DJWTValidator.NormalizeIssuer(const S: string): string;
@@ -557,27 +636,33 @@ begin
   var LExpected := NormalizeIssuer(ExpectedIssuer);
 
   if not SecureCompareIssuer(LIssuer, LExpected) then
-    raise EIAM4DSecurityValidationException.CreateFmt('Invalid issuer. Expected "%s", got "%s".', [LExpected, LIssuer]);
+    raise EIAM4DJWTIssuerMismatchException.Create(LExpected, LIssuer);
 
   if FAudienceValidationEnabled then
   begin
+    // An empty expected audience would match no token, or an aud "" element: a configuration error
+    if ExpectedAudience.Trim.IsEmpty then
+      raise EIAM4DSecurityValidationException.Create(
+        'Audience validation is enabled but no expected audience is configured.');
     LAudienceValue := Claims.GetValue<TJSONValue>('aud', nil);
     if not Assigned(LAudienceValue) then
-      raise EIAM4DSecurityValidationException.Create('Missing audience claim (aud).');
+      raise EIAM4DSecurityValidationException.Create('Missing audience claim (aud).', ecJWTAudienceMismatch);
 
     if LAudienceValue is TJSONString then
     begin
       LAudienceString := (LAudienceValue as TJSONString).Value;
       if LAudienceString.Trim.IsEmpty then
-        raise EIAM4DSecurityValidationException.Create('Audience claim (aud) is empty.');
+        raise EIAM4DSecurityValidationException.Create('Audience claim (aud) is empty.', ecJWTAudienceMismatch);
 
       if not SecureCompareAudience(LAudienceString, ExpectedAudience) then
-        raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience. Expected "%s", got "%s".', [ExpectedAudience, LAudienceString]);
+        raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience. Expected "%s", got "%s".',
+          [ExpectedAudience, LAudienceString], ecJWTAudienceMismatch);
     end
     else if LAudienceValue is TJSONArray then
     begin
-      LIsMultipleAud := True;
       LAudienceArray := LAudienceValue as TJSONArray;
+      // OIDC Core 3.1.3.7: an array of one value is a single audience
+      LIsMultipleAud := LAudienceArray.Count > 1;
       LFound := False;
 
       for LItem in LAudienceArray do
@@ -589,10 +674,12 @@ begin
         end;
       end;
       if not LFound then
-        raise EIAM4DSecurityValidationException.CreateFmt('Audience "%s" not found in audience array.', [ExpectedAudience]);
+        raise EIAM4DSecurityValidationException.CreateFmt('Audience "%s" not found in audience array.',
+          [ExpectedAudience], ecJWTAudienceMismatch);
     end
     else
-      raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience claim format: expected string or array, got %s.', [LAudienceValue.ClassName]);
+      raise EIAM4DSecurityValidationException.CreateFmt('Invalid audience claim format: expected string or array, got %s.',
+        [LAudienceValue.ClassName], ecJWTAudienceMismatch);
   end;
 
   LAzp := Claims.GetValue<string>('azp', '');
@@ -621,23 +708,22 @@ begin
     LJti := Claims.GetValue<string>('jti', '');
     if LJti.Trim.IsEmpty then
       raise EIAM4DSecurityValidationException.Create('Missing JWT ID (jti) claim - required when jti validation is enabled.');
-
-    if IsJtiAlreadyUsed(LJti) then
-      raise EIAM4DSecurityValidationException.CreateFmt('Token replay detected: jti "%s" has already been used.', [LJti]);
   end;
 
   if FIatMaxAge > 0 then
   begin
-    LIatTimestamp := Claims.GetValue<Int64>('iat', 0);
+    if not TryGetNumericDateClaim(Claims, 'iat', LIatTimestamp) then
+      LIatTimestamp := 0;
     if LIatTimestamp = 0 then
       raise EIAM4DSecurityValidationException.Create('Missing issued-at (iat) claim - required when iat max age validation is enabled.');
 
     LIatDateTime := System.DateUtils.UnixToDateTime(LIatTimestamp);
 
-    if LIatDateTime > LCurrentTimeUTC then
+    if LIatDateTime > LCurrentTimeUTC + (FClockSkewSeconds / IAM4D_SECOND_PER_DAY) then
       raise EIAM4DSecurityValidationException.CreateFmt(
-        'Token iat claim is in the future (UTC: %s). Possible clock skew or replay attack.',
-        [FormatDateTime('yyyy-mm-dd hh:nn:ss', LIatDateTime)]);
+        'Token iat claim is in the future (UTC: %s, Now+Skew (UTC): %s).',
+        [FormatDateTime('yyyy-mm-dd hh:nn:ss', LIatDateTime),
+          FormatDateTime('yyyy-mm-dd hh:nn:ss', LCurrentTimeUTC + (FClockSkewSeconds / IAM4D_SECOND_PER_DAY))]);
 
     if SecondsBetween(LCurrentTimeUTC, LIatDateTime) > FIatMaxAge then
       raise EIAM4DSecurityValidationException.CreateFmt(
@@ -645,7 +731,8 @@ begin
         [FormatDateTime('yyyy-mm-dd hh:nn:ss', LIatDateTime), FIatMaxAge]);
   end;
 
-  LExpiryTimestamp := Claims.GetValue<Int64>('exp', 0);
+  if not TryGetNumericDateClaim(Claims, 'exp', LExpiryTimestamp) then
+    LExpiryTimestamp := 0;
   if LExpiryTimestamp = 0 then
     raise EIAM4DSecurityValidationException.Create('Missing or invalid expiration time claim (exp).');
 
@@ -654,25 +741,26 @@ begin
   if LExpiryDateTime <= LCurrentTimeUTC - (FClockSkewSeconds / IAM4D_SECOND_PER_DAY) then
     raise EIAM4DSecurityValidationException.CreateFmt('Token expired. Expiration (UTC): %s, Now-Skew (UTC): %s.',
       [FormatDateTime('yyyy-mm-dd hh:nn:ss', LExpiryDateTime),
-        FormatDateTime('yyyy-mm-dd hh:nn:ss', LCurrentTimeUTC - (FClockSkewSeconds / IAM4D_SECOND_PER_DAY))]);
+        FormatDateTime('yyyy-mm-dd hh:nn:ss', LCurrentTimeUTC - (FClockSkewSeconds / IAM4D_SECOND_PER_DAY))],
+      ecJWTExpired);
 
-  LNotBeforeTimestamp := Claims.GetValue<Int64>('nbf', 0);
+  if not TryGetNumericDateClaim(Claims, 'nbf', LNotBeforeTimestamp, True) then
+    LNotBeforeTimestamp := 0;
   if LNotBeforeTimestamp > 0 then
   begin
     LNotBeforeDateTime := System.DateUtils.UnixToDateTime(LNotBeforeTimestamp);
 
-    if LCurrentTimeUTC - (FClockSkewSeconds / IAM4D_SECOND_PER_DAY) < LNotBeforeDateTime then
-      raise EIAM4DSecurityValidationException.CreateFmt('Token used before not-before time. NBF (UTC): %s, Now-Skew (UTC): %s.',
+    // RFC 7519 4.1.5: the skew tolerates an issuer clock ahead of ours
+    if LCurrentTimeUTC + (FClockSkewSeconds / IAM4D_SECOND_PER_DAY) < LNotBeforeDateTime then
+      raise EIAM4DSecurityValidationException.CreateFmt('Token used before not-before time. NBF (UTC): %s, Now+Skew (UTC): %s.',
         [FormatDateTime('yyyy-mm-dd hh:nn:ss', LNotBeforeDateTime),
-          FormatDateTime('yyyy-mm-dd hh:nn:ss', LCurrentTimeUTC - (FClockSkewSeconds / IAM4D_SECOND_PER_DAY))]);
+          FormatDateTime('yyyy-mm-dd hh:nn:ss', LCurrentTimeUTC + (FClockSkewSeconds / IAM4D_SECOND_PER_DAY))],
+        ecJWTNotYetValid);
   end;
 
-  if FJtiValidationEnabled then
-  begin
-    LJti := Claims.GetValue<string>('jti', '');
-    if not LJti.IsEmpty then
-      AddJtiToCache(LJti);
-  end;
+  // Check and add in one step: two parallel requests with the same token cannot both pass
+  if FJtiValidationEnabled and not TryRegisterJti(LJti, LExpiryDateTime) then
+    raise EIAM4DSecurityValidationException.CreateFmt('Token replay detected: jti "%s" has already been used.', [LJti]);
 
   Result := True;
 end;
@@ -689,8 +777,10 @@ var
   LHeaderBytes, LPayloadBytes, LSignatureBytes: TBytes;
   LHeaderJSON: TJSONObject;
   LPublicKeyJWK: TJSONObject;
-  LKid, LAlg, LIssuer, LTyp, LLookupIssuer, LExpectedIssuer, LJti: string;
+  LKeyAlg, LTypClaim: TJSONValue;
+  LKid, LAlg, LIssuer, LTyp, LExpectedIssuer: string;
   LMustFreePublicKey: Boolean;
+  LKeySelector: IIAM4DJWKSKeySelector;
 begin
   Result := False;
   AClaims := nil;
@@ -698,35 +788,19 @@ begin
   LHeaderJSON := nil;
   LMustFreePublicKey := False;
 
-  // Try cache lookup first - avoids full validation if token was previously validated
+  // A token validated before skips signature and claims checks (no cache with jti validation:
+  // a token is accepted once)
   if TryGetCachedToken(AToken, AClaims) then
-  begin
-    if FJtiValidationEnabled then
-    begin
-      LJti := AClaims.GetValue<string>('jti', '');
-      if LJti.Trim.IsEmpty then
-      begin
-        AClaims.Free;
-        AClaims := nil;
-        raise EIAM4DSecurityValidationException.Create('Missing JWT ID (jti) claim - required when jti validation is enabled.');
-      end;
-
-      if IsJtiAlreadyUsed(LJti) then
-      begin
-        AClaims.Free;
-        AClaims := nil;
-        raise EIAM4DSecurityValidationException.CreateFmt('Token replay detected: jti "%s" has already been used.', [LJti]);
-      end;
-
-      AddJtiToCache(LJti);
-    end;
-
-    Result := True;
-    Exit;
-  end;
+    Exit(True);
 
   try
     try
+      // No trusted issuer to look keys up for: the token iss is never used for discovery
+      LExpectedIssuer := NormalizeIssuer(FExpectedIssuer);
+      if LExpectedIssuer.Trim.IsEmpty then
+        raise EIAM4DSecurityValidationException.Create(
+          'No expected issuer configured: JWT validation requires the issuer URL of the identity provider.');
+
       LParts := AToken.Split(['.']);
       if Length(LParts) <> 3 then
         raise EIAM4DSecurityValidationException.Create('Invalid JWT format: must have 3 parts separated by dots.');
@@ -734,6 +808,12 @@ begin
       LHeaderB64 := LParts[0];
       LPayloadB64 := LParts[1];
       LSignatureB64 := LParts[2];
+
+      // An empty signature (alg none) is refused by the alg checks, with their own message
+      if not (IsBase64URLSegment(LHeaderB64) and IsBase64URLSegment(LPayloadB64) and
+        (LSignatureB64.IsEmpty or IsBase64URLSegment(LSignatureB64))) then
+        raise EIAM4DSecurityValidationException.Create(
+          'Invalid JWT format: each part must be base64url without padding (RFC 7515 2).');
 
       try
         LHeaderBytes := TNetEncoding.Base64URL.DecodeStringToBytes(LHeaderB64);
@@ -772,36 +852,56 @@ begin
       if not IsAlgAllowed(LAlg) then
         raise EIAM4DSecurityValidationException.CreateFmt('JWT algorithm "%s" not allowed by policy.', [LAlg]);
 
-      if FStrictTyp and (not SameText(LTyp, 'JWT')) then
-        raise EIAM4DSecurityValidationException.Create('JWT header typ is missing or not "JWT".');
+      if FStrictTyp and not IsHeaderTypeAllowed(LTyp) then
+      begin
+        if (Length(FAllowedHeaderTypes) = 1) and (FAllowedHeaderTypes[0] = 'jwt') then
+          raise EIAM4DSecurityValidationException.Create('JWT header typ is missing or not "JWT".');
+        raise EIAM4DSecurityValidationException.CreateFmt('JWT header typ "%s" is missing or not one of %s.',
+          [LTyp, string.Join(', ', FAllowedHeaderTypes)]);
+      end;
+
+      // RFC 7515 4.1.11: no extension is supported, so a token that requires one is refused
+      if Assigned(LHeaderJSON.Values['crit']) then
+        raise EIAM4DSecurityValidationException.Create(
+          'JWT header crit lists extensions that are not supported (RFC 7515 4.1.11).');
+
+      if not FExpectedTokenType.IsEmpty then
+      begin
+        LTypClaim := AClaims.Values['typ'];
+        if Assigned(LTypClaim) and not ((LTypClaim is TJSONString) and
+          SameStr(TJSONString(LTypClaim).Value, FExpectedTokenType)) then
+          raise EIAM4DSecurityValidationException.CreateFmt(
+            'JWT typ claim %s is not the expected token type "%s".', [LTypClaim.ToJSON, FExpectedTokenType]);
+      end;
 
       LIssuer := AClaims.GetValue<string>('iss', '');
       if LIssuer.Trim.IsEmpty then
-        raise EIAM4DSecurityValidationException.Create('JWT payload missing issuer (iss) claim - required for JWKS auto-discovery.');
+        raise EIAM4DSecurityValidationException.Create('JWT payload missing issuer (iss) claim.');
 
       LIssuer := NormalizeIssuer(LIssuer);
-      LLookupIssuer := LIssuer;
+      if not SecureCompareIssuer(LIssuer, LExpectedIssuer) then
+        raise EIAM4DJWTIssuerMismatchException.Create(LExpectedIssuer, LIssuer);
 
-      if not FExpectedIssuer.Trim.IsEmpty then
-      begin
-        LExpectedIssuer := NormalizeIssuer(FExpectedIssuer);
-        if not SecureCompareIssuer(LIssuer, LExpectedIssuer) then
-          raise EIAM4DSecurityValidationException.CreateFmt('Invalid issuer. Expected "%s", got "%s".', [LExpectedIssuer, LIssuer]);
-
-        // Pin discovery/key lookup to the configured issuer to avoid outbound fetches for untrusted iss values.
-        LLookupIssuer := LExpectedIssuer;
-      end;
-
-      LPublicKeyJWK := FJWKSProvider.GetPublicKey(LLookupIssuer, LKid);
+      // Key lookup (and OIDC discovery) only for the configured issuer, never for the token iss.
+      // A provider that can, picks among keys sharing the kid the one of the token algorithm
+      if Supports(FJWKSProvider, IIAM4DJWKSKeySelector, LKeySelector) then
+        LPublicKeyJWK := LKeySelector.GetPublicKeyForAlg(LExpectedIssuer, LKid, LAlg)
+      else
+        LPublicKeyJWK := FJWKSProvider.GetPublicKey(LExpectedIssuer, LKid);
       LMustFreePublicKey := True;
 
       if not Assigned(LPublicKeyJWK) then
+        raise EIAM4DJWKSKeyNotFoundException.Create(LKid, LExpectedIssuer);
+
+      // RFC 7517 4.4, RFC 8725 3.1: a key that declares alg verifies that algorithm only
+      LKeyAlg := LPublicKeyJWK.Values['alg'];
+      if Assigned(LKeyAlg) and not ((LKeyAlg is TJSONString) and (TJSONString(LKeyAlg).Value = LAlg)) then
         raise EIAM4DSecurityValidationException.CreateFmt(
-          'Public key not found via JWKS provider for issuer "%s" and kid "%s"', [LLookupIssuer, LKid]);
+          'JWT algorithm "%s" does not match the algorithm of the key (kid="%s", alg=%s).', [LAlg, LKid, LKeyAlg.ToJSON]);
 
       var ASigningInput := LHeaderB64 + '.' + LPayloadB64;
       if not InternalVerifySignature(ASigningInput, LSignatureBytes, LPublicKeyJWK, LAlg) then
-        raise EIAM4DSecurityValidationException.CreateFmt('JWT signature verification failed (kid="%s", alg="%s").', [LKid, LAlg]);
+        raise EIAM4DJWTSignatureInvalidException.Create(LKid, LAlg);
 
       if not ValidateClaims(AClaims, FExpectedIssuer, FExpectedAudience) then
         Exit;
@@ -838,11 +938,85 @@ end;
 procedure TIAM4DJWTValidator.SetAllowedAlgs(const AAlgs: TArray<string>);
 begin
   FAllowedAlgs := Copy(AAlgs);
+  ClearTokenCache;
 end;
 
 procedure TIAM4DJWTValidator.SetStrictTyp(const AValue: Boolean);
 begin
   FStrictTyp := AValue;
+  ClearTokenCache;
+end;
+
+function NormalizeHeaderType(const AValue: string): string;
+begin
+  Result := AValue.Trim.ToLower;
+  if Result.StartsWith('application/') then
+    Result := Result.Substring(Length('application/'));
+end;
+
+procedure TIAM4DJWTValidator.SetAllowedHeaderTypes(const ATypes: TArray<string>);
+var
+  LTypes: TArray<string>;
+  LType: string;
+begin
+  if Length(ATypes) = 0 then
+    raise EArgumentException.Create('Allowed header types cannot be empty (SetStrictTyp(False) skips the check)');
+  LTypes := nil;
+  for LType in ATypes do
+  begin
+    if NormalizeHeaderType(LType).IsEmpty then
+      raise EArgumentException.Create('Allowed header type cannot be empty');
+    LTypes := LTypes + [NormalizeHeaderType(LType)];
+  end;
+  FAllowedHeaderTypes := LTypes;
+  ClearTokenCache;
+end;
+
+function TIAM4DJWTValidator.IsHeaderTypeAllowed(const ATyp: string): Boolean;
+var
+  LTyp, LAllowed: string;
+begin
+  LTyp := NormalizeHeaderType(ATyp);
+  if LTyp.IsEmpty then
+    Exit(False);
+  for LAllowed in FAllowedHeaderTypes do
+    if LAllowed = LTyp then
+      Exit(True);
+  Result := False;
+end;
+
+procedure TIAM4DJWTValidator.SetExpectedTokenType(const AValue: string);
+begin
+  FExpectedTokenType := AValue.Trim;
+  ClearTokenCache;
+end;
+
+class function TIAM4DJWTValidator.IsBase64URLSegment(const ASegment: string): Boolean;
+var
+  C: Char;
+  LValue: Integer;
+begin
+  if (ASegment = '') or (Length(ASegment) mod 4 = 1) then
+    Exit(False);
+  for C in ASegment do
+    if not CharInSet(C, ['A'..'Z', 'a'..'z', '0'..'9', '-', '_']) then
+      Exit(False);
+  // 4n+2 characters: the last carries 2 bits of data and 4 unused; 4n+3: 4 bits and 2 unused
+  C := ASegment[High(ASegment)];
+  case C of
+    'A'..'Z': LValue := Ord(C) - Ord('A');
+    'a'..'z': LValue := Ord(C) - Ord('a') + 26;
+    '0'..'9': LValue := Ord(C) - Ord('0') + 52;
+    '-': LValue := 62;
+  else
+    LValue := 63;
+  end;
+  case Length(ASegment) mod 4 of
+    2: Result := (LValue and $0F) = 0;
+    3: Result := (LValue and $03) = 0;
+  else
+    Result := True;
+  end;
 end;
 
 function TIAM4DJWTValidator.GetExpectedAzp: string;
@@ -853,16 +1027,19 @@ end;
 procedure TIAM4DJWTValidator.SetExpectedAzp(const AValue: string);
 begin
   FExpectedAzp := AValue;
+  ClearTokenCache;
 end;
 
 procedure TIAM4DJWTValidator.SetAudienceValidationEnabled(const AValue: Boolean);
 begin
   FAudienceValidationEnabled := AValue;
+  ClearTokenCache;
 end;
 
 procedure TIAM4DJWTValidator.SetRequireAzpWhenMultipleAud(const AValue: Boolean);
 begin
   FRequireAzpWhenMultipleAud := AValue;
+  ClearTokenCache;
 end;
 
 procedure TIAM4DJWTValidator.SetJtiValidation(const AEnabled: Boolean; const ATTLSeconds: Integer);
@@ -875,6 +1052,8 @@ begin
   FJtiValidationEnabled := AEnabled;
   FJtiCacheTTL := ATTLSeconds;
 
+  // With jti validation the token cache is not used
+  ClearTokenCache;
   if not AEnabled then
     ClearJtiCache;
 end;
@@ -884,6 +1063,7 @@ begin
   if AMaxAgeSeconds < 0 then
     raise EIAM4DSecurityValidationException.Create('IAT max age must be >= 0');
   FIatMaxAge := AMaxAgeSeconds;
+  ClearTokenCache;
 end;
 
 procedure TIAM4DJWTValidator.ClearJtiCache;
@@ -926,14 +1106,10 @@ begin
   end;
 end;
 
-function TIAM4DJWTValidator.IsJtiAlreadyUsed(const AJti: string): Boolean;
+function TIAM4DJWTValidator.TryRegisterJti(const AJti: string; AExpiryUTC: TDateTime): Boolean;
 var
-  LNowUTC: TDateTime;
+  LNowUTC, LExpiryTime: TDateTime;
 begin
-  Result := False;
-  if not FJtiValidationEnabled or AJti.IsEmpty then
-    Exit;
-
   TMonitor.Enter(FJtiCacheLock);
   try
     LNowUTC := GetUtcNow;
@@ -944,21 +1120,9 @@ begin
       FLastJtiCleanup := LNowUTC;
     end;
 
-    Result := FJtiCache.ContainsKey(AJti);
-  finally
-    TMonitor.Exit(FJtiCacheLock);
-  end;
-end;
+    if FJtiCache.ContainsKey(AJti) then
+      Exit(False);
 
-procedure TIAM4DJWTValidator.AddJtiToCache(const AJti: string);
-var
-  LExpiryTime: TDateTime;
-begin
-  if not FJtiValidationEnabled or AJti.IsEmpty then
-    Exit;
-
-  TMonitor.Enter(FJtiCacheLock);
-  try
     if FJtiCache.Count >= MAX_JTI_CACHE_ENTRIES then
     begin
       CleanupExpiredJtiEntries;
@@ -969,8 +1133,12 @@ begin
           [MAX_JTI_CACHE_ENTRIES]);
     end;
 
-    LExpiryTime := IncSecond(GetUtcNow, FJtiCacheTTL);
-    FJtiCache.AddOrSetValue(AJti, LExpiryTime);
+    // Remembered while the token is still accepted (exp plus skew), and for at least the TTL
+    LExpiryTime := IncSecond(AExpiryUTC, FClockSkewSeconds);
+    if LExpiryTime < IncSecond(LNowUTC, FJtiCacheTTL) then
+      LExpiryTime := IncSecond(LNowUTC, FJtiCacheTTL);
+    FJtiCache.Add(AJti, LExpiryTime);
+    Result := True;
   finally
     TMonitor.Exit(FJtiCacheLock);
   end;
@@ -978,16 +1146,27 @@ end;
 
 { Token validation cache methods }
 
+destructor TIAM4DJWTValidator.TTokenCacheEntry.Destroy;
+begin
+  Claims.Free;
+  inherited;
+end;
+
+class function TIAM4DJWTValidator.TokenCacheKey(const AToken: string): string;
+begin
+  Result := THashSHA2.GetHashString(AToken, THashSHA2.TSHA2Version.SHA256);
+end;
+
 function TIAM4DJWTValidator.TryGetCachedToken(const AToken: string; out AClaims: TJSONObject): Boolean;
 var
-  LEntry: TValidatedTokenCacheEntry;
+  LEntry: TTokenCacheEntry;
   LNowUTC: TDateTime;
-  LEffectiveExpiry: TDateTime;
+  LKey: string;
 begin
   Result := False;
   AClaims := nil;
 
-  if not FTokenCacheEnabled then
+  if not FTokenCacheEnabled or FJtiValidationEnabled then
     Exit;
 
   if not Assigned(FTokenCache) then
@@ -995,47 +1174,29 @@ begin
 
   LNowUTC := GetUtcNow;
 
+  // Hits need only the shared lock: entries are replaced or freed under the exclusive one
+  LKey := TokenCacheKey(AToken);
   FTokenCacheLock.BeginRead;
   try
-    if FTokenCache.TryGetValue(AToken, LEntry) then
+    if FTokenCache.TryGetValue(LKey, LEntry) and (LNowUTC < LEntry.ValidUntil) then
     begin
-      // Calculate effective expiry with pre-expiry buffer
-      LEffectiveExpiry := LEntry.ExpirationTime - (FTokenCachePreExpiryBuffer / SecsPerDay);
-
-      if LNowUTC < LEffectiveExpiry then
-      begin
-        // Cache hit - parse claims from cached JSON
-        AClaims := TJSONObject.ParseJSONValue(LEntry.ClaimsJSON) as TJSONObject;
-        Result := Assigned(AClaims);
-      end;
+      AClaims := LEntry.Claims.Clone as TJSONObject;
+      TInterlocked.Exchange(LEntry.LastUsedTicks, TThread.GetTickCount64);
+      Result := True;
     end;
   finally
     FTokenCacheLock.EndRead;
-  end;
-
-  // Update LastUsedAt outside read lock (separate write lock)
-  if Result then
-  begin
-    FTokenCacheLock.BeginWrite;
-    try
-      if FTokenCache.TryGetValue(AToken, LEntry) then
-      begin
-        LEntry.LastUsedAt := LNowUTC;
-        FTokenCache[AToken] := LEntry;
-      end;
-    finally
-      FTokenCacheLock.EndWrite;
-    end;
   end;
 end;
 
 procedure TIAM4DJWTValidator.AddTokenToCache(const AToken: string; const AClaims: TJSONObject);
 var
-  LEntry: TValidatedTokenCacheEntry;
-  LExpTimestamp: Int64;
-  LNowUTC: TDateTime;
+  LKey: string;
+  LEntry: TTokenCacheEntry;
+  LExpTimestamp, LIatTimestamp: Int64;
+  LNowUTC, LValidUntil, LAgeLimit: TDateTime;
 begin
-  if not FTokenCacheEnabled then
+  if not FTokenCacheEnabled or FJtiValidationEnabled then
     Exit;
 
   if not Assigned(FTokenCache) then
@@ -1044,43 +1205,71 @@ begin
   if not Assigned(AClaims) then
     Exit;
 
-  LExpTimestamp := AClaims.GetValue<Int64>('exp', 0);
-  if LExpTimestamp = 0 then
+  // Claims already validated: the helper does not raise here
+  if not TryGetNumericDateClaim(AClaims, 'exp', LExpTimestamp) or (LExpTimestamp = 0) then
     Exit; // Token without exp cannot be cached
 
   LNowUTC := GetUtcNow;
 
-  LEntry.ClaimsJSON := AClaims.ToJSON;
-  LEntry.ExpirationTime := UnixToDateTime(LExpTimestamp);
-  LEntry.CachedAt := LNowUTC;
-  LEntry.LastUsedAt := LNowUTC;
+  // A hit skips every check: the window ends before the token would fail one of them
+  LValidUntil := UnixToDateTime(LExpTimestamp) - (FTokenCachePreExpiryBuffer / SecsPerDay);
+  if FIatMaxAge > 0 then
+  begin
+    if not TryGetNumericDateClaim(AClaims, 'iat', LIatTimestamp) then
+      Exit;
+    LAgeLimit := UnixToDateTime(LIatTimestamp + FIatMaxAge);
+    if LAgeLimit < LValidUntil then
+      LValidUntil := LAgeLimit;
+  end;
+  LAgeLimit := IncSecond(LNowUTC, MAX_TOKEN_CACHE_ENTRY_AGE_SECONDS);
+  if LAgeLimit < LValidUntil then
+    LValidUntil := LAgeLimit;
+  if LValidUntil <= LNowUTC then
+    Exit;
 
-  FTokenCacheLock.BeginWrite;
+  LKey := TokenCacheKey(AToken);
+  LEntry := TTokenCacheEntry.Create;
   try
-    // Periodic cleanup (throttled)
-    if SecondsBetween(LNowUTC, FLastTokenCacheCleanup) >= FTokenCacheCleanupInterval then
-    begin
-      CleanupExpiredTokens;
-      FLastTokenCacheCleanup := LNowUTC;
+    LEntry.Claims := AClaims.Clone as TJSONObject;
+    LEntry.ValidUntil := LValidUntil;
+    LEntry.LastUsedTicks := TThread.GetTickCount64;
+
+    FTokenCacheLock.BeginWrite;
+    try
+      // Periodic cleanup (throttled)
+      if SecondsBetween(LNowUTC, FLastTokenCacheCleanup) >= FTokenCacheCleanupInterval then
+      begin
+        CleanupExpiredTokens;
+        FLastTokenCacheCleanup := LNowUTC;
+      end;
+
+      // Full: expired entries first, then an eighth of the least recently used in one scan
+      // (one full scan per Max/8 new tokens, not one per token)
+      if (not FTokenCache.ContainsKey(LKey)) and (FTokenCache.Count >= FMaxTokenCacheEntries) then
+      begin
+        CleanupExpiredTokens;
+        FLastTokenCacheCleanup := LNowUTC;
+        if FTokenCache.Count >= FMaxTokenCacheEntries then
+          EvictOldestTokens(FTokenCache.Count - FMaxTokenCacheEntries + 1 + FMaxTokenCacheEntries div 8);
+      end;
+
+      // Owned by the cache from here on (a replaced entry is freed)
+      FTokenCache.AddOrSetValue(LKey, LEntry);
+      LEntry := nil;
+    finally
+      FTokenCacheLock.EndWrite;
     end;
-
-    // LRU eviction if cache is full
-    while FTokenCache.Count >= FMaxTokenCacheEntries do
-      EvictOldestToken;
-
-    FTokenCache.AddOrSetValue(AToken, LEntry);
   finally
-    FTokenCacheLock.EndWrite;
+    LEntry.Free;
   end;
 end;
 
 procedure TIAM4DJWTValidator.CleanupExpiredTokens;
 var
-  LKey: string;
   LExpiredKeys: TList<string>;
-  LEntry: TValidatedTokenCacheEntry;
+  LPair: TPair<string, TTokenCacheEntry>;
+  LKey: string;
   LNowUTC: TDateTime;
-  LEffectiveExpiry: TDateTime;
 begin
   // Called ONLY inside write lock
   if not Assigned(FTokenCache) then
@@ -1089,14 +1278,9 @@ begin
   LNowUTC := GetUtcNow;
   LExpiredKeys := TList<string>.Create;
   try
-    for LKey in FTokenCache.Keys do
-    begin
-      LEntry := FTokenCache[LKey];
-      LEffectiveExpiry := LEntry.ExpirationTime - (FTokenCachePreExpiryBuffer / SecsPerDay);
-
-      if LNowUTC >= LEffectiveExpiry then
-        LExpiredKeys.Add(LKey);
-    end;
+    for LPair in FTokenCache do
+      if LNowUTC >= LPair.Value.ValidUntil then
+        LExpiredKeys.Add(LPair.Key);
 
     for LKey in LExpiredKeys do
       FTokenCache.Remove(LKey);
@@ -1105,30 +1289,28 @@ begin
   end;
 end;
 
-procedure TIAM4DJWTValidator.EvictOldestToken;
+procedure TIAM4DJWTValidator.EvictOldestTokens(ACount: Integer);
 var
-  LOldestKey: string;
-  LOldestTime: TDateTime;
-  LPair: TPair<string, TValidatedTokenCacheEntry>;
+  LPairs: TArray<TPair<string, TTokenCacheEntry>>;
+  I: Integer;
 begin
-  // Called ONLY inside write lock
-  if not Assigned(FTokenCache) or (FTokenCache.Count = 0) then
+  // Called ONLY inside write lock: no reader updates LastUsedTicks meanwhile
+  if not Assigned(FTokenCache) or (FTokenCache.Count = 0) or (ACount <= 0) then
     Exit;
 
-  LOldestTime := MaxDateTime;
-  LOldestKey := '';
-
-  for LPair in FTokenCache do
-  begin
-    if LPair.Value.LastUsedAt < LOldestTime then
+  LPairs := FTokenCache.ToArray;
+  TArray.Sort<TPair<string, TTokenCacheEntry>>(LPairs, TComparer<TPair<string, TTokenCacheEntry>>.Construct(
+    function(const A, B: TPair<string, TTokenCacheEntry>): Integer
     begin
-      LOldestTime := LPair.Value.LastUsedAt;
-      LOldestKey := LPair.Key;
-    end;
-  end;
-
-  if LOldestKey <> '' then
-    FTokenCache.Remove(LOldestKey);
+      if A.Value.LastUsedTicks < B.Value.LastUsedTicks then
+        Result := -1
+      else if A.Value.LastUsedTicks > B.Value.LastUsedTicks then
+        Result := 1
+      else
+        Result := 0;
+    end));
+  for I := 0 to Min(ACount, Length(LPairs)) - 1 do
+    FTokenCache.Remove(LPairs[I].Key);
 end;
 
 procedure TIAM4DJWTValidator.SetTokenCacheEnabled(const AValue: Boolean);
@@ -1157,6 +1339,7 @@ begin
   if AValue < 0 then
     raise EIAM4DSecurityValidationException.Create('Token cache pre-expiry buffer must be >= 0');
   FTokenCachePreExpiryBuffer := AValue;
+  ClearTokenCache;
 end;
 
 procedure TIAM4DJWTValidator.ClearTokenCache;

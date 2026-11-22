@@ -1,0 +1,125 @@
+{{extends "../baselayout.html"}}
+
+{{# The keypad calculator. The keys write into the display (app.js, data-key and data-key-action);
+   "=" posts the display to /keypad/evaluate. The advanced keys post it to /advanced/keypad/*:
+   disabled without calculator-advanced (the API answers 403 anyway). #}}
+
+{{block "title"}}{{:t.layout.keypad}}{{endblock}}
+
+{{block "body"}}
+<header class="page-header page-header-compact">
+  <h1>{{:t.layout.keypad}}</h1>
+  <p class="lead">{{:t.keypad.lead_html$|replace,"{backend}",backend_label}}</p>
+  {{if !can_calculate}}<div class="alert alert-warning mt-3 mb-0"><i class="bi bi-shield-lock me-1"></i>{{:t.calculator.no_role_html$}}</div>{{endif}}
+</header>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <form class="panel keypad" id="keypad" hx-post="/keypad/evaluate" hx-target="#result" hx-disabled-elt="find .key-equals">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <label class="panel-title mb-0" for="keypad-display"><i class="bi bi-grid-3x3-gap"></i>{{:t.keypad.display}}</label>
+        <span class="op-path">POST /api/expressions/evaluate</span>
+        <div class="btn-group btn-group-sm" role="group" aria-label="{{:t.calculator.angle_unit}}">
+          <input type="radio" class="btn-check" name="unit" id="keypad-deg" value="deg" checked><label class="btn btn-outline-secondary" for="keypad-deg">deg</label>
+          <input type="radio" class="btn-check" name="unit" id="keypad-rad" value="rad"><label class="btn btn-outline-secondary" for="keypad-rad">rad</label>
+        </div>
+      </div>
+      <input class="form-control keypad-display" id="keypad-display" name="expression" maxlength="256"
+             autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="2 &times; sin(30) + &radic;(16)">
+      <div class="form-text mb-3">{{:t.keypad.hint_html$}}</div>
+
+      <div class="row g-3">
+        <div class="col-md-7">
+          <div class="keypad-grid keypad-grid-6" role="group" aria-label="{{:t.keypad.keys_label}}">
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="sin(">sin</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="cos(">cos</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="tan(">tan</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="ln(">ln</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="log(">log</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="&radic;(" title="{{:t.keypad.square_root}}" aria-label="{{:t.keypad.square_root}}">&radic;</button>
+
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="asin(">asin</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="acos(">acos</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="atan(">atan</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="&sup2;" title="{{:t.keypad.square}}" aria-label="{{:t.keypad.square}}">x&sup2;</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="^" title="{{:t.keypad.power}}" aria-label="{{:t.keypad.power}}">x<sup>y</sup></button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="!" title="{{:t.keypad.factorial}}" aria-label="{{:t.keypad.factorial}}">n!</button>
+
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="&pi;">&pi;</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="e">e</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="cbrt(" title="{{:t.keypad.cube_root}}" aria-label="{{:t.keypad.cube_root}}">&#8731;</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="abs(" title="{{:t.keypad.absolute}}" aria-label="{{:t.keypad.absolute}}">|x|</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key="E" title="{{:t.keypad.exponent}}" aria-label="{{:t.keypad.exponent}}">EXP</button>
+            <button type="button" class="btn btn-outline-secondary key key-fn" data-key-action="answer" title="{{:t.keypad.answer}}" aria-label="{{:t.keypad.answer}}">Ans</button>
+          </div>
+
+          <div class="keypad-advanced">
+            <div class="panel-title mb-2"><i class="bi bi-graph-up"></i>{{:t.keypad.advanced_title}}
+              <span class="badge text-bg-secondary brand-mono fw-normal">calculator-advanced</span>
+              {{if !can_advanced}}<i class="bi bi-lock-fill text-secondary" aria-hidden="true"></i>{{endif}}
+            </div>
+            <div class="keypad-grid keypad-grid-4" role="group" aria-label="{{:t.keypad.advanced_title}}">
+              <button type="button" class="btn btn-outline-secondary key key-adv" data-key="; "
+                      title="{{:t.keypad.separator}}" aria-label="{{:t.keypad.separator}}"{{if !can_advanced}} disabled{{endif}}>;</button>
+              <button type="button" class="btn btn-outline-secondary key key-adv" hx-disabled-elt="this" hx-post="/advanced/keypad/statistics"
+                      title="{{:t.keypad.stats_population}}" aria-label="{{:t.keypad.stats_population}}"{{if !can_advanced}} disabled{{endif}}>x&#772; &sigma;</button>
+              <button type="button" class="btn btn-outline-secondary key key-adv" hx-disabled-elt="this" hx-post="/advanced/keypad/statistics" hx-vals='{"sample": "on"}'
+                      title="{{:t.keypad.stats_sample}}" aria-label="{{:t.keypad.stats_sample}}"{{if !can_advanced}} disabled{{endif}}>x&#772; s</button>
+              <button type="button" class="btn btn-outline-secondary key key-adv" hx-disabled-elt="this" hx-post="/advanced/keypad/quadratic"
+                      title="{{:t.keypad.quadratic}}" aria-label="{{:t.keypad.quadratic}}"{{if !can_advanced}} disabled{{endif}}>ax&sup2;+bx+c</button>
+            </div>
+            {{if can_advanced}}
+            <div class="form-text">{{:t.keypad.advanced_hint_html$}}</div>
+            {{else}}
+            <div class="form-text"><i class="bi bi-shield-lock me-1"></i>{{:t.keypad.advanced_locked_html$}}</div>
+            {{endif}}
+          </div>
+        </div>
+
+        <div class="col-md-5">
+          <div class="keypad-grid keypad-grid-4" role="group" aria-label="{{:t.keypad.keys_label}}">
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key-action="clear" title="{{:t.keypad.clear}}" aria-label="{{:t.keypad.clear}}">C</button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key-action="backspace" title="{{:t.keypad.backspace}}" aria-label="{{:t.keypad.backspace}}"><i class="bi bi-backspace" aria-hidden="true"></i></button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key="(">(</button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key=")">)</button>
+
+            <button type="button" class="btn key key-digit" data-key="7">7</button>
+            <button type="button" class="btn key key-digit" data-key="8">8</button>
+            <button type="button" class="btn key key-digit" data-key="9">9</button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key=" &divide; " aria-label="&divide;">&divide;</button>
+
+            <button type="button" class="btn key key-digit" data-key="4">4</button>
+            <button type="button" class="btn key key-digit" data-key="5">5</button>
+            <button type="button" class="btn key key-digit" data-key="6">6</button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key=" &times; " aria-label="&times;">&times;</button>
+
+            <button type="button" class="btn key key-digit" data-key="1">1</button>
+            <button type="button" class="btn key key-digit" data-key="2">2</button>
+            <button type="button" class="btn key key-digit" data-key="3">3</button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key=" &minus; " aria-label="&minus;">&minus;</button>
+
+            <button type="button" class="btn key key-digit" data-key="0">0</button>
+            <button type="button" class="btn key key-digit" data-key=".">.</button>
+            <button type="submit" class="btn btn-primary key key-equals" title="{{:t.keypad.equals}}" aria-label="{{:t.keypad.equals}}">=</button>
+            <button type="button" class="btn btn-outline-secondary key key-op" data-key=" + " aria-label="+">+</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="col-lg-5">
+    <section class="panel sticky-lg-top result-panel">
+      <div class="panel-title"><i class="bi bi-display"></i>{{:t.calculator.result}}</div>
+      <div id="result" aria-live="polite">
+        <p class="text-secondary mb-0">{{:t.calculator.result_empty}}</p>
+      </div>
+      <hr>
+      <div class="panel-title"><i class="bi bi-clock-history"></i>{{:t.calculator.recent}} <a class="ms-auto small fw-normal" href="/history">{{:t.calculator.all}}</a></div>
+      <div id="recent" hx-get="/history/recent" hx-trigger="load, historyChanged from:body">
+        <span class="spinner-border spinner-border-sm text-secondary" aria-hidden="true"></span>
+      </div>
+    </section>
+  </div>
+</div>
+{{endblock}}

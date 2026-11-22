@@ -1,0 +1,12 @@
+{{# The HTTP call behind a view model r: method, resource, server, status, time #}}
+{{if r.method}}
+<div class="call-line">
+  <span class="badge text-bg-secondary brand-mono">{{:r.method}}</span>
+  <code class="text-break">{{:r.resource}}</code>
+  <span class="ms-auto d-flex align-items-center gap-2 flex-shrink-0">
+    <span class="badge {{if r.ok}}text-bg-success{{else}}text-bg-danger{{endif}} brand-mono">{{if r.status}}{{:r.status}}{{else}}&ndash;{{endif}}</span>
+    <span class="text-secondary" title="{{:r.baseUrl}}">{{:r.backendLabel}}{{if r.elapsedMs}} &middot; {{:r.elapsedMs}} ms{{endif}}</span>
+  </span>
+</div>
+{{if r.requestBody}}<pre class="call-body">{{:r.requestBody}}</pre>{{endif}}
+{{endif}}

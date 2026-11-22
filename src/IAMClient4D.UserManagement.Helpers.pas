@@ -218,7 +218,7 @@ type
     function Equals(const AOther: TIAM4DRole): Boolean;
 
     /// <summary>
-    /// Compares roles by name (case-insensitive).
+    /// Compares roles by name (case-sensitive, as Keycloak) and container ID.
     /// </summary>
     function SameAs(const AOther: TIAM4DRole): Boolean;
 
@@ -749,6 +749,7 @@ var
   LAttrsObj: TJSONObject;
   LActionsArray: TJSONArray;
   LAction: TIAM4DRequiredAction;
+  LOther: string;
 begin
   Result := TJSONObject.Create;
   try
@@ -780,12 +781,14 @@ begin
       end;
     end;
 
-    if Length(RequiredActions) > 0 then
+    if (Length(RequiredActions) > 0) or (Length(OtherRequiredActions) > 0) then
     begin
       LActionsArray := TJSONArray.Create;
       try
         for LAction in RequiredActions do
           LActionsArray.Add(LAction.ToString);
+        for LOther in OtherRequiredActions do
+          LActionsArray.Add(LOther);
         Result.AddPair('requiredActions', LActionsArray);
       except
         LActionsArray.Free;
@@ -814,6 +817,8 @@ var
   LActionStr: string;
   LAttributes: TArray<TIAM4DUserAttribute>;
   LActions: TArray<TIAM4DRequiredAction>;
+  LAction: TIAM4DRequiredAction;
+  LOthers: TArray<string>;
 begin
   Result := Default(TIAM4DUser);
 
@@ -889,14 +894,20 @@ begin
   if Assigned(LValue) and (LValue is TJSONArray) then
   begin
     LActionsArray := TJSONArray(LValue);
-    SetLength(LActions, LActionsArray.Count);
+    LActions := nil;
+    LOthers := nil;
 
+    // An action not in TIAM4DRequiredAction goes to OtherRequiredActions, never an exception
     for LActionIndex := 0 to LActionsArray.Count - 1 do
     begin
       LActionStr := LActionsArray.Items[LActionIndex].Value;
-      LActions[LActionIndex] := TIAM4DRequiredAction.FromString(LActionStr);
+      if TIAM4DRequiredAction.TryFromString(LActionStr, LAction) then
+        LActions := LActions + [LAction]
+      else
+        LOthers := LOthers + [LActionStr];
     end;
     Result.RequiredActions := LActions;
+    Result.OtherRequiredActions := LOthers;
   end;
 end;
 
@@ -1107,7 +1118,7 @@ end;
 
 function TIAM4DRoleHelper.SameAs(const AOther: TIAM4DRole): Boolean;
 begin
-  Result := SameText(Name, AOther.Name) and SameText(ContainerID, AOther.ContainerID);
+  Result := SameStr(Name, AOther.Name) and SameText(ContainerID, AOther.ContainerID);
 end;
 
 function TIAM4DRoleHelper.Clone: TIAM4DRole;
@@ -1343,7 +1354,7 @@ var
 begin
   Result := False;
   for LRole in Self do
-    if SameText(LRole.Name, ARoleName) then
+    if SameStr(LRole.Name, ARoleName) then
     begin
       ARole := LRole;
       Exit(True);
@@ -1394,7 +1405,7 @@ begin
   LList := TList<TIAM4DRole>.Create;
   try
     for LRole in Self do
-      if SameText(LRole.ClientID, AClientID) then
+      if SameStr(LRole.ClientID, AClientID) then
         LList.Add(LRole);
 
     Result := LList.ToArray;
@@ -1604,7 +1615,7 @@ function TIAM4DUserSessionHelper.IdleTimeInSeconds: Int64;
 var
   LNow: Int64;
 begin
-  LNow := DateTimeToUnix(Now, False) * 1000;
+  LNow := DateTimeToUnix(TDateTime.NowUTC) * 1000;
   Result := (LNow - LastAccess) div 1000;
 end;
 
@@ -1624,7 +1635,7 @@ var
 begin
   Result := False;
   for LClient in Clients do
-    if SameText(LClient, AClientID) then
+    if SameStr(LClient, AClientID) then
       Exit(True);
 end;
 
@@ -1813,8 +1824,8 @@ var
 begin
   inherited Create;
 
-  FRolesByName := TDictionary<string, TIAM4DRole>.Create(
-    TIStringComparer.Ordinal);
+  // Role names are case-sensitive in Keycloak; IDs are UUIDs
+  FRolesByName := TDictionary<string, TIAM4DRole>.Create;
   FRolesByID := TDictionary<string, TIAM4DRole>.Create(
     TIStringComparer.Ordinal);
 

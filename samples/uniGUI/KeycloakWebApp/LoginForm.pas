@@ -32,8 +32,7 @@ type
     procedure UniLoginFormCreate(Sender: TObject);
     procedure UniTimer1Timer(Sender: TObject);
   private
-    procedure OpenIAMLogin;
-    function ExtractStateFromURL(const AURL: string): string;
+    procedure ShowLoginError(const AMessage: string);
   public
     { Public declarations }
   end;
@@ -45,11 +44,10 @@ implementation
 {$R *.dfm}
 
 uses
+  System.NetEncoding,
   uniGUIVars,
   MainModule,
-  uniGUIApplication,
-  IAMClient4D.Core,
-  IAMClient4D.Config.Builder;
+  uniGUIApplication;
 
 function UniLoginForm1: TUniLoginForm1;
 begin
@@ -61,56 +59,22 @@ begin
   UniTimer1.Enabled := True;
 end;
 
-function TUniLoginForm1.ExtractStateFromURL(const AURL: string): string;
-var
-  LStatePos, LAmpPos: Integer;
+procedure TUniLoginForm1.ShowLoginError(const AMessage: string);
 begin
-  Result := '';
-
-  LStatePos := Pos('state=', AURL);
-  if LStatePos > 0 then
-  begin
-    Result := Copy(AURL, LStatePos + 6, Length(AURL));
-
-    LAmpPos := Pos('&', Result);
-    if LAmpPos > 0 then
-      Result := Copy(Result, 1, LAmpPos - 1)
-    else
-    begin
-      LAmpPos := Pos('#', Result);
-      if LAmpPos > 0 then
-        Result := Copy(Result, 1, LAmpPos - 1);
-    end;
-  end;
-end;
-
-procedure TUniLoginForm1.OpenIAMLogin;
-var
-  LAuthURL: string;
-  LClient: IIAM4DClient;
-begin
-  LClient := TIAM4DClientConfigBuilder.New
-    .ForAuthorizationCode(
-    'https://192.168.0.24:28443/auth',
-    'iamclient4d',
-    'demo_public')
-    .WithExternalCallback('http://localhost:8077/?oauthcallback=keycloak')
-    .WithAllowSelfSignedSSL
-    .Build;
-
-  LClient.InitializeAuthorizationFlow;
-
-  LAuthURL := LClient.GenerateAuthURL;
-
-  UniMainModule.IAMClientManager.SetClient(ExtractStateFromURL(LAuthURL), LClient);
-
-  UniSession.UrlRedirect(LAuthURL);
+  htmlFrame.HTML.Text :=
+    '<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding-top:40px">' +
+    '<p>' + TNetEncoding.HTML.Encode(AMessage) + '</p>' +
+    '<p><a href="/" target="_top">Sign in again</a></p></body></html>';
 end;
 
 procedure TUniLoginForm1.UniTimer1Timer(Sender: TObject);
 begin
   UniTimer1.Enabled := False;
-  OpenIAMLogin;
+  // The login was started by TUniMainModule.StartLogin (BeforeLogin), or failed
+  if UniMainModule.AuthURL <> '' then
+    UniSession.UrlRedirect(UniMainModule.AuthURL)
+  else
+    ShowLoginError(UniMainModule.LoginError);
 end;
 
 initialization

@@ -1,0 +1,16 @@
+{{# Sign-in not completed: title, detail, error_code (OAuth2 error of Keycloak) #}}
+{{extends "../baselayout.html"}}
+
+{{block "title"}}{{:t.auth.page_title}}{{endblock}}
+
+{{block "body"}}
+<header class="page-header">
+  <p class="error-code"><i class="bi bi-shield-exclamation me-1"></i>Keycloak{{if error_code}} &middot; {{:error_code}}{{endif}}</p>
+  <h1>{{:title}}</h1>
+  {{if detail}}<p class="lead lead-full">{{:detail}}</p>{{endif}}
+  <div class="page-actions">
+    <a href="/login" hx-boost="false" class="btn btn-primary"><i class="bi bi-box-arrow-in-right me-1"></i>{{:t.errors.sign_in_again}}</a>
+    <a href="/" class="btn btn-outline-secondary">{{:t.errors.home_page}}</a>
+  </div>
+</header>
+{{endblock}}

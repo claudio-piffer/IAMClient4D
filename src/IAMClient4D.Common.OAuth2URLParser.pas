@@ -51,6 +51,16 @@ type
     ErrorDescription: string;
 
     /// <summary>
+    /// kc_action_status of Keycloak (application initiated action); empty if absent
+    /// </summary>
+    KeycloakActionStatus: string;
+
+    /// <summary>
+    /// iss of the authorization response (RFC 9207); empty if absent
+    /// </summary>
+    Iss: string;
+
+    /// <summary>
     /// Checks if callback contains valid authorization code
     /// </summary>
     function IsSuccess: Boolean;
@@ -84,7 +94,16 @@ type
     /// <summary>
     /// Extracts and validates code and state from callback URL
     /// </summary>
+    /// <exception cref="EIAM4DOAuth2CallbackException">Error response (see CreateErrorException), missing code or state</exception>
     class procedure ExtractCodeAndState(const ACallbackURL: string; out ACode, AState: string); static;
+
+    /// <summary>
+    /// Exception for an error response of the authorization server (RFC 6749 4.1.2.1).
+    /// </summary>
+    /// <remarks>
+    /// Context keys 'error' and, when present, 'error_description' hold the values received.
+    /// </remarks>
+    class function CreateErrorException(const AResult: TIAM4DOAuth2CallbackResult): EIAM4DOAuth2CallbackException; static;
 
     /// <summary>
     /// Checks if query parameters contain OAuth2 error
@@ -101,6 +120,38 @@ implementation
 
 uses
   IAMClient4D.Common.Constants;
+
+/// <summary>
+/// Raw query of a URL of the form scheme:/path (no authority), the redirect of a private-use scheme
+/// (RFC 8252 7.1) that TURI rejects. False if the URL has an authority or no valid scheme: TURI parses it.
+/// </summary>
+function TryGetSchemeOnlyQuery(const AURL: string; out ARawQuery: string): Boolean;
+var
+  LColon, LHash, LQuery, I: Integer;
+begin
+  Result := False;
+  ARawQuery := EmptyStr;
+
+  LColon := AURL.IndexOf(':');
+  if LColon < 1 then
+    Exit;
+  for I := 0 to LColon - 1 do
+    if not (CharInSet(AURL.Chars[I], ['A'..'Z', 'a'..'z']) or
+      ((I > 0) and CharInSet(AURL.Chars[I], ['0'..'9', '+', '-', '.']))) then
+      Exit;
+  if AURL.Substring(LColon + 1).StartsWith('//') then
+    Exit;
+
+  Result := True;
+  LQuery := AURL.IndexOf('?', LColon);
+  LHash := AURL.IndexOf('#', LColon);
+  if (LQuery < 0) or ((LHash >= 0) and (LHash < LQuery)) then
+    Exit;
+  if LHash < 0 then
+    ARawQuery := AURL.Substring(LQuery + 1)
+  else
+    ARawQuery := AURL.Substring(LQuery + 1, LHash - LQuery - 1);
+end;
 
 { TIAM4DOAuth2CallbackResult }
 
@@ -161,13 +212,18 @@ begin
   Result.State := EmptyStr;
   Result.Error := EmptyStr;
   Result.ErrorDescription := EmptyStr;
+  Result.KeycloakActionStatus := EmptyStr;
+  Result.Iss := EmptyStr;
 
   try
-    LUri := TURI.Create(ACallbackURL);
+    if not TryGetSchemeOnlyQuery(ACallbackURL, LRawQuery) then
+    begin
+      LUri := TURI.Create(ACallbackURL);
 
-    LRawQuery := LUri.Query;
-    if LRawQuery.StartsWith('?') then
-      LRawQuery := LRawQuery.Substring(1);
+      LRawQuery := LUri.Query;
+      if LRawQuery.StartsWith('?') then
+        LRawQuery := LRawQuery.Substring(1);
+    end;
 
     LParams := ParseQueryString(LRawQuery);
     try
@@ -175,6 +231,8 @@ begin
       Result.State := LParams.Values[IAM4D_OAUTH2_PARAM_STATE];
       Result.Error := LParams.Values['error'];
       Result.ErrorDescription := LParams.Values['error_description'];
+      Result.KeycloakActionStatus := LParams.Values[IAM4D_KEYCLOAK_PARAM_KC_ACTION_STATUS];
+      Result.Iss := LParams.Values[IAM4D_OAUTH2_PARAM_ISS];
     finally
       LParams.Free;
     end;
@@ -195,7 +253,7 @@ begin
   LResult := ParseOAuth2Callback(ACallbackURL);
 
   if LResult.IsError then
-    raise EIAM4DOAuth2CallbackException.CreateFmt('OAuth2 authorization error: %s - %s', [LResult.Error, LResult.ErrorDescription]);
+    raise CreateErrorException(LResult);
 
   ACode := LResult.Code;
   AState := LResult.State;
@@ -205,6 +263,19 @@ begin
 
   if ACode.Trim.IsEmpty then
     raise EIAM4DOAuth2CallbackException.Create('Missing authorization code in OAuth2 callback');
+end;
+
+class function TIAM4DOAuth2URLParser.CreateErrorException(
+  const AResult: TIAM4DOAuth2CallbackResult): EIAM4DOAuth2CallbackException;
+begin
+  if AResult.ErrorDescription.IsEmpty then
+    Result := EIAM4DOAuth2CallbackException.CreateFmt('OAuth2 authorization error: %s', [AResult.Error])
+  else
+    Result := EIAM4DOAuth2CallbackException.CreateFmt('OAuth2 authorization error: %s - %s',
+      [AResult.Error, AResult.ErrorDescription]);
+  Result.WithContext('error', AResult.Error);
+  if not AResult.ErrorDescription.IsEmpty then
+    Result.WithContext('error_description', AResult.ErrorDescription);
 end;
 
 class function TIAM4DOAuth2URLParser.HasOAuth2Error(const AQueryParams: TStringList): Boolean;

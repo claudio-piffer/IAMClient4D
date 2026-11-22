@@ -44,7 +44,7 @@ type
     crrNotYetValid,
     crrExpired,
     crrPublicKeyPinningFailed,
-    crrStrictModeBypass,
+    crrSystemValidationFailed,
     crrUnknown);
 
   /// <summary>
@@ -63,8 +63,9 @@ type
   /// </summary>
   /// <remarks>
   /// svmStrict: Standard validation (system certificate store).
-  /// svmAllowSelfSigned: Accepts self-signed certificates with basic checks.
-  /// svmDisabled: No validation (INSECURE - use only for testing).
+  /// svmAllowSelfSigned: Accepts any certificate within its validity dates, without checking
+  /// chain or host name (INSECURE without pinned keys - use only for testing).
+  /// Pinned public keys are checked in both modes.
   /// </remarks>
   TIAM4DSSLValidationMode = (
     svmStrict,
@@ -93,7 +94,7 @@ type
     function GetValidationMode: TIAM4DSSLValidationMode;
 
     /// <summary>
-    /// Adds public key hashes for certificate pinning
+    /// Adds public key hashes for certificate pinning (format: see TIAM4DSSLCertificateValidator.CalculatePublicKeyHash)
     /// </summary>
     procedure AddPinnedPublicKeys(const APublicKeyHashes: TArray<string>);
 
@@ -103,9 +104,15 @@ type
     procedure ClearPinnedPublicKeys;
 
     /// <summary>
-    /// Validates certificate according to current mode
+    /// True when at least one public key is pinned
     /// </summary>
-    function ValidateCertificate(const Certificate: TCertificate): Boolean;
+    function HasPinnedPublicKeys: Boolean;
+
+    /// <summary>
+    /// Validates certificate according to current mode and pinned keys. ASystemAccepted is the
+    /// verdict of the platform (chain, host name, dates): svmStrict requires it
+    /// </summary>
+    function ValidateCertificate(const Certificate: TCertificate; ASystemAccepted: Boolean): Boolean;
   end;
 
   /// <summary>
@@ -113,11 +120,15 @@ type
   /// </summary>
   /// <remarks>
   /// Thread-safe: All public methods are protected by critical section.
-  /// Validation modes: Strict (system store), AllowSelfSigned (basic checks + pinning), Disabled (no checks).
-  /// Public key pinning: Uses SHA-256 hashes of public keys (64 hex chars).
-  /// Events: OnCertificateValidation provides detailed validation information.
+  /// Validation modes: Strict (platform verdict), AllowSelfSigned (validity dates only).
+  /// Public key pinning, in both modes: SHA-256 of TCertificate.PublicKey as the platform reports
+  /// it (64 hex chars, any case). On Windows and Android it is the RSA modulus in hex: other key
+  /// types cannot be pinned. A rejected certificate reports its hash in OnCertificateValidation.
+  /// On Linux the platform validates the certificate without calling back: pinning is refused.
+  /// Events: OnCertificateValidation provides detailed validation information. It is raised only
+  /// when the library installs the certificate callback: svmAllowSelfSigned, pinned keys, or
+  /// Android; in svmStrict without pins the platform alone validates (no event).
   /// Security: Exceptions in event handlers are silently caught to prevent disruption.
-  /// Hash format: Use CalculatePublicKeyHash() to generate valid hashes from PEM keys.
   /// </remarks>
   TIAM4DSSLCertificateValidator = class(TInterfacedObject, IIAM4DSSLCertificateValidator)
   private
@@ -144,8 +155,10 @@ type
     function GetValidationMode: TIAM4DSSLValidationMode;
 
     /// <summary>
-    /// Adds SHA-256 hashes of public keys for pinning
+    /// Adds SHA-256 hashes of public keys for pinning: 64 hex characters, any case (see CalculatePublicKeyHash)
     /// </summary>
+    /// <exception cref="ENotSupportedException">On Linux: libcurl does not call back for a certificate
+    /// the system accepted, a pin could not be enforced.</exception>
     procedure AddPinnedPublicKeys(const APublicKeyHashes: TArray<string>);
 
     /// <summary>
@@ -154,13 +167,27 @@ type
     procedure ClearPinnedPublicKeys;
 
     /// <summary>
-    /// Validates certificate based on current mode and pinning rules
+    /// True when at least one public key is pinned
     /// </summary>
-    function ValidateCertificate(const Certificate: TCertificate): Boolean;
+    function HasPinnedPublicKeys: Boolean;
 
     /// <summary>
-    /// Calculates SHA-256 hash of public key string (PEM format)
+    /// Validates certificate based on current mode and pinning rules
     /// </summary>
+    function ValidateCertificate(const Certificate: TCertificate; ASystemAccepted: Boolean): Boolean;
+
+    /// <summary>
+    /// Calculates SHA-256 hash of a public key string (whitespace and PEM headers removed);
+    /// for a pin, pass TCertificate.PublicKey of the server certificate
+    /// </summary>
+    /// <remarks>
+    /// A pin is not the RFC 7469 SPKI hash: THTTPClient reports no DER, only the RSA modulus as
+    /// uppercase hex (Windows, Android, macOS/iOS). The pin is SHA-256 of that text, so it can be
+    /// computed from the certificate without IAMClient4D:
+    ///   openssl x509 -in server.pem -noout -modulus | cut -d= -f2 | tr -d '\r\n' | openssl dgst -sha256
+    /// Only RSA keys can be pinned (an EC key reports no PublicKey: the certificate is refused);
+    /// on macOS/iOS only 2048-bit RSA keys are reported. Verified by tests\TLS.
+    /// </remarks>
     class function CalculatePublicKeyHash(const APublicKeyString: string): string;
 
     /// <summary>
@@ -242,6 +269,12 @@ begin
   if Length(APublicKeyHashes) = 0 then
     Exit;
 
+{$IFDEF LINUX}
+  // THTTPClient (libcurl) calls OnValidateServerCertificate only for a certificate the system
+  // refused: a pin could not be enforced
+  raise ENotSupportedException.Create('Public key pinning is not supported on Linux');
+{$ENDIF}
+
   for LHash in APublicKeyHashes do
   begin
     if LHash.Trim.IsEmpty then
@@ -277,6 +310,16 @@ begin
   end;
 end;
 
+function TIAM4DSSLCertificateValidator.HasPinnedPublicKeys: Boolean;
+begin
+  FLock.Enter;
+  try
+    Result := FPinnedPublicKeyHashes.Count > 0;
+  finally
+    FLock.Leave;
+  end;
+end;
+
 procedure TIAM4DSSLCertificateValidator.ClearPinnedPublicKeys;
 begin
   FLock.Enter;
@@ -297,11 +340,11 @@ begin
   Result := TIAM4DPublicKeyHashUtils.CalculatePublicKeyHash(APublicKeyString);
 end;
 
-function TIAM4DSSLCertificateValidator.ValidateCertificate(const Certificate: TCertificate): Boolean;
+function TIAM4DSSLCertificateValidator.ValidateCertificate(const Certificate: TCertificate;
+  ASystemAccepted: Boolean): Boolean;
 var
   LNow: TDateTime;
   LCertHash: string;
-  LMode: TIAM4DSSLValidationMode;
   LReason: TIAM4DCertificateRejectionReason;
   LMessage: string;
 begin
@@ -312,62 +355,61 @@ begin
 
   FLock.Enter;
   try
-    LMode := FValidationMode;
-
-    case LMode of
+    case FValidationMode of
       svmAllowSelfSigned:
         begin
           if Certificate.Subject = '' then
           begin
             LReason := crrEmptySubject;
             LMessage := 'Certificate subject is empty';
-          end;
-          if LMessage.IsEmpty then
+          end
+          else if Certificate.Start > LNow then
           begin
-            if Certificate.Start > LNow then
-            begin
-              LReason := crrNotYetValid;
-              LMessage := Format('Certificate not yet valid (starts: %s, now: %s)',
-                [DateTimeToStr(Certificate.Start), DateTimeToStr(LNow)]);
-            end;
-          end;
-
-          if LMessage.IsEmpty then
+            LReason := crrNotYetValid;
+            LMessage := Format('Certificate not yet valid (starts: %s, now: %s)',
+              [DateTimeToStr(Certificate.Start), DateTimeToStr(LNow)]);
+          end
+          else if Certificate.Expiry < LNow then
           begin
-            if Certificate.Expiry < LNow then
-            begin
-              LReason := crrExpired;
-              LMessage := Format('Certificate expired (expiry: %s, now: %s)',
-                [DateTimeToStr(Certificate.Expiry), DateTimeToStr(LNow)]);
-            end;
-          end;
-
-          if LMessage.IsEmpty and (FPinnedPublicKeyHashes.Count > 0) then
-          begin
-            LCertHash := CalculatePublicKeyHash(Certificate.PublicKey);
-
-            if not FPinnedPublicKeyHashes.ContainsKey(LCertHash) then
-            begin
-              LReason := crrPublicKeyPinningFailed;
-              LMessage := Format('Public key pinning failed (hash: %s, %d pins configured)',
-                [LCertHash, FPinnedPublicKeyHashes.Count]);
-            end;
-          end;
-
-          if LMessage.IsEmpty then
-          begin
-            Result := True;
-            LReason := crrNone;
-            LMessage := 'Certificate accepted (svmAllowSelfSigned)';
+            LReason := crrExpired;
+            LMessage := Format('Certificate expired (expiry: %s, now: %s)',
+              [DateTimeToStr(Certificate.Expiry), DateTimeToStr(LNow)]);
           end;
         end;
-
       svmStrict:
+        if not ASystemAccepted then
         begin
-          Result := False;
-          LReason := crrStrictModeBypass;
-          LMessage := 'ValidateCertificate called in svmStrict mode (should not happen)';
+          LReason := crrSystemValidationFailed;
+          LMessage := 'Certificate refused by the system validation';
         end;
+    end;
+
+    if LMessage.IsEmpty and (FPinnedPublicKeyHashes.Count > 0) then
+    begin
+      // The pins are stored in lowercase; no key reported (not RSA on Windows/Android) matches none
+      if Certificate.PublicKey.Trim.IsEmpty then
+        LCertHash := ''
+      else
+        LCertHash := CalculatePublicKeyHash(Certificate.PublicKey).ToLower;
+
+      if LCertHash.IsEmpty then
+      begin
+        LReason := crrPublicKeyPinningFailed;
+        LMessage := Format('Public key pinning failed: no public key reported (%d pins configured)',
+          [FPinnedPublicKeyHashes.Count]);
+      end
+      else if not FPinnedPublicKeyHashes.ContainsKey(LCertHash) then
+      begin
+        LReason := crrPublicKeyPinningFailed;
+        LMessage := Format('Public key pinning failed (hash: %s, %d pins configured)',
+          [LCertHash, FPinnedPublicKeyHashes.Count]);
+      end;
+    end;
+
+    if LMessage.IsEmpty then
+    begin
+      Result := True;
+      LMessage := 'Certificate accepted';
     end;
   finally
     FLock.Leave;

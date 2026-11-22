@@ -57,7 +57,9 @@ type
   /// - Kmac = HMAC-SHA256(Key32, 'mac')
   /// </para>
   /// <para>
-  /// <b>Frame format:</b> [IV 16 bytes][Ciphertext][HMAC Tag 32 bytes]
+  /// <b>Frame format:</b> [IV seed 8 bytes][Ciphertext][HMAC Tag 32 bytes]; the ciphertext
+  /// is as long as the plaintext (LockBox3 ciphertext stealing), an empty plaintext gives the tag only.
+  /// IV = seed || 8 zero bytes, seed from the CSPRNG.
   /// </para>
   /// <para>
   /// <b>HMAC calculation:</b> HMAC-SHA256(Kmac, AAD || CipherWithIV || Length(AAD))
@@ -74,7 +76,8 @@ type
   TIAM4DLockBox3StorageCryptoProvider = class(TInterfacedObject, IIAM4DStorageCryptoProvider)
   private const
     HMAC_TAG_SIZE = 32;  // HMAC-SHA256 output size
-    MIN_CIPHERTEXT_SIZE = 16 + HMAC_TAG_SIZE;  // IV (16) + Tag (32)
+    // Tag only (empty plaintext); the tag is checked before decrypting
+    MIN_CIPHERTEXT_SIZE = HMAC_TAG_SIZE;
   private
     FKEnc: TBytes;
     FKMac: TBytes;
@@ -122,6 +125,7 @@ type
 implementation
 
 uses
+  IAMClient4D.Common.CryptoUtils,
   IAMClient4D.Common.SecureMemory;
 
 { TIAM4DLockBox3StorageCryptoProvider }

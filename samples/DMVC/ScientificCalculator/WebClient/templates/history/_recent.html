@@ -1,0 +1,16 @@
+{{# Fragment: the last calculations (side panel); r.data.items cut by the controller #}}
+{{if r.ok}}
+<ul class="list-unstyled recent mb-0">
+{{for item in r.data.items}}
+  <li>
+    <span class="font-monospace text-break">{{:item.expression}}</span>
+    <span class="font-monospace fw-semibold text-break">= {{:item.outcome}}</span>
+    <time class="small text-secondary" datetime="{{:item.performedAt}}" data-relative>{{:item.performedAt}}</time>
+  </li>
+{{else}}
+  <li class="text-secondary">{{:t.history.recent_empty}}</li>
+{{endfor}}
+</ul>
+{{else}}
+{{include "../partials/_error.html"}}
+{{endif}}

@@ -36,8 +36,8 @@ type
   /// Factory for creating cryptographic provider instances.
   /// </summary>
   /// <remarks>
-  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
-  /// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
+  /// The crypto provider is selected at compile-time (IAM4D_TMS / IAM4D_TAURUSTLS defines).
+  /// LockBox3, TMS and TaurusTLS are mutually exclusive - only one is compiled at a time.
   ///
   /// Thread-safety: Each call creates a new provider instance.
   /// </remarks>
@@ -58,18 +58,19 @@ type
     /// <summary>
     /// Returns the name of the default provider for this build configuration.
     /// </summary>
-    /// <returns>'LockBox3' or 'TMS Cryptography Pack' depending on defines</returns>
+    /// <returns>'LockBox3', 'TMS Cryptography Pack' or 'TaurusTLS (OpenSSL)' depending on defines</returns>
     class function GetDefaultProviderName: string; static;
   end;
 
 implementation
 
 uses
-  {$IFDEF IAM4D_CRYPTO_LOCKBOX3}
-  IAMClient4D.Security.Crypto.LockBox3;
-  {$ENDIF}
-  {$IFDEF IAM4D_CRYPTO_TMS}
+  {$IF DEFINED(IAM4D_CRYPTO_TMS)}
   IAMClient4D.Security.Crypto.TMS;
+  {$ELSEIF DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
+  IAMClient4D.Security.Crypto.TaurusTLS;
+  {$ELSE}
+  IAMClient4D.Security.Crypto.LockBox3;
   {$ENDIF}
 
 { TIAM4DCryptoProviderFactory }
@@ -77,32 +78,26 @@ uses
 class function TIAM4DCryptoProviderFactory.CreateProvider(
   AType: TIAM4DCryptoProviderType): IIAM4DCryptoProvider;
 begin
-  case AType of
-    cpDefault:
-      {$IFDEF IAM4D_CRYPTO_TMS}
-      Result := TIAM4DTMSCryptoProvider.Create;
-      {$ELSE}
-      Result := TIAM4DLockBox3CryptoProvider.Create;
-      {$ENDIF}
+  if AType = cpCustom then
+    raise EArgumentException.Create(
+      'cpCustom requires a custom IIAM4DCryptoProvider instance. ' +
+      'Use direct instantiation instead.');
 
-    cpCustom:
-      raise EArgumentException.Create(
-        'cpCustom requires a custom IIAM4DCryptoProvider instance. ' +
-        'Use direct instantiation instead.');
-  else
-    // Default fallback
-    {$IFDEF IAM4D_CRYPTO_TMS}
-    Result := TIAM4DTMSCryptoProvider.Create;
-    {$ELSE}
-    Result := TIAM4DLockBox3CryptoProvider.Create;
-    {$ENDIF}
-  end;
+  {$IF DEFINED(IAM4D_CRYPTO_TMS)}
+  Result := TIAM4DTMSCryptoProvider.Create;
+  {$ELSEIF DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
+  Result := TIAM4DTaurusTLSCryptoProvider.Create;
+  {$ELSE}
+  Result := TIAM4DLockBox3CryptoProvider.Create;
+  {$ENDIF}
 end;
 
 class function TIAM4DCryptoProviderFactory.GetDefaultProviderName: string;
 begin
-  {$IFDEF IAM4D_CRYPTO_TMS}
+  {$IF DEFINED(IAM4D_CRYPTO_TMS)}
   Result := 'TMS Cryptography Pack';
+  {$ELSEIF DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
+  Result := 'TaurusTLS (OpenSSL)';
   {$ELSE}
   Result := 'LockBox3';
   {$ENDIF}

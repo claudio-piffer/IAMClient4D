@@ -41,8 +41,8 @@ type
   /// Supports pluggable crypto providers (LockBox3, TMS, custom implementations).
   ///
   /// Usage patterns:
-  /// - Simple: CreateValidator(issuer, audience) - uses LockBox3
-  /// - With provider type: CreateValidator(issuer, audience, cpLockBox3)
+  /// - Simple: CreateValidator(issuer, audience) - the crypto provider of IAMClient4D.Config.inc
+  /// - With provider type: CreateValidator(issuer, audience, cpDefault) - same as above
   /// - With custom provider: CreateValidator(issuer, audience, myProvider)
   /// - With JWKS provider: CreateValidator(issuer, audience, jwksProvider)
   /// - Advanced options: use IIAM4DJWTValidatorConfigurable to disable aud validation or tune azp rules
@@ -84,7 +84,7 @@ type
     /// </summary>
     /// <param name="AExpectedIssuer">Expected token issuer URL</param>
     /// <param name="AExpectedAudience">Expected token audience</param>
-    /// <param name="ACryptoProviderType">Crypto provider type (cpLockBox3, cpTMS)</param>
+    /// <param name="ACryptoProviderType">cpDefault (the provider of IAMClient4D.Config.inc); cpCustom raises</param>
     /// <param name="ASSLValidationMode">SSL validation mode (default: strict)</param>
     /// <returns>Interface to the JWT validator (reference counted)</returns>
     class function CreateValidator(

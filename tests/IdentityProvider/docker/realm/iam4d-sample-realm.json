@@ -1,0 +1,172 @@
+{
+  "realm": "iam4d-sample",
+  "displayName": "IAMClient4D sample",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "iam4d-sample-app",
+      "name": "IAMClient4D VCL sample",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost/oauth2callback",
+        "http://127.0.0.1/oauth2callback",
+        "it.iam4d.identitybrokering:/oauth2callback"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    },
+    {
+      "clientId": "iam4d-sample-unigui",
+      "name": "IAMClient4D uniGUI sample",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8077/?oauthcallback=keycloak",
+        "http://localhost:8077/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    },
+    {
+      "clientId": "iam4d-sample-service",
+      "name": "IAMClient4D VCL sample (Client Credentials)",
+      "description": "Test only: the secret is public, never reuse it outside this throwaway Keycloak",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "iam4d-test-only-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "email": "demo@example.com",
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ],
+      "clientRoles": {
+        "realm-management": ["realm-admin"]
+      }
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "spid-test",
+      "displayName": "SPID test (spid-saml-check)",
+      "providerId": "spid-saml",
+      "enabled": true,
+      "trustEmail": true,
+      "storeToken": false,
+      "hideOnLogin": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "syncMode": "FORCE",
+        "idpEntityId": "http://localhost:${SPID_CHECK_PORT:8443}/demo",
+        "singleSignOnServiceUrl": "http://localhost:${SPID_CHECK_PORT:8443}/demo/samlsso",
+        "singleLogoutServiceUrl": "http://localhost:${SPID_CHECK_PORT:8443}/demo/samlsso",
+        "principalType": "ATTRIBUTE",
+        "principalAttribute": "fiscalNumber",
+        "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
+        "wantAuthnRequestsSigned": "true",
+        "wantAssertionsSigned": "true",
+        "validateSignature": "true",
+        "signSpMetadata": "true",
+        "forceAuthn": "true",
+        "postBindingAuthnRequest": "true",
+        "postBindingResponse": "true",
+        "postBindingLogout": "true",
+        "signatureAlgorithm": "RSA_SHA256",
+        "xmlSigKeyInfoKeyNameTransformer": "NONE",
+        "attributeConsumingServiceIndex": "1",
+        "attributeConsumingServiceName": "it|Servizio di esempio",
+        "authnContextClassRefs": "[\"https://www.spid.gov.it/SpidL2\"]",
+        "authnContextComparisonType": "minimum",
+        "organizationNames": "it|Comune di Esempio",
+        "organizationDisplayNames": "it|Comune di Esempio",
+        "organizationUrls": "it|https://www.comune.esempio.it",
+        "otherContactIsSpPrivate": "false",
+        "otherContactIpaCode": "c_x000",
+        "otherContactEmail": "protocollo@comune.esempio.it",
+        "otherContactPhone": "+390123456789"
+      }
+    }
+  ],
+  "identityProviderMappers": [
+    {
+      "name": "fiscalNumber",
+      "identityProviderAlias": "spid-test",
+      "identityProviderMapper": "spid-user-attribute-idp-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "attribute.name": "fiscalNumber",
+        "user.attribute": "fiscalNumber"
+      }
+    },
+    {
+      "name": "email",
+      "identityProviderAlias": "spid-test",
+      "identityProviderMapper": "spid-user-attribute-idp-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "attribute.name": "email",
+        "user.attribute": "email"
+      }
+    },
+    {
+      "name": "name",
+      "identityProviderAlias": "spid-test",
+      "identityProviderMapper": "spid-user-attribute-idp-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "attribute.name": "name",
+        "user.attribute": "firstName"
+      }
+    },
+    {
+      "name": "familyName",
+      "identityProviderAlias": "spid-test",
+      "identityProviderMapper": "spid-user-attribute-idp-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "attribute.name": "familyName",
+        "user.attribute": "lastName"
+      }
+    }
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"fiscalNumber\",\"displayName\":\"Codice fiscale\",\"validations\":{\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}]}"
+          ]
+        }
+      }
+    ]
+  }
+}

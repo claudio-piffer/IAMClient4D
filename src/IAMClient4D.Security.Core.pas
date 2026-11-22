@@ -72,7 +72,8 @@ type
     /// OWNERSHIP CONTRACT:
     /// - The CALLER owns the returned TJSONObject and MUST free it.
     /// - Implementation MUST always return a new instance (Clone/Copy), never cached references.
-    /// - Returns nil if key not found (no exception thrown for missing keys in some implementations).
+    /// - A missing key: TIAM4DJWKSProvider raises EIAM4DJWKSKeyNotFoundException; other
+    ///   implementations may return nil, which the validator also treats as a missing key.
     /// </remarks>
     /// <returns>
     /// New TJSONObject instance containing the public key, or nil if not found.
@@ -114,12 +115,27 @@ type
   end;
 
   /// <summary>
+  /// Optional for a JWKS provider: the key of a kid that also fits the algorithm of the token.
+  /// RFC 7517 4.5 lets keys of different types share a kid; the validator uses this interface
+  /// when the provider supports it, GetPublicKey otherwise.
+  /// </summary>
+  IIAM4DJWKSKeySelector = interface
+    ['{F063B73E-F353-4FD3-9C92-7236EE211DE7}']
+    /// <summary>
+    /// Like GetPublicKey, restricted to the keys whose type fits AAlg (RS*/PS*: RSA; ES256,
+    /// ES384, ES512: EC on P-256, P-384, P-521). CALLER MUST FREE the returned object.
+    /// </summary>
+    function GetPublicKeyForAlg(const AIssuer, AKeyId, AAlg: string): TJSONObject;
+  end;
+
+  /// <summary>
   /// JWT validator interface for token validation.
   /// </summary>
   /// <remarks>
   /// Validates JWT tokens including signature, expiry, issuer, and audience.
   /// JWKS source: Configurable from URL or file.
-  /// Clock skew: Configurable tolerance for time-based validations (default: 30 seconds).
+  /// Clock skew: Configurable tolerance for time-based validations (TIAM4DJWTValidator default:
+  /// 5 seconds; TIAM4DJWTMiddlewareConfig default: 60 seconds).
   /// Claims: Returns parsed claims on successful validation.
   /// Thread-safety: Implementation should support concurrent validations.
   /// Caller owns returned AClaims TJSONObject - must free after use.

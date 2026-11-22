@@ -1,0 +1,3 @@
+[submodule "src/Lib/TaurusTLS"]
+	path = src/Lib/TaurusTLS
+	url = https://github.com/TaurusTLS-Developers/TaurusTLS.git

@@ -1,0 +1,125 @@
+#  ---------------------------------------------------------------------------
+#  Throwaway Keycloak for tests/IdentityProvider: dev mode, in-memory database,
+#  SPID and CIE ID extensions, and the AgID test identity provider
+#  (spid-saml-check) for a complete SPID login on this machine, plus a second instance
+#  standing in for CIE ID (no official CIE simulator exists). Not for production.
+#
+#  Versions (environment or .env next to this file): KC_VERSION (default 26.8.2),
+#  SPID_VERSION and CIE_VERSION (default 26.8.1), same Keycloak minor, with
+#  SPID_SHA256 and CIE_SHA256 (SHA-256 of the two jars; defaults in the Dockerfile);
+#  SPID_CHECK_VERSION (default 2.2.5).
+#  Host ports, bound to 127.0.0.1 only: KC_PORT (default 18080), SPID_CHECK_PORT (default 8443),
+#  CIE_CHECK_PORT (default 8444).
+#  Keycloak admin: admin / admin.
+#
+#  Keycloak image and spid-saml-check scripts shared with the sample environment:
+#  Docker/keycloak/Dockerfile and Docker/spid-saml-check (this stack keeps its own ports,
+#  in-memory database and realm, so the tests always start from a clean state).
+#
+#  Realm iam4d-sample (realm/iam4d-sample-realm.json), imported at every start, for the
+#  tests only (the samples use Docker/ and the realm iamclient4d): public client
+#  iam4d-sample-app (PKCE, local callback on any loopback port, localhost or 127.0.0.1),
+#  public client iam4d-sample-unigui (PKCE, callback http://localhost:8077/), user demo / demo
+#  with realm-admin, confidential client iam4d-sample-service (Client Credentials, test-only
+#  secret iam4d-test-only-secret), SPID provider spid-test bound to the spid-saml-check demo
+#  identity provider (users on http://localhost:8443/demo/users, e.g. ada / password123).
+#  ---------------------------------------------------------------------------
+
+name: iam4d-idp-test
+
+services:
+  keycloak:
+    build:
+      context: ../../../Docker/keycloak
+      args:
+        KC_VERSION: ${KC_VERSION:-26.8.2}
+        SPID_VERSION: ${SPID_VERSION:-26.8.1}
+        CIE_VERSION: ${CIE_VERSION:-26.8.1}
+        # No value: from the environment, otherwise the Dockerfile default
+        SPID_SHA256:
+        CIE_SHA256:
+    image: iam4d/keycloak-spid-cie:${KC_VERSION:-26.8.2}
+    container_name: iam4d-idp-test-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      # start-dev defaults to an H2 file in the container: nothing must survive a restart
+      KC_DB: dev-mem
+      # Browser URLs even for requests from other containers (spid-saml-check downloads
+      # the SP metadata from http://keycloak:8080); back-channel URLs follow the request
+      KC_HOSTNAME: http://localhost:${KC_PORT:-18080}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      # Placeholder in the realm file (spid-test endpoints)
+      SPID_CHECK_PORT: ${SPID_CHECK_PORT:-8443}
+    volumes:
+      - ./realm:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:${KC_PORT:-18080}:8080"
+    healthcheck:
+      # No curl in the image: plain HTTP over bash /dev/tcp on the management port
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      # Healthy as soon as ready: the long start period only matters on a slow or loaded machine
+      start_period: 300s
+
+  # AgID SPID test suite: demo identity provider on http://localhost:SPID_CHECK_PORT/demo.
+  # At start it generates the demo IdP key, sets its certificate on spid-test (Admin REST API,
+  # admin / admin), adds the kc-admin-api scope (Keycloak 26.8.2+) to iam4d-sample-app and registers
+  # the SPID SP metadata of the realm iam4d-sample (spid-saml-check/entrypoint.sh, register.sh,
+  # trust.js, admin-api-scope.js); healthy once registered.
+  spid-saml-check:
+    image: italia/spid-saml-check:${SPID_CHECK_VERSION:-2.2.5}
+    container_name: iam4d-idp-test-spid-saml-check
+    entrypoint: ["bash", "/iam4d/entrypoint.sh"]
+    environment:
+      NODE_HTTPS_PORT: ${SPID_CHECK_PORT:-8443}
+    volumes:
+      - ../../../Docker/spid-saml-check:/iam4d:ro
+    ports:
+      - "127.0.0.1:${SPID_CHECK_PORT:-8443}:${SPID_CHECK_PORT:-8443}"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        # A restarted Keycloak has a new in-memory realm (new SP keys): register it again
+        restart: true
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/iam4d-registered"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+  # CIE simulator: the same demo identity provider on http://localhost:CIE_CHECK_PORT/demo,
+  # with its own key and the login pages relabelled "Simulatore CIE". Not the CIE ID service:
+  # it only answers like it. The cie provider is created by the application (e.g. the VCL sample)
+  # from http://cie-simulator:CIE_CHECK_PORT/demo/metadata.xml, the metadata URL Keycloak
+  # reaches; register.sh waits for a CIE provider in the realm iam4d-sample (Admin REST API,
+  # admin / admin) and registers its CIE SP metadata whenever it changes. Healthy once the demo
+  # identity provider answers.
+  cie-simulator:
+    image: italia/spid-saml-check:${SPID_CHECK_VERSION:-2.2.5}
+    container_name: iam4d-idp-test-cie-simulator
+    entrypoint: ["bash", "/iam4d/entrypoint.sh"]
+    environment:
+      NODE_HTTPS_PORT: ${CIE_CHECK_PORT:-8444}
+      IAM4D_PROFILE: cie
+      SP_METADATA_URL: http://keycloak:8080/realms/iam4d-sample/cieid-sp-metadata
+    volumes:
+      - ../../../Docker/spid-saml-check:/iam4d:ro
+    ports:
+      - "127.0.0.1:${CIE_CHECK_PORT:-8444}:${CIE_CHECK_PORT:-8444}"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        # A restarted Keycloak has a new in-memory realm: the cie provider must be saved again
+        restart: true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs -o /dev/null http://localhost:$${NODE_HTTPS_PORT}/demo/metadata.xml"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s

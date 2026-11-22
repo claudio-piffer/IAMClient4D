@@ -1,0 +1,22 @@
+{{# Fragment: GET /api/constants; r = view model #}}
+{{if r.ok}}
+<div class="panel p-0 overflow-hidden">
+  <table class="table table-sm align-middle mb-0">
+    <thead>
+      <tr><th scope="col" class="ps-3">{{:t.constants.symbol}}</th><th scope="col">{{:t.constants.value}}</th><th scope="col" class="d-none d-sm-table-cell">{{:t.constants.description}}</th></tr>
+    </thead>
+    <tbody>
+    {{for c in r.data.items}}
+      <tr>
+        <td class="ps-3 fw-semibold">{{:c.symbol}}</td>
+        <td class="font-monospace">{{:c.value|num}}</td>
+        <td class="text-secondary d-none d-sm-table-cell">{{:c.description}}</td>
+      </tr>
+    {{endfor}}
+    </tbody>
+  </table>
+</div>
+<p class="small text-secondary mt-2 mb-0">{{:t.constants.source|replace,"{backend}",r.backendLabel|replace,"{url}",r.baseUrl|replace,"{ms}",r.elapsedMs}}</p>
+{{else}}
+{{include "../partials/_error.html"}}
+{{endif}}

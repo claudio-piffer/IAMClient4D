@@ -15,6 +15,12 @@ uses
   System.SyncObjs,
   IAMClient4D.Core;
 
+const
+  /// <summary>Minutes a login may wait for the Keycloak callback.</summary>
+  PENDING_LOGIN_MINUTES = 10;
+  /// <summary>Logins waiting for the callback at the same time; one more is refused.</summary>
+  MAX_PENDING_LOGINS = 500;
+
 type
   TIAMClientManager = class;
 
@@ -30,31 +36,40 @@ type
   end;
 
   /// <summary>
-  /// Gestisce i client IAM usando State OAuth come chiave.
-  /// Thread-safe singleton accessibile da qualsiasi sessione.
+  /// Clients of the logins waiting for the Keycloak callback, by OAuth2 state.
   /// </summary>
+  /// <remarks>
+  /// Shared by the sessions (the callback opens a new uniGUI session) and thread-safe. A login
+  /// expires after PENDING_LOGIN_MINUTES; at most MAX_PENDING_LOGINS are kept.
+  /// </remarks>
   TIAMClientManager = class
+  private type
+    TPendingLogin = record
+      Client: IIAM4DClient;
+      CreatedAt: TDateTime;
+    end;
   private
-    FClients: TDictionary<string, IIAM4DClient>;
+    FClients: TDictionary<string, TPendingLogin>;
     FLock: TCriticalSection;
+    procedure PurgeExpired;
   public
     constructor Create;
     destructor Destroy; override;
 
     /// <summary>
-    /// Salva un client usando lo State OAuth come chiave
+    /// False when MAX_PENDING_LOGINS logins are waiting: checked before building a client.
     /// </summary>
-    procedure SetClient(const AState: string; AClient: IIAM4DClient);
+    function HasRoom: Boolean;
 
     /// <summary>
-    /// Recupera un client usando lo State OAuth
+    /// Stores the client of a login; False when MAX_PENDING_LOGINS logins are waiting.
     /// </summary>
-    function GetClient(const AState: string): IIAM4DClient;
+    function TryAddClient(const AState: string; const AClient: IIAM4DClient): Boolean;
 
     /// <summary>
-    /// Rimuove un client dalla cache (dopo CompleteAuthorizationFlow)
+    /// Removes the client of AState and returns it, if it has not expired: a state is used once.
     /// </summary>
-    procedure RemoveClient(const AState: string);
+    function TryTakeClient(const AState: string; out AClient: IIAM4DClient): Boolean;
   end;
 
 function UniServerModule: TUniServerModule;
@@ -64,6 +79,7 @@ implementation
 {$R *.dfm}
 
 uses
+  System.DateUtils,
   uniGUIVars;
 
 function UniServerModule: TUniServerModule;
@@ -88,13 +104,11 @@ end;
 
 { TIAMClientManager }
 
-{ TIAMClientManager }
-
 constructor TIAMClientManager.Create;
 begin
   inherited Create;
 
-  FClients := TDictionary<string, IIAM4DClient>.Create;
+  FClients := TDictionary<string, TPendingLogin>.Create;
   FLock := TCriticalSection.Create;
 end;
 
@@ -112,43 +126,68 @@ begin
   inherited;
 end;
 
-function TIAMClientManager.GetClient(const AState: string): IIAM4DClient;
+procedure TIAMClientManager.PurgeExpired;
+var
+  LPair: TPair<string, TPendingLogin>;
+  LOldest: TDateTime;
 begin
-  Result := nil;
+  LOldest := IncMinute(Now, -PENDING_LOGIN_MINUTES);
+  for LPair in FClients.ToArray do
+    if LPair.Value.CreatedAt < LOldest then
+      FClients.Remove(LPair.Key);
+end;
 
-  if AState.Trim.IsEmpty then
-    Exit;
-
+function TIAMClientManager.HasRoom: Boolean;
+begin
   FLock.Enter;
   try
-    if not FClients.TryGetValue(AState, Result) then
-      Result := nil;
+    PurgeExpired;
+    Result := FClients.Count < MAX_PENDING_LOGINS;
   finally
     FLock.Leave;
   end;
 end;
 
-procedure TIAMClientManager.RemoveClient(const AState: string);
+function TIAMClientManager.TryAddClient(const AState: string; const AClient: IIAM4DClient): Boolean;
+var
+  LLogin: TPendingLogin;
 begin
-  if AState.Trim.IsEmpty then
-    Exit;
+  if AState.Trim.IsEmpty or not Assigned(AClient) then
+    raise EArgumentException.Create('State and client are required');
 
   FLock.Enter;
   try
-    FClients.Remove(AState);
+    PurgeExpired;
+    Result := FClients.Count < MAX_PENDING_LOGINS;
+    if Result then
+    begin
+      LLogin.Client := AClient;
+      LLogin.CreatedAt := Now;
+      FClients.AddOrSetValue(AState, LLogin);
+    end;
   finally
     FLock.Leave;
   end;
 end;
 
-procedure TIAMClientManager.SetClient(const AState: string; AClient: IIAM4DClient);
+function TIAMClientManager.TryTakeClient(const AState: string; out AClient: IIAM4DClient): Boolean;
+var
+  LLogin: TPendingLogin;
 begin
-  if AState.Trim.IsEmpty then
-    raise Exception.Create('State cannot be empty');
+  AClient := nil;
+  Result := False;
+  if AState.IsEmpty then
+    Exit;
 
   FLock.Enter;
   try
-    FClients.AddOrSetValue(AState, AClient);
+    PurgeExpired;
+    Result := FClients.TryGetValue(AState, LLogin);
+    if Result then
+    begin
+      FClients.Remove(AState);
+      AClient := LLogin.Client;
+    end;
   finally
     FLock.Leave;
   end;

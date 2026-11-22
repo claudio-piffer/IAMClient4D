@@ -73,7 +73,7 @@
         <UsingDelphiRTL>true</UsingDelphiRTL>
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
-        <DCC_UnitSearchPath>$(DMVC);../../../src;../../../src/Lib/DelphiCSPRNG/src;../../../src/Lib/LockBox3/ciphers;../../../src/Lib/LockBox3/cryptography;../../../src/Lib/LockBox3/hashes;../../../src/Lib/LockBox3/library surface;../../../src/Lib/LockBox3/RSA;../../../src/Lib/LockBox3/utilities;../../../src/DMVCMiddleware;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>../../../src/Lib/delphimvcframework/sources;../../../src/Lib/delphimvcframework/lib/loggerpro;../../../src/Lib/delphimvcframework/lib/swagdoc/Source;../../../src/Lib/delphimvcframework/lib/dmustache;../../../src;../../../src/Lib/DelphiCSPRNG/src;../../../src/Lib/LockBox3/ciphers;../../../src/Lib/LockBox3/cryptography;../../../src/Lib/LockBox3/hashes;../../../src/Lib/LockBox3/library surface;../../../src/Lib/LockBox3/RSA;../../../src/Lib/LockBox3/utilities;../../../src/DMVCMiddleware;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <DCC_Framework>VCL;$(DCC_Framework)</DCC_Framework>
         <SanitizedProjectName>SwaggerAPIVersioning</SanitizedProjectName>
         <VerInfo_Locale>1040</VerInfo_Locale>

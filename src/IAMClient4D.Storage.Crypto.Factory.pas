@@ -27,8 +27,8 @@
 /// Factory for creating storage crypto provider instances.
 /// </summary>
 /// <remarks>
-/// The crypto provider is selected at compile-time based on IAM4D_TMS define.
-/// LockBox3 and TMS are mutually exclusive - only one is compiled at a time.
+/// The crypto provider is selected at compile-time (IAM4D_TMS / IAM4D_TAURUSTLS defines).
+/// LockBox3, TMS and TaurusTLS are mutually exclusive - only one is compiled at a time.
 /// </remarks>
 unit IAMClient4D.Storage.Crypto.Factory;
 
@@ -43,12 +43,15 @@ type
   /// Factory for creating storage crypto provider instances.
   /// </summary>
   /// <remarks>
-  /// The crypto provider is selected at compile-time based on IAM4D_TMS define.
+  /// The crypto provider is selected at compile-time (IAM4D_TMS / IAM4D_TAURUSTLS defines).
   /// <para>
   /// <b>LockBox3 (default):</b> AES-256-CBC + HMAC-SHA256
   /// </para>
   /// <para>
   /// <b>TMS:</b> AES-256-GCM (requires IAM4D_TMS define)
+  /// </para>
+  /// <para>
+  /// <b>TaurusTLS:</b> AES-256-GCM via OpenSSL (requires IAM4D_TAURUSTLS define)
   /// </para>
   /// <para>
   /// <b>Thread-safety:</b> Each call creates a new provider instance.
@@ -71,24 +74,25 @@ type
     /// <summary>
     /// Returns the algorithm name for the default provider.
     /// </summary>
-    /// <returns>'AES-256-CBC-HMAC-SHA256' for LockBox3, 'AES-256-GCM' for TMS</returns>
+    /// <returns>'AES-256-CBC-HMAC-SHA256' for LockBox3, 'AES-256-GCM' for TMS and TaurusTLS</returns>
     class function GetDefaultAlgorithmName: string; static;
 
     /// <summary>
     /// Returns the name of the default provider for this build configuration.
     /// </summary>
-    /// <returns>'LockBox3' or 'TMS Cryptography Pack' depending on defines</returns>
+    /// <returns>'LockBox3', 'TMS Cryptography Pack' or 'TaurusTLS (OpenSSL)' depending on defines</returns>
     class function GetDefaultProviderName: string; static;
   end;
 
 implementation
 
 uses
-  {$IFDEF IAM4D_CRYPTO_LOCKBOX3}
-  IAMClient4D.Storage.Crypto.LockBox3;
-  {$ENDIF}
-  {$IFDEF IAM4D_CRYPTO_TMS}
+  {$IF DEFINED(IAM4D_CRYPTO_TMS)}
   IAMClient4D.Storage.Crypto.TMS;
+  {$ELSEIF DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
+  IAMClient4D.Storage.Crypto.TaurusTLS;
+  {$ELSE}
+  IAMClient4D.Storage.Crypto.LockBox3;
   {$ENDIF}
 
 { TIAM4DStorageCryptoProviderFactory }
@@ -100,31 +104,23 @@ begin
   if Length(AKey32) <> 32 then
     raise EArgumentException.Create('Key must be exactly 32 bytes');
 
-  case AType of
-    scpDefault:
-      {$IFDEF IAM4D_CRYPTO_TMS}
-      Result := TIAM4DTMSStorageCryptoProvider.Create(AKey32);
-      {$ELSE}
-      Result := TIAM4DLockBox3StorageCryptoProvider.Create(AKey32);
-      {$ENDIF}
+  if AType = scpCustom then
+    raise EArgumentException.Create(
+      'scpCustom requires a custom IIAM4DStorageCryptoProvider instance. ' +
+      'Instantiate your custom provider directly instead of using the factory.');
 
-    scpCustom:
-      raise EArgumentException.Create(
-        'scpCustom requires a custom IIAM4DStorageCryptoProvider instance. ' +
-        'Instantiate your custom provider directly instead of using the factory.');
-  else
-    // Default fallback
-    {$IFDEF IAM4D_CRYPTO_TMS}
-    Result := TIAM4DTMSStorageCryptoProvider.Create(AKey32);
-    {$ELSE}
-    Result := TIAM4DLockBox3StorageCryptoProvider.Create(AKey32);
-    {$ENDIF}
-  end;
+  {$IF DEFINED(IAM4D_CRYPTO_TMS)}
+  Result := TIAM4DTMSStorageCryptoProvider.Create(AKey32);
+  {$ELSEIF DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
+  Result := TIAM4DTaurusTLSStorageCryptoProvider.Create(AKey32);
+  {$ELSE}
+  Result := TIAM4DLockBox3StorageCryptoProvider.Create(AKey32);
+  {$ENDIF}
 end;
 
 class function TIAM4DStorageCryptoProviderFactory.GetDefaultAlgorithmName: string;
 begin
-  {$IFDEF IAM4D_CRYPTO_TMS}
+  {$IF DEFINED(IAM4D_CRYPTO_TMS) OR DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
   Result := 'AES-256-GCM';
   {$ELSE}
   Result := 'AES-256-CBC-HMAC-SHA256';
@@ -133,8 +129,10 @@ end;
 
 class function TIAM4DStorageCryptoProviderFactory.GetDefaultProviderName: string;
 begin
-  {$IFDEF IAM4D_CRYPTO_TMS}
+  {$IF DEFINED(IAM4D_CRYPTO_TMS)}
   Result := 'TMS Cryptography Pack';
+  {$ELSEIF DEFINED(IAM4D_CRYPTO_TAURUSTLS)}
+  Result := 'TaurusTLS (OpenSSL)';
   {$ELSE}
   Result := 'LockBox3';
   {$ENDIF}

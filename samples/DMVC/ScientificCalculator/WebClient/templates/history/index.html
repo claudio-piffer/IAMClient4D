@@ -1,0 +1,13 @@
+{{extends "../baselayout.html"}}
+
+{{block "title"}}{{:t.layout.history}}{{endblock}}
+
+{{block "body"}}
+<header class="page-header page-header-compact">
+  <h1>{{:t.layout.history}}</h1>
+  <p class="lead">{{:t.history.lead_html$|replace,"{backend}",backend_label}}</p>
+</header>
+<div id="history-table">
+  {{include "_table.html"}}
+</div>
+{{endblock}}

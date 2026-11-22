@@ -40,18 +40,23 @@ type
   /// Supported algorithms:
   /// - RS256, RS384, RS512 (RSA with PKCS#1 v1.5)
   /// - PS256, PS384, PS512 (RSA-PSS with SHA-2)
-  /// Future extensions: ES256, ES384, ES512 (ECDSA).
+  /// - ES256, ES384, ES512 (ECDSA, requires a provider supporting it, TMS or TaurusTLS)
+  /// Algorithm names are case-sensitive (RFC 7515 4.1.1): any other value, "none" and HS*
+  /// included, and algorithms not supported by the crypto provider raise EIAM4DSecurityValidationException.
   /// Crypto provider: Configurable for different cryptographic backends.
-  /// Thread-safety: Thread-safe for concurrent verification operations.
+  /// Thread-safety: safe for concurrent verification when the crypto provider is (all built-in
+  /// providers are): TIAM4DJWTValidator shares one instance across threads.
   /// </remarks>
   TUniversalJWTSignatureVerifier = class(TInterfacedObject, IIAM4DJWTSignatureVerifier)
   private
     FCryptoProvider: IIAM4DCryptoProvider;
     FRSAVerifier: IIAM4DJWTSignatureVerifier;
     FRSAPSSVerifier: IIAM4DJWTSignatureVerifier;
+    FECDSAVerifier: IIAM4DJWTSignatureVerifier;
 
     function IsRSAPKCS1Algorithm(const AAlg: string): Boolean;
     function IsRSAPSSAlgorithm(const AAlg: string): Boolean;
+    function IsECDSAAlgorithm(const AAlg: string): Boolean;
 
     procedure InitializeVerifiers;
   public
@@ -98,6 +103,7 @@ implementation
 uses
   IAMClient4D.Security.JWT.Verifiers.RSA,
   IAMClient4D.Security.JWT.Verifiers.RSAPSS,
+  IAMClient4D.Security.JWT.Verifiers.ECDSA,
   IAMClient4D.Security.Crypto.Factory,
   IAMClient4D.Exceptions;
 
@@ -119,12 +125,14 @@ procedure TUniversalJWTSignatureVerifier.InitializeVerifiers;
 begin
   FRSAVerifier := TRSAJWTSignatureVerifier.Create(FCryptoProvider);
   FRSAPSSVerifier := TRSAPSSJWTSignatureVerifier.Create(FCryptoProvider);
+  FECDSAVerifier := TECDSAJWTSignatureVerifier.Create(FCryptoProvider);
 end;
 
 destructor TUniversalJWTSignatureVerifier.Destroy;
 begin
   FRSAVerifier := nil;
   FRSAPSSVerifier := nil;
+  FECDSAVerifier := nil;
   FCryptoProvider := nil;
   inherited;
 end;
@@ -134,18 +142,27 @@ begin
   Result := FCryptoProvider.GetSupportedAlgorithms;
 end;
 
+// Algorithm names are case-sensitive (RFC 7515 4.1.1)
+
 function TUniversalJWTSignatureVerifier.IsRSAPKCS1Algorithm(const AAlg: string): Boolean;
 begin
-  Result := SameText(AAlg, 'RS256') or
-            SameText(AAlg, 'RS384') or
-            SameText(AAlg, 'RS512');
+  Result := (AAlg = 'RS256') or
+            (AAlg = 'RS384') or
+            (AAlg = 'RS512');
 end;
 
 function TUniversalJWTSignatureVerifier.IsRSAPSSAlgorithm(const AAlg: string): Boolean;
 begin
-  Result := SameText(AAlg, 'PS256') or
-            SameText(AAlg, 'PS384') or
-            SameText(AAlg, 'PS512');
+  Result := (AAlg = 'PS256') or
+            (AAlg = 'PS384') or
+            (AAlg = 'PS512');
+end;
+
+function TUniversalJWTSignatureVerifier.IsECDSAAlgorithm(const AAlg: string): Boolean;
+begin
+  Result := (AAlg = 'ES256') or
+            (AAlg = 'ES384') or
+            (AAlg = 'ES512');
 end;
 
 function TUniversalJWTSignatureVerifier.Verify(const ASigningInput: string;
@@ -154,6 +171,12 @@ function TUniversalJWTSignatureVerifier.Verify(const ASigningInput: string;
 begin
   if AAlg.Trim.IsEmpty then
     raise EIAM4DSecurityValidationException.Create('Algorithm cannot be empty');
+
+  if not (IsRSAPKCS1Algorithm(AAlg) or IsRSAPSSAlgorithm(AAlg) or IsECDSAAlgorithm(AAlg)) or
+     not FCryptoProvider.SupportsAlgorithm(AAlg) then
+    raise EIAM4DSecurityValidationException.CreateFmt(
+      'Unsupported JWT algorithm: %s. Supported algorithms (%s): %s.',
+      [AAlg, FCryptoProvider.GetProviderName, string.Join(', ', FCryptoProvider.GetSupportedAlgorithms)]);
 
   if IsRSAPKCS1Algorithm(AAlg) then
   begin
@@ -167,9 +190,8 @@ begin
   end
   else
   begin
-    raise EIAM4DSecurityValidationException.CreateFmt(
-      'Unsupported JWT algorithm: %s. Supported algorithms: RS256, RS384, RS512, PS256, PS384, PS512.',
-      [AAlg]);
+    // ES256, ES384, ES512 - ECDSA
+    Result := FECDSAVerifier.Verify(ASigningInput, ASignatureBytes, APublicKeyJWK, AAlg);
   end;
 end;
 

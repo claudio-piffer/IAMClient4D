@@ -80,3 +80,27 @@ __recovery/
 
 # Boss dependency manager vendor folder https://github.com/HashLoad/boss
 modules/
+
+# Test build output (Linux binaries have no extension)
+tests/bin/
+tests/dcu/
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Claude Code session exports, in any folder (the ones already tracked stay tracked)
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Sample output (executables, .env with secrets, logs, web client): the Swagger UI files
+# already tracked under samples/bin/DMVC/Win32/Debug/www stay tracked
+samples/bin/
+samples/dcu/FMX/
+
+# Sample environment (Docker/): local settings, generated passwords and certificate
+Docker/.env
+Docker/secrets/
+Docker/config/nginx/ssl/certs/*
+!Docker/config/nginx/ssl/certs/.gitkeep
+
+# Python bytecode of the test generators
+__pycache__/

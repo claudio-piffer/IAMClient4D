@@ -42,8 +42,12 @@ type
   TIAM4DUserManagementValidator = class sealed
   private
     class constructor Create;
+    class destructor Destroy;
     class var FEmailRegex: TRegEx;
     class var FUsernameRegex: TRegEx;
+    // TRegEx.IsMatch stores the subject in the shared instance: one match at a time
+    class var FRegexLock: TObject;
+    class function IsMatch(const ARegex: TRegEx; const AValue: string): Boolean; static;
   public
     /// <summary>
     /// Validates that UserID is not empty.
@@ -52,10 +56,18 @@ type
     class procedure ValidateUserID(const AUserID: string); static; inline;
 
     /// <summary>
-    /// Validates that Username is not empty and meets format requirements.
+    /// Validates that Username is not empty and meets format requirements (length, letters, numbers,
+    /// '.', '_', '-', '@', '+'). Keycloak applies its own rules, set in the realm user profile.
     /// </summary>
     /// <exception cref="EIAM4DInvalidUserDataException">Username is invalid</exception>
     class procedure ValidateUsername(const AUsername: string); static;
+
+    /// <summary>
+    /// Validates a username to look up: not empty, at most IAM4D_MAX_USERNAME_LENGTH characters.
+    /// The format is left to Keycloak: any username it accepted can be found.
+    /// </summary>
+    /// <exception cref="EIAM4DInvalidUserDataException">Username is empty or too long</exception>
+    class procedure ValidateUsernameLookup(const AUsername: string); static;
 
     /// <summary>
     /// Validates that Email is not empty and matches RFC 5322 format.
@@ -110,6 +122,12 @@ type
     /// </summary>
     /// <exception cref="EIAM4DInvalidConfigurationException">Roles array is empty</exception>
     class procedure ValidateRolesArray(const ARolesCount: Integer); static; inline;
+
+    /// <summary>
+    /// Validates a page request: AFirst 0 or more, AMax 1 or more (Keycloak drops the limit for a
+    /// negative max and returns every user).
+    /// </summary>
+    class procedure ValidatePaging(AFirst, AMax: Integer); static;
   end;
 
 implementation
@@ -120,6 +138,23 @@ class constructor TIAM4DUserManagementValidator.Create;
 begin
   FEmailRegex := TRegEx.Create(IAM4D_EMAIL_REGEX_PATTERN, [roIgnoreCase, roCompiled]);
   FUsernameRegex := TRegEx.Create(IAM4D_USERNAME_REGEX_PATTERN, [roIgnoreCase, roCompiled]);
+  FRegexLock := TObject.Create;
+end;
+
+class destructor TIAM4DUserManagementValidator.Destroy;
+begin
+  FRegexLock.Free;
+end;
+
+class function TIAM4DUserManagementValidator.IsMatch(const ARegex: TRegEx; const AValue: string): Boolean;
+begin
+  // Validators run on pool threads (async managers)
+  TMonitor.Enter(FRegexLock);
+  try
+    Result := ARegex.IsMatch(AValue);
+  finally
+    TMonitor.Exit(FRegexLock);
+  end;
 end;
 
 class procedure TIAM4DUserManagementValidator.ValidateUserID(const AUserID: string);
@@ -141,9 +176,19 @@ begin
     raise EIAM4DInvalidUserDataException.Create(
       Format('Username cannot exceed %d characters', [IAM4D_MAX_USERNAME_LENGTH]));
 
-  if not FUsernameRegex.IsMatch(AUsername) then
+  if not IsMatch(FUsernameRegex, AUsername) then
     raise EIAM4DInvalidUserDataException.Create(
-      'Username can only contain letters, numbers, dots, underscores and hyphens');
+      'Username can only contain letters, numbers, dots, underscores, hyphens, "@" and "+"');
+end;
+
+class procedure TIAM4DUserManagementValidator.ValidateUsernameLookup(const AUsername: string);
+begin
+  if AUsername.IsEmpty then
+    raise EIAM4DInvalidUserDataException.Create('Username cannot be empty');
+
+  if AUsername.Length > IAM4D_MAX_USERNAME_LENGTH then
+    raise EIAM4DInvalidUserDataException.Create(
+      Format('Username cannot exceed %d characters', [IAM4D_MAX_USERNAME_LENGTH]));
 end;
 
 class procedure TIAM4DUserManagementValidator.ValidateEmail(const AEmail: string);
@@ -155,7 +200,7 @@ begin
     raise EIAM4DInvalidUserDataException.Create(
       Format('Email cannot exceed %d characters', [IAM4D_MAX_EMAIL_LENGTH]));
 
-  if not FEmailRegex.IsMatch(AEmail) then
+  if not IsMatch(FEmailRegex, AEmail) then
     raise EIAM4DInvalidUserDataException.Create(
       Format('Email format is invalid: %s', [AEmail]));
 end;
@@ -208,6 +253,14 @@ class procedure TIAM4DUserManagementValidator.ValidateSessionID(const ASessionID
 begin
   if ASessionID.IsEmpty then
     raise EIAM4DInvalidConfigurationException.Create('SessionID cannot be empty');
+end;
+
+class procedure TIAM4DUserManagementValidator.ValidatePaging(AFirst, AMax: Integer);
+begin
+  if AFirst < 0 then
+    raise EIAM4DInvalidConfigurationException.Create(Format('FirstResult must be 0 or more (got %d)', [AFirst]));
+  if AMax < 1 then
+    raise EIAM4DInvalidConfigurationException.Create(Format('MaxResults must be 1 or more (got %d)', [AMax]));
 end;
 
 class procedure TIAM4DUserManagementValidator.ValidateRolesArray(const ARolesCount: Integer);

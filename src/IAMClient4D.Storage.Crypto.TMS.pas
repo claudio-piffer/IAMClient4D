@@ -66,7 +66,8 @@ type
   /// </para>
   /// <para>
   /// <b>Security:</b> GCM provides authenticated encryption - tag verification is
-  /// performed internally by the TMS library. Securely wipes key material on destruction.
+  /// performed internally by the TMS library; the plaintext it wrote is wiped when the tag
+  /// does not match. Securely wipes key material on destruction.
   /// </para>
   /// </remarks>
   TIAM4DTMSStorageCryptoProvider = class(TInterfacedObject, IIAM4DStorageCryptoProvider)
@@ -117,9 +118,9 @@ type
   end;
 {$ENDIF}
 
-implementation
-
 {$IFDEF IAM4D_CRYPTO_TMS}
+
+implementation
 uses
   AESModes,
   IAMClient4D.Common.SecureMemory,
@@ -160,7 +161,8 @@ begin
   try
     LNonce := TIAM4DCryptoUtils.GenerateSecureRandomBytes(GCM_NONCE_SIZE);
 
-    SetLength(LCiphertext, 0);
+    // TMS writes into a caller-allocated buffer
+    SetLength(LCiphertext, Length(APlaintext));
     SetLength(LTag, GCM_TAG_SIZE);
 
     LErr := LAES.GCM_EncryptBinaryBuffer(
@@ -194,6 +196,7 @@ var
   LTag: TBytes;
   LCipherLen: Integer;
   LErr: Integer;
+  LAuthenticated: Boolean;
 begin
   if Length(ACiphertext) < MIN_CIPHERTEXT_SIZE then
     raise EIAM4DStorageDecryptionException.Create(GetProviderName, 'Ciphertext too short');
@@ -210,10 +213,12 @@ begin
   SetLength(LTag, GCM_TAG_SIZE);
   Move(ACiphertext[GCM_NONCE_SIZE + LCipherLen], LTag[0], GCM_TAG_SIZE);
 
+  LAuthenticated := False;
   LAES := TAESModes.Create;
   try
-    SetLength(Result, 0);
+    SetLength(Result, LCipherLen);
 
+    // TMS writes the plaintext before checking the tag
     LErr := LAES.GCM_DecryptBinaryBuffer(
       LCipher,
       AAAD,
@@ -223,11 +228,14 @@ begin
       LTag,
       GCM_TAG_BITS);
 
-    if LErr <> 0 then
+    LAuthenticated := LErr = 0;
+    if not LAuthenticated then
       raise EIAM4DStorageDecryptionException.Create(GetProviderName,
         'Authentication failed (GCM tag mismatch)');
   finally
     LAES.Free;
+    if not LAuthenticated then
+      SecureZero(Result);
   end;
 end;
 

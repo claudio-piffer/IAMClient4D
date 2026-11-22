@@ -54,7 +54,13 @@ type
     /// <summary>
     /// Parses required action from Keycloak string format.
     /// </summary>
+    /// <exception cref="EArgumentException">Action not in TIAM4DRequiredAction</exception>
     class function FromString(const AValue: string): TIAM4DRequiredAction; static;
+    /// <summary>
+    /// Parses required action from Keycloak string format; False for an action not in
+    /// TIAM4DRequiredAction (e.g. VERIFY_PROFILE, webauthn-register, a custom action).
+    /// </summary>
+    class function TryFromString(const AValue: string; out AAction: TIAM4DRequiredAction): Boolean; static;
   end;
 
   /// <summary>
@@ -97,8 +103,10 @@ type
     FAttributes: TArray<TIAM4DUserAttribute>;
     FCreatedTimestamp: Int64;
     FRequiredActions: TArray<TIAM4DRequiredAction>;
+    FOtherRequiredActions: TArray<string>;
     FTemporaryPassword: string;
     FRequirePasswordChange: Boolean;
+    FFederationLink: string;
 
     function IndexOfAttribute(const AName: string): Integer;
     function GetAttribute(const AName: string): TArray<string>;
@@ -113,6 +121,15 @@ type
     property EmailVerified: Boolean read FEmailVerified write FEmailVerified;
 
     /// <summary>
+    /// ID of the user storage provider (LDAP, Kerberos, custom) the user is imported from; empty
+    /// for a local user. Read only in Keycloak: never sent by create or update.
+    /// </summary>
+    /// <remarks>
+    /// Not the identity provider links (brokering): see GetUserFederatedIdentities.
+    /// </remarks>
+    property FederationLink: string read FFederationLink write FFederationLink;
+
+    /// <summary>
     /// Dictionary-style access: User.Attributes['key'] := Values.
     /// If the attribute does not exist, it will be created.
     /// </summary>
@@ -125,9 +142,21 @@ type
     property AllAttributes: TArray<TIAM4DUserAttribute>
       read FAttributes write FAttributes;
 
+    /// <summary>Creation time: milliseconds since 1970-01-01 UTC, as Keycloak's createdTimestamp</summary>
     property CreatedTimestamp: Int64 read FCreatedTimestamp write FCreatedTimestamp;
     property RequiredActions: TArray<TIAM4DRequiredAction>
       read FRequiredActions write FRequiredActions;
+
+    /// <summary>
+    /// Required actions of Keycloak not in TIAM4DRequiredAction (e.g. VERIFY_PROFILE,
+    /// UPDATE_EMAIL, webauthn-register, a custom action of the realm), as Keycloak names them.
+    /// </summary>
+    /// <remarks>
+    /// Read with the user and sent back with RequiredActions on create and update, so an update
+    /// never drops them. Reading a user with such an action does not fail.
+    /// </remarks>
+    property OtherRequiredActions: TArray<string>
+      read FOtherRequiredActions write FOtherRequiredActions;
 
     /// <summary>
     /// Temporary password for user creation.
@@ -203,6 +232,7 @@ type
     FLastName: string;
     FSearch: string;
     FEnabled: Boolean;
+    FFilterByEnabled: Boolean;
     FFirstResult: Integer;
     FMaxResults: Integer;
   public
@@ -211,12 +241,17 @@ type
     property FirstName: string read FFirstName write FFirstName;
     property LastName: string read FLastName write FLastName;
     property Search: string read FSearch write FSearch;
+    /// <summary>Value of the enabled filter: sent only when FilterByEnabled is True</summary>
     property Enabled: Boolean read FEnabled write FEnabled;
+    /// <summary>True: only users whose enabled flag is Enabled (Create: False, every user)</summary>
+    property FilterByEnabled: Boolean read FFilterByEnabled write FFilterByEnabled;
+    /// <summary>Offset of the first result, 0 or more</summary>
     property FirstResult: Integer read FFirstResult write FFirstResult;
+    /// <summary>Page size, 1 or more</summary>
     property MaxResults: Integer read FMaxResults write FMaxResults;
 
     /// <summary>
-    /// Creates search criteria with pagination (default: 100 results).
+    /// Creates search criteria with pagination (default: 100 results), no enabled filter.
     /// </summary>
     class function Create(
       const ASearch: string = '';
@@ -737,11 +772,15 @@ type
   ///
   /// <para>For UI applications (VCL/FMX), use <see cref="IIAM4DUserManagerAsync"/> instead
   /// to keep the interface responsive.</para>
+  ///
+  /// <para>Implemented by the library (TIAM4DKeycloakUserManager), not an extension point: minor
+  /// versions add methods, which breaks a class of the application that implements it. To change
+  /// the behaviour, wrap a TIAM4DKeycloakUserManager instead.</para>
   /// </remarks>
   /// <seealso cref="IIAM4DUserManagerAsync"/>
   /// <seealso cref="TIAM4DKeycloakUserManager"/>
   IIAM4DUserManager = interface
-    ['{A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D}']
+    ['{94441FA3-FF65-438D-B2B2-5D4B6DE92490}']
 
     // ========================================================================
     // User CRUD Operations
@@ -757,6 +796,11 @@ type
     function TryGetUserByEmail(const AEmail: string): TIAM4DUserTryResult;
     function GetUsersByIDs(const AUserIDs: TArray<string>;
       const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DUserGetResult>;
+    /// <summary>
+    /// Replaces the profile of the user AUser.ID with AUser: username (when not empty), email, first
+    /// and last name (empty clears them), Enabled, EmailVerified, required actions and, when the
+    /// record has any, the attributes. Read the user first (GetUser), change it, then update.
+    /// </summary>
     procedure UpdateUser(const AUser: TIAM4DUser);
     function UpdateUsers(const AUsers: TArray<TIAM4DUser>;
       const ACancellationToken: IAsyncOperation = nil): TArray<TIAM4DOperationResult>;
@@ -815,13 +859,28 @@ type
 
     function GetUserFederatedIdentities(const AUserID: string): TArray<TIAM4DFederatedIdentity>;
     function IsUserFederated(const AUserID: string): Boolean;
+    /// <summary>
+    /// Links the user to an account of an identity provider (POST users/{id}/federated-identity/{alias}):
+    /// IdentityProvider is the alias, UserID and UserName the account at that provider. Needs manage-users.
+    /// </summary>
+    /// <exception cref="EIAM4DHTTPConflictException">Raised when the user is already linked to that provider</exception>
+    procedure LinkFederatedIdentity(const AUserID: string; const AFederatedIdentity: TIAM4DFederatedIdentity);
+    /// <summary>Removes the link of the user to the identity provider AIdentityProvider (alias).</summary>
+    /// <exception cref="EIAM4DHTTPNotFoundException">Raised when the user is not linked to that provider</exception>
+    procedure UnlinkFederatedIdentity(const AUserID: string; const AIdentityProvider: string);
 
     // ========================================================================
     // Required Actions Management
     // ========================================================================
 
+    /// <summary>
+    /// Required actions of the user in TIAM4DRequiredAction; the others (e.g. VERIFY_PROFILE) are in
+    /// GetUser(...).OtherRequiredActions.
+    /// </summary>
     function GetUserRequiredActions(const AUserID: string): TArray<TIAM4DRequiredAction>;
+    /// <summary>Replaces every required action of the user, the ones not in TIAM4DRequiredAction too.</summary>
     procedure SetUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
+    /// <summary>Removes AActions from the user; the other required actions stay, unknown ones included.</summary>
     procedure RemoveUserRequiredActions(const AUserID: string; const AActions: TArray<TIAM4DRequiredAction>);
 
     // ========================================================================
@@ -926,6 +985,9 @@ type
   ///     .Run;
   /// end;
   /// </code>
+  ///
+  /// <para>Implemented by the library (TIAM4DKeycloakUserManagerAsync), not an extension point:
+  /// minor versions add methods.</para>
   /// </remarks>
   /// <seealso cref="IIAM4DUserManager"/>
   /// <seealso cref="TIAM4DKeycloakUserManagerAsync"/>
@@ -952,8 +1014,9 @@ type
     /// <para><b>Batch behavior:</b> All users are processed sequentially in a single background
     /// task. Each user operation is independent - failures don't stop subsequent operations.</para>
     ///
-    /// <para><b>Cancellation:</b> Batch operations complete atomically. For fine-grained
-    /// cancellation control, iterate with CreateUserAsync and check cancellation between calls:</para>
+    /// <para><b>Cancellation:</b> Cancel is checked between users: the users already created stay,
+    /// the remaining ones get ErrorMessage 'Operation cancelled'. To decide between calls yourself,
+    /// iterate with CreateUserAsync:</para>
     /// <code>
     /// for LUser in AUsers do
     /// begin
@@ -996,6 +1059,10 @@ type
     /// </summary>
     /// <param name="AEmail">The email address to search for</param>
     /// <returns>Promise resolving to user data</returns>
+    /// <remarks>
+    /// In a realm that allows duplicate emails, an email of more than one user is rejected with
+    /// EIAM4DInvalidUserDataException: it does not identify a user (TryGetUserByEmailAsync too).
+    /// </remarks>
     function GetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUser>;
 
     /// <summary>
@@ -1006,6 +1073,7 @@ type
     /// <remarks>
     /// Prefer this method when user absence is a normal flow (e.g., search forms).
     /// Use GetUserByEmailAsync when user must exist (raises exception if not found).
+    /// An email of more than one user is an error, not a result (see GetUserByEmailAsync).
     /// </remarks>
     function TryGetUserByEmailAsync(const AEmail: string): IAsyncPromise<TIAM4DUserTryResult>;
 
@@ -1309,6 +1377,17 @@ type
     /// <returns>Promise resolving to True if user has federated identities</returns>
     function IsUserFederatedAsync(const AUserID: string): IAsyncPromise<Boolean>;
 
+    /// <summary>
+    /// Links the user to an account of an identity provider (see IIAM4DUserManager.LinkFederatedIdentity).
+    /// </summary>
+    function LinkFederatedIdentityAsync(const AUserID: string;
+      const AFederatedIdentity: TIAM4DFederatedIdentity): IAsyncVoidPromise;
+
+    /// <summary>
+    /// Removes the link of the user to an identity provider (see IIAM4DUserManager.UnlinkFederatedIdentity).
+    /// </summary>
+    function UnlinkFederatedIdentityAsync(const AUserID: string; const AIdentityProvider: string): IAsyncVoidPromise;
+
     // ========================================================================
     // Required Actions Management
     // ========================================================================
@@ -1552,7 +1631,8 @@ type
     /// <remarks>
     /// Returns all clients including built-in clients (realm-management, account, broker)
     /// and custom application clients configured in the realm.
-    /// Each client includes all its associated roles.
+    /// Each client includes all its associated roles: one request for the list plus one per client.
+    /// For one client use GetClientByClientIDAsync.
     /// </remarks>
     function GetClientsAsync: IAsyncPromise<TIAM4DRealmClientArray>; overload;
 
@@ -1591,10 +1671,11 @@ begin
   FEnabled := AEnabled;
   FEmailVerified := False;
   FAttributes := nil;
-  FCreatedTimestamp := DateTimeToUnix(Now);
+  FCreatedTimestamp := DateTimeToUnix(TDateTime.NowUTC) * MSecsPerSec;
   FRequiredActions := nil;
   FTemporaryPassword := IAM4D_EMPTY_USER_ID;
   FRequirePasswordChange := True;
+  FFederationLink := '';
 end;
 
 function TIAM4DUser.HasRequiredAction(const AAction: TIAM4DRequiredAction): Boolean;
@@ -1733,6 +1814,7 @@ begin
   Result.FFirstName := IAM4D_EMPTY_USER_ID;
   Result.FLastName := IAM4D_EMPTY_USER_ID;
   Result.FEnabled := True;
+  Result.FFilterByEnabled := False;
 end;
 
 { TIAM4DRequiredActionHelper }
@@ -1753,18 +1835,29 @@ end;
 class function TIAM4DRequiredActionHelper.FromString(
   const AValue: string): TIAM4DRequiredAction;
 begin
-  if SameText(AValue, 'VERIFY_EMAIL') then
-    Result := raVerifyEmail
-  else if SameText(AValue, 'UPDATE_PASSWORD') then
-    Result := raUpdatePassword
-  else if SameText(AValue, 'CONFIGURE_TOTP') then
-    Result := raConfigureOTP
-  else if SameText(AValue, 'UPDATE_PROFILE') then
-    Result := raUpdateProfile
-  else if SameText(AValue, 'TERMS_AND_CONDITIONS') then
-    Result := raTermsAndConditions
-  else
+  if not TryFromString(AValue, Result) then
     raise EArgumentException.CreateFmt('Unknown required action: %s', [AValue]);
+end;
+
+class function TIAM4DRequiredActionHelper.TryFromString(const AValue: string;
+  out AAction: TIAM4DRequiredAction): Boolean;
+begin
+  Result := True;
+  if SameText(AValue, 'VERIFY_EMAIL') then
+    AAction := raVerifyEmail
+  else if SameText(AValue, 'UPDATE_PASSWORD') then
+    AAction := raUpdatePassword
+  else if SameText(AValue, 'CONFIGURE_TOTP') then
+    AAction := raConfigureOTP
+  else if SameText(AValue, 'UPDATE_PROFILE') then
+    AAction := raUpdateProfile
+  else if SameText(AValue, 'TERMS_AND_CONDITIONS') then
+    AAction := raTermsAndConditions
+  else
+  begin
+    AAction := Low(TIAM4DRequiredAction);
+    Result := False;
+  end;
 end;
 
 { TIAM4DPasswordReset }
@@ -1851,7 +1944,7 @@ begin
 
   for LRole in FRoles do
   begin
-    if SameText(LRole.Name, ARoleName) then
+    if SameStr(LRole.Name, ARoleName) then
     begin
       ARole := LRole;
       Result := True;
